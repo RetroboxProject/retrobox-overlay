@@ -19,7 +19,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned: every Rust release adds clippy lints, and with -D warnings an
+      # untouched tree would start failing. Bump it on purpose, fixing the new
+      # lints in the same commit.
+      - uses: dtolnay/rust-toolchain@1.99
         with: { components: "clippy, rustfmt" }
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings

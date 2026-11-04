@@ -282,8 +282,8 @@ impl State {
             return;
         };
         // premultiplied black: only the alpha byte (B, G, R, A in memory)
-        for pixel in canvas.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&[0, 0, 0, alpha]);
+        for pixel in canvas.as_chunks_mut::<4>().0 {
+            *pixel = [0, 0, 0, alpha];
         }
         let surface = self.dim.layer.wl_surface();
         if buffer.attach_to(surface).is_ok() {
