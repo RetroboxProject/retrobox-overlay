@@ -1,0 +1,116 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: "clippy, rustfmt" }
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
+  package:
+    # Built in Debian 12 so the binary needs no newer glibc than Debian 12 /
+    # Ubuntu 24.04 / current Fedora have; the .rpm packs the same binary.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    container: debian:bookworm
+    steps:
+      - run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config libxkbcommon-dev
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with: { tool: "cargo-deb,cargo-generate-rpm" }
+      - name: Version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: sed -i "0,/^version = .*/s//version = \"${GITHUB_REF_NAME#v}\"/" Cargo.toml
+      - run: cargo build --release --locked
+      - run: cargo deb --no-build
+      - run: cargo generate-rpm
+      - run: |
+          mkdir -p dist
+          cp target/debian/*.deb target/generate-rpm/*.rpm dist/
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with: { name: "packages-${{ matrix.arch }}", path: dist/* }
+
+  smoke-deb:
+    needs: package
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["debian:bookworm", "debian:trixie", "ubuntu:24.04"]
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: packages-amd64, path: dist }
+      # retrobox-core and retrobox-emulationstation are not in the distro: only
+      # the binary and its shared libraries are checked here
+      - run: |
+          apt-get update && apt-get install -y libxkbcommon0
+          dpkg -i --force-depends dist/*.deb
+          retrobox-overlay --version
+          retrobox-overlay --help >/dev/null
+
+  smoke-rpm:
+    needs: package
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        fedora: ["42", "43", "44"]
+    container: fedora:${{ matrix.fedora }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: packages-amd64, path: dist }
+      - run: |
+          dnf install -y libxkbcommon
+          rpm -i --nodeps dist/*.rpm
+          retrobox-overlay --version
+          retrobox-overlay --help >/dev/null
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check, package]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts, merge-multiple: true }
+      # The installer at https://retroboxproject.github.io verifies downloads
+      # against this file (bare file names, one line per asset).
+      - name: Generate SHA256SUMS
+        working-directory: artifacts
+        run: |
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\n' | sort \
+            | xargs -d '\n' sha256sum > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*
