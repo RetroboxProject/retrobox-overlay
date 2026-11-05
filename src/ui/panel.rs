@@ -14,6 +14,7 @@ use tiny_skia::{
 };
 
 use super::text::{FontRef, Fonts, TextBox};
+use crate::emulator::EmuAction;
 use crate::theme::{FontSpec, MenuTheme, Rgba, TextStyle};
 
 // MenuComponent.h / Font.h, as fractions of the screen height
@@ -30,6 +31,7 @@ const WIDTH_IN_LETTERS: f32 = 33.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
     Continue,
+    Emulator(EmuAction),
     Quit,
 }
 

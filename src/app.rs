@@ -3,7 +3,8 @@
 //! * the dim: one translucent black buffer over the whole output;
 //! * the panel: the side menu, slid in from its edge by animating the layer
 //!   surface's margin (its buffer is drawn once, not on every frame); it takes
-//!   the keyboard;
+//!   the keyboard, once the game is paused (the pause key has to reach the
+//!   game first, see emulator.rs);
 //! * the clock, on the other side, redrawn once a second.
 //!
 //! With `wp_alpha_modifier` (KWin 6.1+, labwc 0.9+) the three fade in as well,
@@ -49,6 +50,7 @@ use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1;
 
 use crate::config::{Config, Side, VerticalPosition};
+use crate::emulator::{self, EmuAction, Emulator};
 use crate::input::{self, Nav, Pad};
 use crate::theme::MenuTheme;
 use crate::ui::clock::Clock;
@@ -65,6 +67,7 @@ const CLOCK_MARGIN: f32 = 0.08;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Continue,
+    Emulator(EmuAction),
     Quit,
 }
 
@@ -79,6 +82,7 @@ pub struct Content {
     pub clock_formats: (String, String),
     pub locale: chrono::Locale,
     pub pads: Vec<Pad>,
+    pub emulator: Emulator,
     /// When the process started, to log how long the menu took to show.
     pub launched: Instant,
 }
@@ -163,7 +167,7 @@ struct State {
 }
 
 /// Show the overlay until the user leaves it.
-pub fn run(content: Content) -> Result<Outcome> {
+pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
     let conn =
         Connection::connect_to_env().context("no Wayland compositor to show the overlay on")?;
     let (globals, queue) = registry_queue_init(&conn).context("cannot list the Wayland globals")?;
@@ -249,11 +253,12 @@ pub fn run(content: Content) -> Result<Outcome> {
     // Hide the overlay first, then hand the controllers back once the button
     // that closed it is up (see input.rs).
     let mut pads = std::mem::take(&mut state.content.pads);
+    let emulator = std::mem::replace(&mut state.content.emulator, Emulator::none());
     drop(state);
     conn.flush().ok();
     input::wait_released(&mut pads);
     drop(pads);
-    Ok(outcome)
+    Ok((outcome, emulator))
 }
 
 /// Smooth start and end of the animations.
@@ -326,12 +331,29 @@ impl State {
         );
         layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | edge);
         layer.set_exclusive_zone(-1);
-        layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+        // with a pause to press, the keyboard focus stays with the game until then
+        let pausing = self.content.emulator.can_pause();
+        layer.set_keyboard_interactivity(if pausing {
+            KeyboardInteractivity::None
+        } else {
+            KeyboardInteractivity::Exclusive
+        });
         layer.set_size(panel.width, 0);
         let hidden = -(panel.width as i32);
         set_edge_margin(&layer, config.side, hidden);
         layer.commit();
         self.panel = Some((panel, Piece::new(layer, self.alpha.as_ref(), &self.qh)));
+        if pausing {
+            self.handle
+                .insert_source(
+                    Timer::from_duration(emulator::KEYBOARD_SETTLE),
+                    |_, &mut (), state| {
+                        state.pause_game();
+                        TimeoutAction::Drop
+                    },
+                )
+                .ok();
+        }
 
         if config.clock.enabled {
             let free =
@@ -442,6 +464,20 @@ impl State {
         }
     }
 
+    /// Pause the game, then give the menu the keyboard.
+    fn pause_game(&mut self) {
+        if self.outcome.is_some() {
+            return; // closed before the pause: nothing to undo later
+        }
+        self.content.emulator.pause();
+        if let Some((_, piece)) = &self.panel {
+            piece
+                .layer
+                .set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+            piece.layer.commit();
+        }
+    }
+
     fn navigate(&mut self, nav: Nav) {
         match nav {
             Nav::Up | Nav::Down => {
@@ -461,7 +497,8 @@ impl State {
                     .and_then(|(panel, _)| panel.selected_action());
                 self.outcome = Some(match action {
                     Some(MenuAction::Quit) => Outcome::Quit,
-                    _ => Outcome::Continue,
+                    Some(MenuAction::Emulator(action)) => Outcome::Emulator(action),
+                    Some(MenuAction::Continue) | None => Outcome::Continue,
                 });
             }
             Nav::Back | Nav::Close => self.outcome = Some(Outcome::Continue),

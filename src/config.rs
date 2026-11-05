@@ -52,6 +52,7 @@ pub struct ClockConfig {
 pub struct Config {
     pub side: Side,
     pub dim: f32,
+    pub pause_game: bool,
     pub animation_ms: u64,
     pub clock: ClockConfig,
 }
@@ -61,6 +62,7 @@ impl Default for Config {
         Self {
             side: Side::Right,
             dim: 0.6,
+            pause_game: true,
             animation_ms: 150,
             clock: ClockConfig {
                 enabled: true,
@@ -71,6 +73,14 @@ impl Default for Config {
             },
         }
     }
+}
+
+/// An ini boolean that says no.
+fn is_off(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "false" | "no" | "0" | "off"
+    )
 }
 
 impl Config {
@@ -105,6 +115,9 @@ impl Config {
             {
                 self.dim = dim.clamp(0.0, 1.0);
             }
+            if let Some(pause) = section.get("pause_game") {
+                self.pause_game = !is_off(pause);
+            }
             if let Some(ms) = section
                 .get("animation_ms")
                 .and_then(|v| v.trim().parse().ok())
@@ -115,7 +128,7 @@ impl Config {
         if let Some(section) = ini.section(Some("clock")) {
             let clock = &mut self.clock;
             if let Some(enabled) = section.get("enabled") {
-                clock.enabled = !matches!(enabled.trim(), "false" | "no" | "0" | "off");
+                clock.enabled = !is_off(enabled);
             }
             if let Some(format) = section.get("time_format").filter(|f| !f.trim().is_empty()) {
                 clock.time_format = Some(format.trim().to_owned());

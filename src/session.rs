@@ -21,10 +21,6 @@ pub struct SessionController {
 
 /// How the emulator performs one standard hotkey action.
 #[derive(Debug, Clone, Deserialize)]
-#[allow(
-    dead_code,
-    reason = "read by the actions to come (save states, discs...)"
-)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Binding {
     Keys {
@@ -41,10 +37,6 @@ pub enum Binding {
 
 /// What `session.json` says (only the parts the overlay uses).
 #[derive(Debug, Clone, Deserialize)]
-#[allow(
-    dead_code,
-    reason = "system, emulator and hotkeys are for the actions to come"
-)]
 pub struct Session {
     pub pid: i32,
     #[serde(default)]

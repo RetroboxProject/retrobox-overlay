@@ -7,6 +7,7 @@
 
 mod app;
 mod config;
+mod emulator;
 mod i18n;
 mod input;
 mod instance;
@@ -15,14 +16,14 @@ mod session;
 mod theme;
 mod ui;
 
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 
 use anyhow::Result;
 
 use crate::app::{Content, Outcome};
 use crate::config::Config;
+use crate::emulator::Emulator;
 use crate::i18n::Translator;
 use crate::input::Pad;
 use crate::instance::Instance;
@@ -110,16 +111,19 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
         .collect::<Vec<_>>()
         .join(" · ");
 
-    let items = vec![
-        MenuItem {
-            label: translator.text("menu-continue"),
-            action: MenuAction::Continue,
-        },
-        MenuItem {
-            label: translator.text("menu-quit"),
-            action: MenuAction::Quit,
-        },
-    ];
+    let emulator = match &session {
+        Some(session) if !demo => {
+            log::info!(
+                "game: {} on {} ({})",
+                session.rom,
+                session.system,
+                session.emulator
+            );
+            Emulator::new(session, config.pause_game)
+        }
+        _ => Emulator::none(),
+    };
+    let items = menu_items(&translator, &emulator);
 
     let time_key = if theme.clock12h {
         "clock-time-format-12h"
@@ -152,7 +156,7 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
         .filter_map(|controller| Pad::open(Path::new(&controller.device), theme.invert_buttons))
         .collect();
 
-    let outcome = app::run(Content {
+    let (outcome, mut emulator) = app::run(Content {
         config,
         theme,
         fonts,
@@ -162,27 +166,40 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
         clock_formats,
         locale: translator.locale(),
         pads,
+        emulator,
         launched,
     })?;
-    // the controllers were released with the overlay: the game gets them back
-
-    if outcome == Outcome::Quit && !demo {
-        quit_game();
+    // The overlay is gone and the controllers are the game's again; the
+    // keyboard focus is on its way back to the game.
+    match outcome {
+        Outcome::Quit if !demo => quit_game(),
+        Outcome::Quit => {}
+        Outcome::Continue => emulator.after_close(None),
+        Outcome::Emulator(action) => emulator.after_close(Some(action)),
     }
     Ok(())
+}
+
+/// Continue, what the emulator can do, and leaving the game.
+fn menu_items(translator: &Translator, emulator: &Emulator) -> Vec<MenuItem> {
+    let item = |key: &str, action| MenuItem {
+        label: translator.text(key),
+        action,
+    };
+    let mut items = vec![item("menu-continue", MenuAction::Continue)];
+    items.extend(
+        emulator
+            .actions()
+            .into_iter()
+            .map(|action| item(action.label_key(), MenuAction::Emulator(action))),
+    );
+    items.push(item("menu-quit", MenuAction::Quit));
+    items
 }
 
 /// Leave the game through retrobox-emukill, detached from the overlay.
 fn quit_game() {
     let emukill = paths::retrobox_command("retrobox-emukill");
     log::info!("quitting the game: {}", emukill.display());
-    if let Err(err) = Command::new(&emukill)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-    {
-        log::error!("cannot run {}: {err}", emukill.display());
-    }
+    emulator::spawn(&[emukill.to_string_lossy().into_owned()]);
 }

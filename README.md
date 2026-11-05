@@ -29,6 +29,14 @@ while it is shown: nothing stays resident during the game.
   (`BTN_SOUTH`/`BTN_EAST`, d-pad, left stick, `BTN_MODE`), following EmulationStation's
   *Switch confirm & cancel buttons*. Home or B closes it; the keyboard works too (arrows, Enter,
   Esc, F7).
+* **The emulator.** `session.json` says how the running emulator performs each standard hotkey
+  action (a key chord, a command, or the emulator's own controller combination with its
+  keyboard shortcut). From that the menu offers what the emulator can do: save and load
+  state, next disc (`.m3u` playlists), reset, the emulator's menu and a screenshot. Chords are
+  pressed on a virtual keyboard of the overlay's own (uinput: the user needs write access to
+  `/dev/uinput`, as for gamepadly). The game is paused (its pause toggle) while the menu is
+  open and resumed when it closes; emulators without a pause key, such as PC games, keep
+  running.
 * **Leaving the game** runs `retrobox-emukill`.
 
 ## Requirements
@@ -42,7 +50,7 @@ while it is shown: nothing stays resident during the game.
 
 `overlay.ini` in `/etc/retrobox` and `~/.config/retrobox` (the user's file wins, key by key).
 See [`data/overlay.ini`](data/overlay.ini) for every key: the menu's side, the dim opacity, the
-animation length, and the clock (on/off, position, colour, `strftime` formats). Day and month
+animation length, whether to pause the game, and the clock (on/off, position, colour, `strftime` formats). Day and month
 names follow the language, which is EmulationStation's (else the system's): English, Spanish,
 Catalan, Galician, Basque, Portuguese, French, Italian, German, Dutch, Polish and Russian.
 

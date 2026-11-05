@@ -1,5 +1,11 @@
 # retrobox-overlay: nl
 menu-continue = Doorgaan
+menu-save-state = Status opslaan
+menu-load-state = Status laden
+menu-next-disc = Volgende schijf
+menu-reset = Herstarten
+menu-emulator-menu = Emulatormenu
+menu-screenshot = Schermafbeelding
 menu-quit = Spel afsluiten
 # strftime formats of the clock (chrono), used unless overlay.ini sets its own
 clock-date-format = %A %-d %B %Y
