@@ -2,7 +2,9 @@
 menu-continue = Продолжить
 menu-save-state = Сохранить состояние
 menu-load-state = Загрузить состояние
+menu-disc-tray = Открыть/закрыть лоток
 menu-next-disc = Следующий диск
+menu-prev-disc = Предыдущий диск
 menu-reset = Перезапуск
 menu-emulator-menu = Меню эмулятора
 menu-screenshot = Снимок экрана

@@ -2,7 +2,9 @@
 menu-continue = Doorgaan
 menu-save-state = Status opslaan
 menu-load-state = Status laden
+menu-disc-tray = Lade openen/sluiten
 menu-next-disc = Volgende schijf
+menu-prev-disc = Vorige schijf
 menu-reset = Herstarten
 menu-emulator-menu = Emulatormenu
 menu-screenshot = Schermafbeelding

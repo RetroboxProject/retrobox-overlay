@@ -16,6 +16,7 @@ mod session;
 mod theme;
 mod ui;
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -45,13 +46,11 @@ runtime directory), or closes it when it is already open.
   --help     print this help
 
 Settings: overlay.ini in /etc/retrobox and ~/.config/retrobox.
-Log: RUST_LOG=debug for details.";
+Log: stderr from a terminal, else ~/.local/state/retrobox/logs/overlay.log; RUST_LOG=debug for details.";
 
 fn main() -> ExitCode {
     let launched = std::time::Instant::now();
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .format_timestamp(None)
-        .init();
+    init_log();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
@@ -178,6 +177,27 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
         Outcome::Emulator(action) => emulator.after_close(Some(action)),
     }
     Ok(())
+}
+
+/// Log to stderr from a terminal, else to the log file (replaced on every run).
+fn init_log() {
+    let mut builder =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    if std::io::stderr().is_terminal() {
+        builder.format_timestamp(None);
+    } else {
+        let path = paths::log_file();
+        let file = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::File::create(&path));
+        if let Ok(file) = file {
+            builder
+                .format_timestamp_millis()
+                .target(env_logger::Target::Pipe(Box::new(file)));
+        }
+    }
+    builder.init();
 }
 
 /// Continue, what the emulator can do, and leaving the game.

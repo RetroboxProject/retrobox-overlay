@@ -146,6 +146,31 @@ impl Panel {
         changed
     }
 
+    /// Select an entry; true when the selection changed.
+    pub fn select(&mut self, index: usize) -> bool {
+        if index >= self.items.len() || index == self.selected {
+            return false;
+        }
+        self.selected = index;
+        true
+    }
+
+    /// The entry at height `y` of the panel (surface coordinates), if any.
+    pub fn item_at(&self, y: f32) -> Option<usize> {
+        let top = self.header_height();
+        if y < top {
+            return None;
+        }
+        let pitch = self.text.font.line_height + self.line();
+        let index = ((y - top) / pitch) as usize;
+        (index < self.items.len()).then_some(index)
+    }
+
+    /// The thickness of the separators.
+    fn line(&self) -> f32 {
+        (self.screen_height / 540.0).max(1.0).round()
+    }
+
     pub fn selected_action(&self) -> Option<MenuAction> {
         self.items.get(self.selected).map(|item| item.action)
     }
@@ -171,7 +196,7 @@ impl Panel {
         let padding = (width * 0.04).max(20.0);
         let inner = width - 2.0 * padding;
         let header = self.header_height();
-        let line = (self.screen_height / 540.0).max(1.0).round();
+        let line = self.line();
 
         // header: game name, then "developer · year"
         let title_box_height = if self.subtitle.is_empty() {

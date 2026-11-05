@@ -33,6 +33,9 @@ use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState, Sim
 use smithay_client_toolkit::seat::keyboard::{
     KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
 };
+use smithay_client_toolkit::seat::pointer::{
+    CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
+};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
@@ -44,7 +47,7 @@ use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use tiny_skia::Pixmap;
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface};
+use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
 use wayland_client::{Connection, QueueHandle};
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1;
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1;
@@ -155,6 +158,7 @@ struct State {
     alpha: Option<WpAlphaModifierV1>,
     pool: SlotPool,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    pointer: Option<ThemedPointer>,
     qh: QueueHandle<State>,
     handle: LoopHandle<'static, State>,
 
@@ -223,6 +227,18 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
             )
             .map_err(|err| anyhow!("cannot watch a controller: {}", err.error))?;
     }
+    // a controller whose buttons are not all up yet is grabbed by then anyway
+    handle
+        .insert_source(
+            Timer::from_duration(input::GRAB_WAIT),
+            |_, &mut (), state| {
+                for pad in &mut state.content.pads {
+                    pad.try_grab();
+                }
+                TimeoutAction::Drop
+            },
+        )
+        .map_err(|err| anyhow!("cannot start a timer: {}", err.error))?;
 
     let mut state = State {
         registry_state: RegistryState::new(&globals),
@@ -235,6 +251,7 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
         alpha,
         pool,
         keyboard: None,
+        pointer: None,
         qh,
         handle,
         content,
@@ -632,6 +649,80 @@ impl KeyboardHandler for State {
     }
 }
 
+/// Linux's button codes (input-event-codes.h).
+const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
+
+impl PointerHandler for State {
+    /// Hovering an entry selects it, a click opens it; a click anywhere else
+    /// (or the right button) closes the overlay; the wheel moves the selection.
+    fn pointer_frame(
+        &mut self,
+        conn: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_pointer::WlPointer,
+        events: &[PointerEvent],
+    ) {
+        for event in events {
+            let on_panel = self
+                .panel
+                .as_ref()
+                .is_some_and(|(_, piece)| piece.is(&event.surface));
+            let item = if on_panel {
+                self.panel
+                    .as_ref()
+                    .and_then(|(panel, _)| panel.item_at(event.position.1 as f32))
+            } else {
+                None
+            };
+            match event.kind {
+                PointerEventKind::Enter { .. } => {
+                    if let Some(pointer) = &self.pointer
+                        && let Err(err) = pointer.set_cursor(conn, CursorIcon::Default)
+                    {
+                        log::debug!("cannot set the cursor: {err}");
+                    }
+                    self.hover(item);
+                }
+                PointerEventKind::Motion { .. } => self.hover(item),
+                PointerEventKind::Press { button, .. } => match (button, item) {
+                    (BTN_LEFT, Some(index)) => {
+                        self.hover(Some(index));
+                        self.navigate(Nav::Confirm);
+                    }
+                    (BTN_LEFT, None) if !on_panel => self.navigate(Nav::Back),
+                    (BTN_RIGHT, _) => self.navigate(Nav::Back),
+                    _ => {}
+                },
+                PointerEventKind::Axis { vertical, .. } if on_panel => {
+                    let steps = if vertical.discrete != 0 {
+                        vertical.discrete
+                    } else {
+                        (vertical.absolute / 10.0) as i32
+                    };
+                    if steps != 0 {
+                        self.navigate(if steps < 0 { Nav::Up } else { Nav::Down });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+impl State {
+    /// Select the entry under the pointer.
+    fn hover(&mut self, item: Option<usize>) {
+        let changed = match (item, self.panel.as_mut()) {
+            (Some(index), Some((panel, _))) => panel.select(index),
+            _ => false,
+        };
+        if changed {
+            self.draw_panel();
+        }
+    }
+}
+
 impl SeatHandler for State {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seat_state
@@ -651,6 +742,19 @@ impl SeatHandler for State {
             match self.seat_state.get_keyboard(qh, &seat, None) {
                 Ok(keyboard) => self.keyboard = Some(keyboard),
                 Err(err) => log::warn!("no keyboard: {err}"),
+            }
+        }
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            let cursor_surface = self.compositor.create_surface(qh);
+            match self.seat_state.get_pointer_with_theme::<Self, ()>(
+                qh,
+                &seat,
+                self.shm.wl_shm(),
+                cursor_surface,
+                ThemeSpec::default(),
+            ) {
+                Ok(pointer) => self.pointer = Some(pointer),
+                Err(err) => log::warn!("no pointer: {err}"),
             }
         }
     }

@@ -29,9 +29,6 @@ const KEYBOARD_NAME: &str = "retrobox-overlay keyboard";
 /// How long a chord stays down: a few frames, so emulators that poll the
 /// keyboard once per frame (or more slowly while paused) see it.
 const HOLD: Duration = Duration::from_millis(60);
-/// Between the presses of a disc change (eject, next disc, close the tray),
-/// so the emulator handles each one before the next.
-const DISC_STEP: Duration = Duration::from_millis(400);
 /// After the overlay closed, for the compositor to give the keyboard focus
 /// back to the game and repaint it (screenshots).
 const FOCUS_RETURN: Duration = Duration::from_millis(150);
@@ -44,7 +41,9 @@ pub const KEYBOARD_SETTLE: Duration = Duration::from_millis(300);
 pub enum EmuAction {
     SaveState,
     LoadState,
+    DiscTray,
     NextDisc,
+    PrevDisc,
     Reset,
     Menu,
     Screenshot,
@@ -52,10 +51,12 @@ pub enum EmuAction {
 
 impl EmuAction {
     /// In menu order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::SaveState,
         Self::LoadState,
+        Self::DiscTray,
         Self::NextDisc,
+        Self::PrevDisc,
         Self::Reset,
         Self::Menu,
         Self::Screenshot,
@@ -66,11 +67,18 @@ impl EmuAction {
         match self {
             Self::SaveState => "menu-save-state",
             Self::LoadState => "menu-load-state",
+            Self::DiscTray => "menu-disc-tray",
             Self::NextDisc => "menu-next-disc",
+            Self::PrevDisc => "menu-prev-disc",
             Self::Reset => "menu-reset",
             Self::Menu => "menu-emulator-menu",
             Self::Screenshot => "menu-screenshot",
         }
+    }
+
+    /// Only for games made of several discs.
+    const fn is_disc(self) -> bool {
+        matches!(self, Self::DiscTray | Self::NextDisc | Self::PrevDisc)
     }
 
     /// The hotkey action (session.json's name) that performs it.
@@ -78,7 +86,9 @@ impl EmuAction {
         match self {
             Self::SaveState => "save_state",
             Self::LoadState => "load_state",
+            Self::DiscTray => "disk_eject",
             Self::NextDisc => "disk_next",
+            Self::PrevDisc => "disk_prev",
             Self::Reset => "reset",
             Self::Menu => "menu",
             Self::Screenshot => "screenshot",
@@ -91,7 +101,6 @@ impl EmuAction {
 enum Step {
     Keys(Vec<KeyCode>),
     Exec(Vec<String>),
-    Wait(Duration),
 }
 
 /// What a binding lets the overlay do: press its chord or run its command.
@@ -116,7 +125,7 @@ fn step_of(binding: &Binding) -> Option<Step> {
     }
 }
 
-/// Whether the game is a playlist of discs (the only case "next disc" means anything).
+/// Whether the game is a playlist of discs (the only case the disc entries mean anything).
 fn is_playlist(rom: &str) -> bool {
     std::path::Path::new(rom)
         .extension()
@@ -127,34 +136,18 @@ fn is_playlist(rom: &str) -> bool {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Plan {
     pause: Option<Vec<KeyCode>>,
-    actions: HashMap<EmuAction, Vec<Step>>,
+    actions: HashMap<EmuAction, Step>,
 }
 
 impl Plan {
     fn new(session: &Session, pause_game: bool) -> Self {
         let step = |name: &str| session.hotkeys.get(name).and_then(step_of);
-        let mut actions = HashMap::new();
-        for action in EmuAction::ALL {
-            let Some(main) = step(action.hotkey()) else {
-                continue;
-            };
-            let steps = match action {
-                EmuAction::NextDisc if !is_playlist(&session.rom) => continue,
-                // open the tray, change the disc, close it (RetroArch's way)
-                EmuAction::NextDisc => match step("disk_eject") {
-                    Some(eject) => vec![
-                        eject.clone(),
-                        Step::Wait(DISC_STEP),
-                        main,
-                        Step::Wait(DISC_STEP),
-                        eject,
-                    ],
-                    None => vec![main],
-                },
-                _ => vec![main],
-            };
-            actions.insert(action, steps);
-        }
+        let playlist = is_playlist(&session.rom);
+        let actions = EmuAction::ALL
+            .into_iter()
+            .filter(|action| playlist || !action.is_disc())
+            .filter_map(|action| Some((action, step(action.hotkey())?)))
+            .collect();
         let pause = match step("pause") {
             Some(Step::Keys(keys)) if pause_game => Some(keys),
             _ => None,
@@ -165,14 +158,10 @@ impl Plan {
     /// Every key the plan may press, for the virtual keyboard's capabilities.
     fn keys(&self) -> AttributeSet<KeyCode> {
         let mut set = AttributeSet::new();
-        let chords = self
-            .actions
-            .values()
-            .flatten()
-            .filter_map(|step| match step {
-                Step::Keys(keys) => Some(keys),
-                _ => None,
-            });
+        let chords = self.actions.values().filter_map(|step| match step {
+            Step::Keys(keys) => Some(keys),
+            Step::Exec(_) => None,
+        });
         for key in chords.chain(self.pause.iter()).flatten() {
             set.insert(*key);
         }
@@ -217,8 +206,7 @@ impl Emulator {
         if keyboard.is_none() {
             // without a keyboard only the commands are left
             plan.pause = None;
-            plan.actions
-                .retain(|_, steps| !steps.iter().any(|step| matches!(step, Step::Keys(_))));
+            plan.actions.retain(|_, step| matches!(step, Step::Exec(_)));
         }
         Self {
             plan,
@@ -279,16 +267,13 @@ impl Emulator {
 
     /// Do what the menu entry asks.
     fn perform(&mut self, action: EmuAction) {
-        let Some(steps) = self.plan.actions.get(&action).cloned() else {
+        let Some(step) = self.plan.actions.get(&action).cloned() else {
             return;
         };
         log::info!("{action:?}");
-        for step in steps {
-            match step {
-                Step::Keys(keys) => self.press(&keys),
-                Step::Exec(argv) => spawn(&argv),
-                Step::Wait(duration) => sleep(duration),
-            }
+        match step {
+            Step::Keys(keys) => self.press(&keys),
+            Step::Exec(argv) => spawn(&argv),
         }
     }
 
@@ -366,6 +351,7 @@ mod tests {
         "menu": {"type": "native", "keys": []},
         "disk_next": {"type": "native", "keys": ["KEY_LEFTSHIFT", "KEY_PAGEDOWN"]},
         "disk_eject": {"type": "keys", "keys": ["KEY_LEFTSHIFT", "KEY_F8"]},
+        "disk_prev": {"type": "keys", "keys": ["KEY_LEFTSHIFT", "KEY_PAGEUP"]},
         "screenshot": {"type": "exec", "argv": ["/opt/retrobox/bin/retrobox-screenshot"]},
         "reset": {"type": "keys", "keys": ["KEY_NOPE"]}
     }"#;
@@ -382,24 +368,26 @@ mod tests {
         assert!(!plan.actions.contains_key(&EmuAction::Reset));
         assert_eq!(
             plan.actions[&EmuAction::SaveState],
-            vec![Step::Keys(vec![KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_F3])]
+            Step::Keys(vec![KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_F3])
         );
         assert_eq!(
             plan.actions[&EmuAction::Screenshot],
-            vec![Step::Exec(vec![
-                "/opt/retrobox/bin/retrobox-screenshot".into()
-            ])]
+            Step::Exec(vec!["/opt/retrobox/bin/retrobox-screenshot".into()])
         );
-        // eject, next, eject
-        let disc = &plan.actions[&EmuAction::NextDisc];
-        assert_eq!(disc.len(), 5);
-        assert_eq!(disc[0], disc[4]);
+        for disc in [
+            EmuAction::DiscTray,
+            EmuAction::NextDisc,
+            EmuAction::PrevDisc,
+        ] {
+            assert!(plan.actions.contains_key(&disc));
+        }
         assert!(plan.needs_keyboard());
     }
 
     #[test]
     fn next_disc_only_for_playlists_and_pause_optional() {
         let plan = Plan::new(&session("/roms/psx/game.chd", RETROARCH), false);
+        assert!(!plan.actions.contains_key(&EmuAction::DiscTray));
         assert!(!plan.actions.contains_key(&EmuAction::NextDisc));
         assert_eq!(plan.pause, None);
     }

@@ -2,7 +2,9 @@
 menu-continue = Continuar
 menu-save-state = Gardar estado
 menu-load-state = Cargar estado
+menu-disc-tray = Abrir/pechar a bandexa
 menu-next-disc = Seguinte disco
+menu-prev-disc = Disco anterior
 menu-reset = Reiniciar
 menu-emulator-menu = Menú do emulador
 menu-screenshot = Captura de pantalla

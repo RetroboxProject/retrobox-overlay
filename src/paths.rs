@@ -38,6 +38,20 @@ pub fn config_dirs() -> Vec<PathBuf> {
     vec![system, user]
 }
 
+/// The overlay's log when it is not run from a terminal (gamepadly starts it
+/// with no one reading its output): `<state dir>/logs/overlay.log`.
+pub fn log_file() -> PathBuf {
+    env_path("RETROBOX_STATEDIR")
+        .unwrap_or_else(|| {
+            env_path("XDG_STATE_HOME")
+                .or_else(|| env_path("HOME").map(|home| home.join(".local").join("state")))
+                .unwrap_or_else(env::temp_dir)
+                .join("retrobox")
+        })
+        .join("logs")
+        .join("overlay.log")
+}
+
 /// A Retrobox command: from the install's `bin/` when known, else from `$PATH`.
 pub fn retrobox_command(name: &str) -> PathBuf {
     env_path("RETROBOX_ROOTDIR")

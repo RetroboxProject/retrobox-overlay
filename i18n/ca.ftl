@@ -2,7 +2,9 @@
 menu-continue = Continua
 menu-save-state = Desa l'estat
 menu-load-state = Carrega l'estat
+menu-disc-tray = Obre/tanca la safata
 menu-next-disc = Disc següent
+menu-prev-disc = Disc anterior
 menu-reset = Reinicia
 menu-emulator-menu = Menú de l'emulador
 menu-screenshot = Captura de pantalla

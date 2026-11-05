@@ -2,9 +2,12 @@
 //!
 //! Each controller's evdev device (from session.json) is grabbed, so neither
 //! the emulator nor gamepadly's mappers see a press until the overlay closes.
-//! A grab only ever starts and ends with every button up: grabbing while the
-//! button that opened the overlay is still held would hide its release from
-//! the emulator, which would then keep it pressed (a stuck hotkey).
+//! A grab starts and ends with the buttons up: grabbing while the button
+//! that opened the overlay is still held would hide its release from the
+//! emulator, which would then keep it pressed (a stuck hotkey). A button that
+//! still reads as down after `GRAB_WAIT` (some drivers report one that never
+//! comes up) is taken as stuck and ignored from then on, so the controller is
+//! always grabbed within that time.
 //! Events are read with the Linux gamepad conventions (`BTN_SOUTH`/`BTN_EAST`,
 //! d-pad buttons or hat, left stick, `BTN_MODE` for the guide button), which
 //! the usual drivers follow (xpad, xone, hid-playstation, hid-nintendo...).
@@ -12,6 +15,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
+
+use evdev::AttributeSet;
 
 use evdev::{AbsoluteAxisCode, Device, EventSummary, KeyCode};
 
@@ -28,8 +33,10 @@ pub enum Nav {
 /// Fraction of an axis' half-range past which the stick counts as pushed.
 const STICK_THRESHOLD: f32 = 0.6;
 
+/// How long opening waits for the buttons to be released before grabbing.
+pub const GRAB_WAIT: Duration = Duration::from_millis(500);
 /// How long closing waits for the buttons to be released before ungrabbing.
-const RELEASE_TIMEOUT: Duration = Duration::from_secs(3);
+const RELEASE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Polling interval while waiting for that release.
 const RELEASE_POLL: Duration = Duration::from_millis(10);
 
@@ -37,6 +44,9 @@ const RELEASE_POLL: Duration = Duration::from_millis(10);
 pub struct Pad {
     pub device: Device,
     grabbed: bool,
+    opened: Instant,
+    /// Buttons that read as down for longer than `GRAB_WAIT` before the grab.
+    stuck: AttributeSet<KeyCode>,
     swap_confirm: bool,
     /// Axis -> (centre, half range, last direction)
     axes: HashMap<AbsoluteAxisCode, (i32, i32, i32)>,
@@ -69,6 +79,8 @@ impl Pad {
         let mut pad = Self {
             device,
             grabbed: false,
+            opened: Instant::now(),
+            stuck: AttributeSet::new(),
             swap_confirm,
             axes,
         };
@@ -76,18 +88,38 @@ impl Pad {
         Some(pad)
     }
 
-    /// Whether any button of the controller is down right now.
-    fn buttons_held(&self) -> bool {
-        self.device
-            .get_key_state()
-            .is_ok_and(|keys| keys.iter().next().is_some())
+    /// The buttons down right now, leaving out the stuck ones.
+    fn held(&self) -> Vec<KeyCode> {
+        self.device.get_key_state().map_or_else(
+            |_| Vec::new(),
+            |keys| {
+                keys.iter()
+                    .filter(|key| !self.stuck.contains(*key))
+                    .collect()
+            },
+        )
     }
 
-    /// Grab the controller, unless a button is still down: then the next
-    /// event (its release) tries again.
-    fn try_grab(&mut self) {
-        if self.grabbed || self.buttons_held() {
+    fn buttons_held(&self) -> bool {
+        !self.held().is_empty()
+    }
+
+    /// Grab the controller once its buttons are up, or once `GRAB_WAIT` has
+    /// passed (what is still down then counts as stuck). Called on every
+    /// event until grabbed, and by a timer at `GRAB_WAIT`.
+    pub fn try_grab(&mut self) {
+        if self.grabbed {
             return;
+        }
+        let held = self.held();
+        if !held.is_empty() {
+            if self.opened.elapsed() < GRAB_WAIT {
+                return;
+            }
+            log::warn!("buttons still down, taken as stuck: {held:?}");
+            for key in held {
+                self.stuck.insert(key);
+            }
         }
         let name = self.device.name().unwrap_or("controller").to_owned();
         match self.device.grab() {

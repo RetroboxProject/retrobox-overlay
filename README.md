@@ -28,11 +28,13 @@ while it is shown: nothing stays resident during the game.
   emulator nor gamepadly sees a press. It reads them with the Linux gamepad conventions
   (`BTN_SOUTH`/`BTN_EAST`, d-pad, left stick, `BTN_MODE`), following EmulationStation's
   *Switch confirm & cancel buttons*. Home or B closes it; the keyboard works too (arrows, Enter,
-  Esc, F7).
+  Esc, F7), and the mouse (hover and click an entry, wheel, click outside or right click to
+  close).
 * **The emulator.** `session.json` says how the running emulator performs each standard hotkey
   action (a key chord, a command, or the emulator's own controller combination with its
   keyboard shortcut). From that the menu offers what the emulator can do: save and load
-  state, next disc (`.m3u` playlists), reset, the emulator's menu and a screenshot. Chords are
+  state, the disc tray and next/previous disc (`.m3u` playlists), reset, the emulator's menu
+  and a screenshot. Chords are
   pressed on a virtual keyboard of the overlay's own (uinput: the user needs write access to
   `/dev/uinput`, as for gamepadly). The game is paused (its pause toggle) while the menu is
   open and resumed when it closes; emulators without a pause key, such as PC games, keep
