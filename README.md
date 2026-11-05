@@ -28,8 +28,8 @@ while it is shown: nothing stays resident during the game.
   emulator nor gamepadly sees a press. It reads them with the Linux gamepad conventions
   (`BTN_SOUTH`/`BTN_EAST`, d-pad, left stick, `BTN_MODE`), following EmulationStation's
   *Switch confirm & cancel buttons*. Home or B closes it; the keyboard works too (arrows, Enter,
-  Esc, F7), and the mouse (hover and click an entry, wheel, click outside or right click to
-  close).
+  Esc, F7), and the mouse: hovering highlights an entry, a click opens it, the wheel moves the
+  selection, and a click outside the menu or a right click closes it.
 * **The emulator.** `session.json` says how the running emulator performs each standard hotkey
   action (a key chord, a command, or the emulator's own controller combination with its
   keyboard shortcut). From that the menu offers what the emulator can do: save and load

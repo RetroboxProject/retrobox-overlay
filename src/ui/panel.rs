@@ -26,6 +26,8 @@ const FONT_SIZE_MEDIUM: f32 = 0.045;
 const FONT_SIZE_LARGE: f32 = 0.085;
 const LINE_SPACING: f32 = 1.5;
 const WIDTH_IN_LETTERS: f32 = 33.0;
+/// Opacity of the mouse hover highlight: the selector colour, faint.
+const HOVER_ALPHA: u8 = 0x50;
 
 /// What a menu entry does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +93,8 @@ pub struct Panel {
     subtitle: String,
     items: Vec<MenuItem>,
     selected: usize,
+    /// The entry under the mouse pointer: highlighted, not selected.
+    hovered: Option<usize>,
     background: Rgba,
     title_element: Element,
     text: Element,
@@ -127,6 +131,7 @@ impl Panel {
             subtitle: subtitle.to_owned(),
             items,
             selected: 0,
+            hovered: None,
             background: theme.background.center_color,
             title_element,
             text,
@@ -146,13 +151,17 @@ impl Panel {
         changed
     }
 
-    /// Select an entry; true when the selection changed.
-    pub fn select(&mut self, index: usize) -> bool {
-        if index >= self.items.len() || index == self.selected {
-            return false;
-        }
-        self.selected = index;
-        true
+    /// Highlight the entry under the pointer (None: none); true when it changed.
+    pub fn hover(&mut self, index: Option<usize>) -> bool {
+        let index = index.filter(|index| *index < self.items.len());
+        let changed = index != self.hovered;
+        self.hovered = index;
+        changed
+    }
+
+    /// What an entry does.
+    pub fn action(&self, index: usize) -> Option<MenuAction> {
+        self.items.get(index).map(|item| item.action)
     }
 
     /// The entry at height `y` of the panel (surface coordinates), if any.
@@ -250,6 +259,15 @@ impl Panel {
             let selected = index == self.selected;
             if selected {
                 fill_selector(&mut pixmap, y, width, row_height, style);
+            } else if self.hovered == Some(index) {
+                fill(
+                    &mut pixmap,
+                    0.0,
+                    y,
+                    width,
+                    row_height,
+                    style.selector_color.with_alpha(HOVER_ALPHA),
+                );
             }
             fonts.draw(
                 &mut pixmap,

@@ -20,6 +20,13 @@ impl Rgba {
         tiny_skia::Color::from_rgba8(r, g, b, a)
     }
 
+    /// The same colour with its opacity scaled by `alpha` (0..=255).
+    pub fn with_alpha(self, alpha: u8) -> Self {
+        let [r, g, b, a] = self.0.to_be_bytes();
+        let a = (u16::from(a) * u16::from(alpha) / 255) as u8;
+        Self(u32::from_be_bytes([r, g, b, a]))
+    }
+
     /// The cosmic-text colour.
     pub fn to_text_color(self) -> cosmic_text::Color {
         let [r, g, b, a] = self.0.to_be_bytes();

@@ -495,6 +495,23 @@ impl State {
         }
     }
 
+    /// Leave the overlay as an entry asks.
+    fn choose(&mut self, index: usize) {
+        let action = self
+            .panel
+            .as_ref()
+            .and_then(|(panel, _)| panel.action(index));
+        self.finish(action);
+    }
+
+    fn finish(&mut self, action: Option<MenuAction>) {
+        self.outcome = Some(match action {
+            Some(MenuAction::Quit) => Outcome::Quit,
+            Some(MenuAction::Emulator(action)) => Outcome::Emulator(action),
+            Some(MenuAction::Continue) | None => Outcome::Continue,
+        });
+    }
+
     fn navigate(&mut self, nav: Nav) {
         match nav {
             Nav::Up | Nav::Down => {
@@ -512,11 +529,7 @@ impl State {
                     .panel
                     .as_ref()
                     .and_then(|(panel, _)| panel.selected_action());
-                self.outcome = Some(match action {
-                    Some(MenuAction::Quit) => Outcome::Quit,
-                    Some(MenuAction::Emulator(action)) => Outcome::Emulator(action),
-                    Some(MenuAction::Continue) | None => Outcome::Continue,
-                });
+                self.finish(action);
             }
             Nav::Back | Nav::Close => self.outcome = Some(Outcome::Continue),
         }
@@ -654,7 +667,7 @@ const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 
 impl PointerHandler for State {
-    /// Hovering an entry selects it, a click opens it; a click anywhere else
+    /// Hovering an entry highlights it, a click opens it; a click anywhere else
     /// (or the right button) closes the overlay; the wheel moves the selection.
     fn pointer_frame(
         &mut self,
@@ -685,11 +698,9 @@ impl PointerHandler for State {
                     self.hover(item);
                 }
                 PointerEventKind::Motion { .. } => self.hover(item),
+                PointerEventKind::Leave { .. } => self.hover(None),
                 PointerEventKind::Press { button, .. } => match (button, item) {
-                    (BTN_LEFT, Some(index)) => {
-                        self.hover(Some(index));
-                        self.navigate(Nav::Confirm);
-                    }
+                    (BTN_LEFT, Some(index)) => self.choose(index),
                     (BTN_LEFT, None) if !on_panel => self.navigate(Nav::Back),
                     (BTN_RIGHT, _) => self.navigate(Nav::Back),
                     _ => {}
@@ -711,12 +722,12 @@ impl PointerHandler for State {
 }
 
 impl State {
-    /// Select the entry under the pointer.
+    /// Highlight the entry under the pointer, without selecting it.
     fn hover(&mut self, item: Option<usize>) {
-        let changed = match (item, self.panel.as_mut()) {
-            (Some(index), Some((panel, _))) => panel.select(index),
-            _ => false,
-        };
+        let changed = self
+            .panel
+            .as_mut()
+            .is_some_and(|(panel, _)| panel.hover(item));
         if changed {
             self.draw_panel();
         }
