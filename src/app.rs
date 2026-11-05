@@ -49,7 +49,7 @@ use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1;
 
 use crate::config::{Config, Side, VerticalPosition};
-use crate::input::{Nav, Pad};
+use crate::input::{self, Nav, Pad};
 use crate::theme::MenuTheme;
 use crate::ui::clock::Clock;
 use crate::ui::panel::{MenuAction, MenuItem, Panel};
@@ -246,8 +246,13 @@ pub fn run(content: Content) -> Result<Outcome> {
             .context("event loop error")?;
     }
     let outcome = state.outcome.unwrap_or(Outcome::Continue);
+    // Hide the overlay first, then hand the controllers back once the button
+    // that closed it is up (see input.rs).
+    let mut pads = std::mem::take(&mut state.content.pads);
     drop(state);
     conn.flush().ok();
+    input::wait_released(&mut pads);
+    drop(pads);
     Ok(outcome)
 }
 
