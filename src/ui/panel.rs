@@ -10,11 +10,13 @@
 
 use cosmic_text::Align;
 use tiny_skia::{
-    Color, GradientStop, LinearGradient, Paint, Pixmap, Point, Rect, Shader, SpreadMode, Transform,
+    Color, FilterQuality, GradientStop, LinearGradient, Paint, Pixmap, PixmapPaint, Point, Rect,
+    Shader, SpreadMode, Transform,
 };
 
 use super::text::{FontRef, Fonts, TextBox};
 use crate::emulator::EmuAction;
+use crate::savestates::{SLOTS, StateMode};
 use crate::theme::{FontSpec, MenuTheme, Rgba, TextStyle};
 
 // MenuComponent.h / Font.h, as fractions of the screen height
@@ -34,8 +36,35 @@ const HOVER_ALPHA: u8 = 0x50;
 pub enum MenuAction {
     Continue,
     Emulator(EmuAction),
+    /// Open the save or load page.
+    States(StateMode),
+    /// Save into, or load, a slot.
+    Slot(StateMode, u32),
     Quit,
 }
+
+/// One save state slot on its page.
+pub struct SlotView {
+    pub number: u32,
+    pub label: String,
+    /// When it was saved, or that it is empty.
+    pub detail: String,
+    pub preview: Option<Pixmap>,
+    /// Empty slots cannot be loaded.
+    pub enabled: bool,
+}
+
+/// The save (or load) page: the slots, shown instead of the main entries.
+pub struct SlotPage {
+    pub mode: StateMode,
+    pub title: String,
+    pub slots: Vec<SlotView>,
+}
+
+/// Opacity of the frame drawn where a slot has no preview.
+const EMPTY_PREVIEW_ALPHA: u8 = 0x30;
+/// Opacity of the text of a slot that cannot be chosen.
+const DISABLED_ALPHA: u8 = 0x80;
 
 #[derive(Debug, Clone)]
 pub struct MenuItem {
@@ -95,6 +124,10 @@ pub struct Panel {
     selected: usize,
     /// The entry under the mouse pointer: highlighted, not selected.
     hovered: Option<usize>,
+    /// The save state page, when open; `selected`/`hovered` are then its.
+    page: Option<SlotPage>,
+    /// The main entry selected when the page was opened.
+    main_selected: usize,
     background: Rgba,
     title_element: Element,
     text: Element,
@@ -132,6 +165,8 @@ impl Panel {
             items,
             selected: 0,
             hovered: None,
+            page: None,
+            main_selected: 0,
             background: theme.background.center_color,
             title_element,
             text,
@@ -139,12 +174,37 @@ impl Panel {
         }
     }
 
-    /// Move the selection; true when it changed.
-    pub fn move_selection(&mut self, delta: i32) -> bool {
-        if self.items.is_empty() {
+    /// Show a save state page instead of the main entries.
+    pub fn open_page(&mut self, page: SlotPage) {
+        self.main_selected = self.selected;
+        self.selected = page.slots.iter().position(|slot| slot.enabled).unwrap_or(0);
+        self.hovered = None;
+        self.page = Some(page);
+    }
+
+    /// Back to the main entries; false when no page was open.
+    pub fn close_page(&mut self) -> bool {
+        if self.page.take().is_none() {
             return false;
         }
-        let count = self.items.len() as i32;
+        self.selected = self.main_selected;
+        self.hovered = None;
+        true
+    }
+
+    /// How many entries the current page has.
+    fn count(&self) -> usize {
+        self.page
+            .as_ref()
+            .map_or(self.items.len(), |page| page.slots.len())
+    }
+
+    /// Move the selection; true when it changed.
+    pub fn move_selection(&mut self, delta: i32) -> bool {
+        if self.count() == 0 {
+            return false;
+        }
+        let count = self.count() as i32;
         let next = (self.selected as i32 + delta).rem_euclid(count) as usize;
         let changed = next != self.selected;
         self.selected = next;
@@ -153,15 +213,23 @@ impl Panel {
 
     /// Highlight the entry under the pointer (None: none); true when it changed.
     pub fn hover(&mut self, index: Option<usize>) -> bool {
-        let index = index.filter(|index| *index < self.items.len());
+        let index = index.filter(|index| *index < self.count());
         let changed = index != self.hovered;
         self.hovered = index;
         changed
     }
 
-    /// What an entry does.
+    /// What an entry of the current page does (None: nothing, e.g. an
+    /// empty slot to load).
     pub fn action(&self, index: usize) -> Option<MenuAction> {
-        self.items.get(index).map(|item| item.action)
+        match &self.page {
+            Some(page) => page
+                .slots
+                .get(index)
+                .filter(|slot| slot.enabled)
+                .map(|slot| MenuAction::Slot(page.mode, slot.number)),
+            None => self.items.get(index).map(|item| item.action),
+        }
     }
 
     /// The entry at height `y` of the panel (surface coordinates), if any.
@@ -170,9 +238,20 @@ impl Panel {
         if y < top {
             return None;
         }
-        let pitch = self.text.font.line_height + self.line();
+        let pitch = if self.page.is_some() {
+            self.slot_height()
+        } else {
+            self.text.font.line_height + self.line()
+        };
         let index = ((y - top) / pitch) as usize;
-        (index < self.items.len()).then_some(index)
+        (index < self.count()).then_some(index)
+    }
+
+    /// The height of a slot row: the four fill the panel, previews no larger
+    /// than about a third of its width.
+    fn slot_height(&self) -> f32 {
+        let free = self.screen_height - self.header_height();
+        (free / SLOTS.len() as f32).min(self.width as f32 * 0.3)
     }
 
     /// The thickness of the separators.
@@ -181,12 +260,21 @@ impl Panel {
     }
 
     pub fn selected_action(&self) -> Option<MenuAction> {
-        self.items.get(self.selected).map(|item| item.action)
+        self.action(self.selected)
+    }
+
+    /// The header's two lines: the game and "developer · year", or on a
+    /// save state page, the page and the game.
+    fn header_texts(&self) -> (&str, &str) {
+        match &self.page {
+            Some(page) => (&page.title, &self.title),
+            None => (&self.title, &self.subtitle),
+        }
     }
 
     fn header_height(&self) -> f32 {
         let h = self.screen_height;
-        if self.subtitle.is_empty() {
+        if self.header_texts().1.is_empty() {
             self.title_element.letter_height + h * TITLE_VERT_PADDING
         } else {
             self.title_element.letter_height
@@ -203,19 +291,35 @@ impl Panel {
         pixmap.fill(self.background.to_color());
 
         let padding = (width * 0.04).max(20.0);
-        let inner = width - 2.0 * padding;
         let header = self.header_height();
-        let line = self.line();
+        self.draw_header(&mut pixmap, fonts, padding, header);
+        fill(
+            &mut pixmap,
+            0.0,
+            header - self.line(),
+            width,
+            self.line(),
+            self.text.style.separator_color,
+        );
+        match &self.page {
+            Some(page) => self.draw_slots(&mut pixmap, fonts, page, padding, header),
+            None => self.draw_items(&mut pixmap, fonts, padding, header),
+        }
+        Some(pixmap)
+    }
 
-        // header: game name, then "developer · year"
-        let title_box_height = if self.subtitle.is_empty() {
+    /// The header: its title, fitted to the width, and the smaller line.
+    fn draw_header(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, padding: f32, header: f32) {
+        let inner = self.width as f32 - 2.0 * padding;
+        let (title, subtitle) = self.header_texts();
+        let title_box_height = if subtitle.is_empty() {
             header
         } else {
             header - self.small.font.line_height - self.screen_height * SUBTITLE_VERT_PADDING
         };
-        let (title_font, title) = fonts.fit(&self.title_element.font, &self.title, inner, 0.6);
+        let (title_font, title) = fonts.fit(&self.title_element.font, title, inner, 0.6);
         fonts.draw(
-            &mut pixmap,
+            pixmap,
             &title_font,
             &title,
             TextBox {
@@ -227,11 +331,12 @@ impl Panel {
             },
             self.title_element.style.color,
         );
-        if !self.subtitle.is_empty() {
+        if !subtitle.is_empty() {
+            let (font, subtitle) = fonts.fit(&self.small.font, subtitle, inner, 0.8);
             fonts.draw(
-                &mut pixmap,
-                &self.small.font,
-                &self.subtitle,
+                pixmap,
+                &font,
+                &subtitle,
                 TextBox {
                     x: padding,
                     y: title_box_height,
@@ -242,35 +347,38 @@ impl Panel {
                 self.small.style.color,
             );
         }
+    }
 
-        // rows
+    /// The background of a row: the selector, the hover highlight or nothing.
+    fn draw_row_background(&self, pixmap: &mut Pixmap, index: usize, y: f32, height: f32) {
+        let width = self.width as f32;
+        let style = &self.text.style;
+        if index == self.selected {
+            fill_selector(pixmap, y, width, height, style);
+        } else if self.hovered == Some(index) {
+            fill(
+                pixmap,
+                0.0,
+                y,
+                width,
+                height,
+                style.selector_color.with_alpha(HOVER_ALPHA),
+            );
+        }
+    }
+
+    /// The main entries, one line each.
+    fn draw_items(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, padding: f32, header: f32) {
+        let width = self.width as f32;
+        let inner = width - 2.0 * padding;
+        let line = self.line();
         let row_height = self.text.font.line_height;
         let style = &self.text.style;
         let mut y = header;
-        fill(
-            &mut pixmap,
-            0.0,
-            y - line,
-            width,
-            line,
-            style.separator_color,
-        );
         for (index, item) in self.items.iter().enumerate() {
-            let selected = index == self.selected;
-            if selected {
-                fill_selector(&mut pixmap, y, width, row_height, style);
-            } else if self.hovered == Some(index) {
-                fill(
-                    &mut pixmap,
-                    0.0,
-                    y,
-                    width,
-                    row_height,
-                    style.selector_color.with_alpha(HOVER_ALPHA),
-                );
-            }
+            self.draw_row_background(pixmap, index, y, row_height);
             fonts.draw(
-                &mut pixmap,
+                pixmap,
                 &self.text.font,
                 &item.label.to_uppercase(),
                 TextBox {
@@ -280,18 +388,124 @@ impl Panel {
                     height: row_height,
                     align: Align::Left,
                 },
-                if selected {
+                if index == self.selected {
                     style.selected_color
                 } else {
                     style.color
                 },
             );
             y += row_height;
-            fill(&mut pixmap, 0.0, y, width, line, style.separator_color);
+            fill(pixmap, 0.0, y, width, line, style.separator_color);
             y += line;
         }
-        Some(pixmap)
     }
+
+    /// The save state slots: preview on the left, slot and date on the right.
+    fn draw_slots(
+        &self,
+        pixmap: &mut Pixmap,
+        fonts: &mut Fonts,
+        page: &SlotPage,
+        padding: f32,
+        header: f32,
+    ) {
+        let width = self.width as f32;
+        let line = self.line();
+        let row = self.slot_height();
+        let style = &self.text.style;
+        let margin = row * 0.1;
+        let preview_height = row - 2.0 * margin;
+        let preview_width = preview_height * 4.0 / 3.0;
+        let text_x = padding + preview_width + padding;
+        let text_width = (width - text_x - padding).max(1.0);
+
+        for (index, slot) in page.slots.iter().enumerate() {
+            let y = header + index as f32 * row;
+            self.draw_row_background(pixmap, index, y, row - line);
+            let color = if index == self.selected {
+                style.selected_color
+            } else {
+                style.color
+            };
+            let color = if slot.enabled {
+                color
+            } else {
+                color.with_alpha(DISABLED_ALPHA)
+            };
+
+            let frame = (padding, y + margin, preview_width, preview_height);
+            match &slot.preview {
+                Some(preview) => draw_fitted(pixmap, preview, frame),
+                None => fill(
+                    pixmap,
+                    frame.0,
+                    frame.1,
+                    frame.2,
+                    frame.3,
+                    style.color.with_alpha(EMPTY_PREVIEW_ALPHA),
+                ),
+            }
+
+            let middle = y + row / 2.0;
+            let (label_font, label) =
+                fonts.fit(&self.text.font, &slot.label.to_uppercase(), text_width, 0.7);
+            fonts.draw(
+                pixmap,
+                &label_font,
+                &label,
+                TextBox {
+                    x: text_x,
+                    y: middle - self.text.font.line_height,
+                    width: text_width,
+                    height: self.text.font.line_height,
+                    align: Align::Left,
+                },
+                color,
+            );
+            let (detail_font, detail) = fonts.fit(&self.small.font, &slot.detail, text_width, 0.7);
+            fonts.draw(
+                pixmap,
+                &detail_font,
+                &detail,
+                TextBox {
+                    x: text_x,
+                    y: middle,
+                    width: text_width,
+                    height: self.small.font.line_height,
+                    align: Align::Left,
+                },
+                color,
+            );
+            fill(
+                pixmap,
+                0.0,
+                y + row - line,
+                width,
+                line,
+                style.separator_color,
+            );
+        }
+    }
+}
+
+/// Draw an image scaled to fit a frame (x, y, width, height), centred.
+fn draw_fitted(pixmap: &mut Pixmap, image: &Pixmap, frame: (f32, f32, f32, f32)) {
+    let (x, y, width, height) = frame;
+    let scale = (width / image.width() as f32).min(height / image.height() as f32);
+    let left = x + (width - image.width() as f32 * scale) / 2.0;
+    let top = y + (height - image.height() as f32 * scale) / 2.0;
+    let paint = PixmapPaint {
+        quality: FilterQuality::Bilinear,
+        ..PixmapPaint::default()
+    };
+    pixmap.draw_pixmap(
+        0,
+        0,
+        image.as_ref(),
+        &paint,
+        Transform::from_row(scale, 0.0, 0.0, scale, left, top),
+        None,
+    );
 }
 
 fn fill(pixmap: &mut Pixmap, x: f32, y: f32, width: f32, height: f32, color: Rgba) {

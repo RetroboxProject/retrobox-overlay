@@ -35,6 +35,17 @@ pub enum Binding {
     },
 }
 
+/// Where the game's save states are and how to ask the emulator for them
+/// (RetroArch: its command pipe; states are `<dir>/<name>.state<N>`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct SaveStatesInfo {
+    pub control: String,
+    pub dir: String,
+    pub name: String,
+    #[serde(default)]
+    pub slot: i32,
+}
+
 /// What `session.json` says (only the parts the overlay uses).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Session {
@@ -53,6 +64,8 @@ pub struct Session {
     pub game_info: String,
     #[serde(default)]
     pub menu_theme: String,
+    #[serde(default)]
+    pub savestates: Option<SaveStatesInfo>,
 }
 
 impl Session {

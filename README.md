@@ -39,6 +39,13 @@ while it is shown: nothing stays resident during the game.
   `/dev/uinput`, as for gamepadly). The game is paused (its pause toggle) while the menu is
   open and resumed when it closes; emulators without a pause key, such as PC games, keep
   running.
+* **Save states** (RetroArch). *Save state* and *Load state* open a page of four slots, each with
+  the preview RetroArch saves with the state and its date. The slots are RetroArch's own
+  `<saves>/<folder>/<game>.state1`…`state4` files, so EmulationStation lists the same states.
+  The overlay talks to RetroArch through the command pipe the launcher gives it as standard
+  input (`stdin_cmd_enable`): `LOAD_STATE_SLOT N` to load; to save, it moves RetroArch's current
+  slot to the chosen one (`STATE_SLOT_PLUS`/`MINUS`, keeping track of it, since Retrobox leaves
+  no other way to change it) and sends `SAVE_STATE`.
 * **Leaving the game** runs `retrobox-emukill`.
 
 ## Requirements

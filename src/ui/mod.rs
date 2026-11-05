@@ -2,6 +2,7 @@
 
 pub mod clock;
 pub mod panel;
+pub mod states;
 pub mod text;
 
 /// Copy a tiny-skia pixmap (premultiplied RGBA) into a `wl_shm` ARGB8888 buffer

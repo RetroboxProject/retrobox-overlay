@@ -6,7 +6,7 @@
 
 use std::env;
 
-use fluent_bundle::{FluentBundle, FluentResource};
+use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
 use unic_langid::LanguageIdentifier;
 
 /// Language code -> Fluent file and the chrono locale of its main country.
@@ -92,11 +92,22 @@ impl Translator {
 
     /// The text of a message id (the id itself when no language has it).
     pub fn text(&self, id: &str) -> String {
+        self.format(id, None)
+    }
+
+    /// The text of a message with one numeric argument (`{ $name }`).
+    pub fn text_with(&self, id: &str, name: &str, value: i64) -> String {
+        let mut args = FluentArgs::new();
+        args.set(name, value);
+        self.format(id, Some(&args))
+    }
+
+    fn format(&self, id: &str, args: Option<&FluentArgs>) -> String {
         for bundle in [&self.bundle, &self.fallback] {
             if let Some(pattern) = bundle.get_message(id).and_then(|message| message.value()) {
                 let mut errors = Vec::new();
                 return bundle
-                    .format_pattern(pattern, None, &mut errors)
+                    .format_pattern(pattern, args, &mut errors)
                     .into_owned();
             }
         }

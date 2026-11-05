@@ -9,6 +9,10 @@ menu-reset = Reinicia
 menu-emulator-menu = Menú de l'emulador
 menu-screenshot = Captura de pantalla
 menu-quit = Surt del joc
+# save state slots; the date is a strftime format (chrono)
+slot-label = Ranura { $number }
+slot-empty = Buida
+slot-date-format = %-d %b %Y · %H:%M
 # strftime formats of the clock (chrono), used unless overlay.ini sets its own
 clock-date-format = %A, %-d %B de %Y
 clock-time-format = %H:%M:%S

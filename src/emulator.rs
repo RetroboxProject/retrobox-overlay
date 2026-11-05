@@ -22,6 +22,7 @@ use std::time::Duration;
 use evdev::uinput::VirtualDevice;
 use evdev::{AttributeSet, KeyCode, KeyEvent};
 
+use crate::savestates::SaveStates;
 use crate::session::{Binding, Session};
 
 /// Name of the virtual keyboard (visible in `libinput list-devices`).
@@ -94,6 +95,14 @@ impl EmuAction {
             Self::Screenshot => "screenshot",
         }
     }
+}
+
+/// What the menu asked for, done once the overlay is gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Request {
+    Action(EmuAction),
+    SaveState(u32),
+    LoadState(u32),
 }
 
 /// One thing to do to the emulator.
@@ -178,6 +187,7 @@ pub struct Emulator {
     plan: Plan,
     keyboard: Option<VirtualDevice>,
     paused: bool,
+    states: Option<SaveStates>,
 }
 
 impl Emulator {
@@ -187,11 +197,21 @@ impl Emulator {
             plan: Plan::default(),
             keyboard: None,
             paused: false,
+            states: None,
         }
     }
 
-    pub fn new(session: &Session, pause_game: bool) -> Self {
+    pub fn new(session: &Session, pause_game: bool, runtime_dir: &std::path::Path) -> Self {
         let mut plan = Plan::new(session, pause_game);
+        let states = session
+            .savestates
+            .as_ref()
+            .and_then(|info| SaveStates::new(info, session.pid, runtime_dir));
+        if states.is_some() {
+            // by slot, in their own menu pages, instead of the current slot's
+            plan.actions.remove(&EmuAction::SaveState);
+            plan.actions.remove(&EmuAction::LoadState);
+        }
         let keyboard = if plan.needs_keyboard() {
             match create_keyboard(&plan.keys()) {
                 Ok(device) => Some(device),
@@ -212,7 +232,13 @@ impl Emulator {
             plan,
             keyboard,
             paused: false,
+            states,
         }
+    }
+
+    /// The game's save states by slot, when the overlay manages them.
+    pub fn states(&self) -> Option<&SaveStates> {
+        self.states.as_ref()
     }
 
     /// The actions the menu can offer, in menu order.
@@ -242,13 +268,16 @@ impl Emulator {
     }
 
     /// Once the overlay is gone: resume the game and do what the menu asked.
-    pub fn after_close(&mut self, action: Option<EmuAction>) {
-        if self.paused || action.is_some() {
+    pub fn after_close(&mut self, request: Option<Request>) {
+        if self.paused || request.is_some() {
             sleep(FOCUS_RETURN);
         }
         self.resume();
-        if let Some(action) = action {
-            self.perform(action);
+        match (request, &self.states) {
+            (Some(Request::Action(action)), _) => self.perform(action),
+            (Some(Request::SaveState(slot)), Some(states)) => states.save(slot),
+            (Some(Request::LoadState(slot)), Some(states)) => states.load(slot),
+            _ => {}
         }
     }
 

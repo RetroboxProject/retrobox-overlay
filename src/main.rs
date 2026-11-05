@@ -12,6 +12,7 @@ mod i18n;
 mod input;
 mod instance;
 mod paths;
+mod savestates;
 mod session;
 mod theme;
 mod ui;
@@ -28,9 +29,11 @@ use crate::emulator::Emulator;
 use crate::i18n::Translator;
 use crate::input::Pad;
 use crate::instance::Instance;
+use crate::savestates::StateMode;
 use crate::session::{GameInfo, Session};
 use crate::theme::MenuTheme;
 use crate::ui::panel::{MenuAction, MenuItem};
+use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
 
 const HELP: &str = "\
@@ -118,10 +121,13 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
                 session.system,
                 session.emulator
             );
-            Emulator::new(session, config.pause_game)
+            Emulator::new(session, config.pause_game, &runtime_dir)
         }
         _ => Emulator::none(),
     };
+    let states = emulator
+        .states()
+        .map(|states| StatesMenu::new(states.clone(), &translator));
     let items = menu_items(&translator, &emulator);
 
     let time_key = if theme.clock12h {
@@ -166,6 +172,7 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
         locale: translator.locale(),
         pads,
         emulator,
+        states,
         launched,
     })?;
     // The overlay is gone and the controllers are the game's again; the
@@ -174,7 +181,7 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
         Outcome::Quit if !demo => quit_game(),
         Outcome::Quit => {}
         Outcome::Continue => emulator.after_close(None),
-        Outcome::Emulator(action) => emulator.after_close(Some(action)),
+        Outcome::Request(request) => emulator.after_close(Some(request)),
     }
     Ok(())
 }
@@ -207,6 +214,10 @@ fn menu_items(translator: &Translator, emulator: &Emulator) -> Vec<MenuItem> {
         action,
     };
     let mut items = vec![item("menu-continue", MenuAction::Continue)];
+    if emulator.states().is_some() {
+        items.push(item("menu-save-state", MenuAction::States(StateMode::Save)));
+        items.push(item("menu-load-state", MenuAction::States(StateMode::Load)));
+    }
     items.extend(
         emulator
             .actions()

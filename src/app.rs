@@ -53,11 +53,13 @@ use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1;
 
 use crate::config::{Config, Side, VerticalPosition};
-use crate::emulator::{self, EmuAction, Emulator};
+use crate::emulator::{self, Emulator, Request};
 use crate::input::{self, Nav, Pad};
+use crate::savestates::StateMode;
 use crate::theme::MenuTheme;
 use crate::ui::clock::Clock;
 use crate::ui::panel::{MenuAction, MenuItem, Panel};
+use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
 use crate::ui::to_argb8888;
 
@@ -70,7 +72,7 @@ const CLOCK_MARGIN: f32 = 0.08;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Continue,
-    Emulator(EmuAction),
+    Request(Request),
     Quit,
 }
 
@@ -86,6 +88,8 @@ pub struct Content {
     pub locale: chrono::Locale,
     pub pads: Vec<Pad>,
     pub emulator: Emulator,
+    /// The save and load pages, when the emulator's states can be managed.
+    pub states: Option<StatesMenu>,
     /// When the process started, to log how long the menu took to show.
     pub launched: Instant,
 }
@@ -495,21 +499,57 @@ impl State {
         }
     }
 
-    /// Leave the overlay as an entry asks.
+    /// Do what an entry asks.
     fn choose(&mut self, index: usize) {
         let action = self
             .panel
             .as_ref()
             .and_then(|(panel, _)| panel.action(index));
-        self.finish(action);
+        self.activate(action);
     }
 
-    fn finish(&mut self, action: Option<MenuAction>) {
-        self.outcome = Some(match action {
-            Some(MenuAction::Quit) => Outcome::Quit,
-            Some(MenuAction::Emulator(action)) => Outcome::Emulator(action),
-            Some(MenuAction::Continue) | None => Outcome::Continue,
-        });
+    fn activate(&mut self, action: Option<MenuAction>) {
+        self.outcome = match action {
+            None => return, // e.g. an empty slot to load
+            Some(MenuAction::States(mode)) => {
+                self.open_states(mode);
+                return;
+            }
+            Some(MenuAction::Continue) => Some(Outcome::Continue),
+            Some(MenuAction::Quit) => Some(Outcome::Quit),
+            Some(MenuAction::Emulator(action)) => Some(Outcome::Request(Request::Action(action))),
+            Some(MenuAction::Slot(StateMode::Save, slot)) => {
+                Some(Outcome::Request(Request::SaveState(slot)))
+            }
+            Some(MenuAction::Slot(StateMode::Load, slot)) => {
+                Some(Outcome::Request(Request::LoadState(slot)))
+            }
+        };
+    }
+
+    /// Show the save or load page, with what each slot holds now.
+    fn open_states(&mut self, mode: StateMode) {
+        let Some(menu) = &self.content.states else {
+            return;
+        };
+        let page = menu.page(mode);
+        if let Some((panel, _)) = self.panel.as_mut() {
+            panel.open_page(page);
+            self.draw_panel();
+        }
+    }
+
+    /// Back: from a save state page to the main entries, else close.
+    fn back(&mut self) {
+        let closed_page = self
+            .panel
+            .as_mut()
+            .is_some_and(|(panel, _)| panel.close_page());
+        if closed_page {
+            self.draw_panel();
+        } else {
+            self.outcome = Some(Outcome::Continue);
+        }
     }
 
     fn navigate(&mut self, nav: Nav) {
@@ -529,9 +569,10 @@ impl State {
                     .panel
                     .as_ref()
                     .and_then(|(panel, _)| panel.selected_action());
-                self.finish(action);
+                self.activate(action);
             }
-            Nav::Back | Nav::Close => self.outcome = Some(Outcome::Continue),
+            Nav::Back => self.back(),
+            Nav::Close => self.outcome = Some(Outcome::Continue),
         }
     }
 }
