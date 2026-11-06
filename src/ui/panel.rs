@@ -75,6 +75,8 @@ const DISABLED_ALPHA: u8 = 0x80;
 pub struct MenuItem {
     pub label: String,
     pub action: MenuAction,
+    /// Entries that can do nothing right now are shown dimmed.
+    pub enabled: bool,
 }
 
 /// A text element of the theme at this screen's size.
@@ -135,6 +137,9 @@ pub struct Panel {
     main_selected: usize,
     /// Whether the main entries show their icons.
     icons: bool,
+    /// A line about the game's state under the header (the disc in the
+    /// drive), on the main page.
+    status: Option<String>,
     background: Rgba,
     title_element: Element,
     text: Element,
@@ -175,10 +180,26 @@ impl Panel {
             page: None,
             main_selected: 0,
             icons: true,
+            status: None,
             background: theme.background.center_color,
             title_element,
             text,
             small,
+        }
+    }
+
+    /// The line under the header (None: none).
+    pub fn set_status(&mut self, status: Option<String>) {
+        self.status = status;
+    }
+
+    /// Change the label of an entry and whether it can be chosen.
+    pub fn set_entry(&mut self, action: MenuAction, label: Option<&str>, enabled: bool) {
+        for item in self.items.iter_mut().filter(|item| item.action == action) {
+            if let Some(label) = label {
+                label.clone_into(&mut item.label);
+            }
+            item.enabled = enabled;
         }
     }
 
@@ -241,7 +262,11 @@ impl Panel {
                 .get(index)
                 .filter(|slot| slot.enabled)
                 .map(|slot| MenuAction::Slot(page.mode, slot.number)),
-            None => self.items.get(index).map(|item| item.action),
+            None => self
+                .items
+                .get(index)
+                .filter(|item| item.enabled)
+                .map(|item| item.action),
         }
     }
 
@@ -285,15 +310,29 @@ impl Panel {
         }
     }
 
+    /// The status line, shown on the main page only.
+    fn status_line(&self) -> Option<&str> {
+        self.page
+            .is_none()
+            .then_some(self.status.as_deref())
+            .flatten()
+    }
+
+    /// The small lines under the title: the subtitle and the status line.
+    fn header_lines(&self) -> usize {
+        usize::from(!self.header_texts().1.is_empty()) + usize::from(self.status_line().is_some())
+    }
+
     fn header_height(&self) -> f32 {
         let h = self.screen_height;
-        if self.header_texts().1.is_empty() {
-            self.title_element.letter_height + h * TITLE_VERT_PADDING
-        } else {
-            self.title_element.letter_height
-                + h * TITLE_WITHSUB_VERT_PADDING
-                + self.small.font.line_height
-                + h * SUBTITLE_VERT_PADDING
+        match self.header_lines() {
+            0 => self.title_element.letter_height + h * TITLE_VERT_PADDING,
+            lines => {
+                self.title_element.letter_height
+                    + h * TITLE_WITHSUB_VERT_PADDING
+                    + self.small.font.line_height * lines as f32
+                    + h * SUBTITLE_VERT_PADDING
+            }
         }
     }
 
@@ -321,14 +360,16 @@ impl Panel {
         Some(pixmap)
     }
 
-    /// The header: its title, fitted to the width, and the smaller line.
+    /// The header: its title, fitted to the width, and the smaller lines.
     fn draw_header(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, padding: f32, header: f32) {
         let inner = self.width as f32 - 2.0 * padding;
         let (title, subtitle) = self.header_texts();
-        let title_box_height = if subtitle.is_empty() {
+        let small_height = self.small.font.line_height;
+        let lines = self.header_lines();
+        let title_box_height = if lines == 0 {
             header
         } else {
-            header - self.small.font.line_height - self.screen_height * SUBTITLE_VERT_PADDING
+            header - small_height * lines as f32 - self.screen_height * SUBTITLE_VERT_PADDING
         };
         let (title_font, title) = fonts.fit(&self.title_element.font, title, inner, 0.6);
         fonts.draw(
@@ -344,6 +385,7 @@ impl Panel {
             },
             self.title_element.style.color,
         );
+        let mut y = title_box_height;
         if !subtitle.is_empty() {
             let (font, subtitle) = fonts.fit(&self.small.font, subtitle, inner, 0.8);
             fonts.draw(
@@ -352,14 +394,59 @@ impl Panel {
                 &subtitle,
                 TextBox {
                     x: padding,
-                    y: title_box_height,
+                    y,
                     width: inner,
-                    height: self.small.font.line_height,
+                    height: small_height,
                     align: Align::Center,
                 },
                 self.small.style.color,
             );
+            y += small_height;
         }
+        if let Some(status) = self.status_line() {
+            self.draw_status(pixmap, fonts, status, (padding, y, inner));
+        }
+    }
+
+    /// The status line: the disc icon and the text, centred together.
+    fn draw_status(
+        &self,
+        pixmap: &mut Pixmap,
+        fonts: &mut Fonts,
+        status: &str,
+        at: (f32, f32, f32),
+    ) {
+        let (padding, y, inner) = at;
+        let height = self.small.font.line_height;
+        let color = self.small.style.color;
+        let icon_size = (self.small.letter_height * ICON_SCALE).round().max(1.0);
+        let gap = icon_size * 0.4;
+        let (font, status) = fonts.fit(&self.small.font, status, inner - icon_size - gap, 0.8);
+        let text_width = fonts.measure(&font, &status);
+        let left = padding + ((inner - icon_size - gap - text_width) / 2.0).max(0.0);
+        if let Some(image) = Icon::Disc.render(icon_size as u32, color) {
+            pixmap.draw_pixmap(
+                left.round() as i32,
+                (y + (height - icon_size) / 2.0).round() as i32,
+                image.as_ref(),
+                &PixmapPaint::default(),
+                Transform::identity(),
+                None,
+            );
+        }
+        fonts.draw(
+            pixmap,
+            &font,
+            &status,
+            TextBox {
+                x: left + icon_size + gap,
+                y,
+                width: text_width + 1.0,
+                height,
+                align: Align::Left,
+            },
+            color,
+        );
     }
 
     /// The background of a row: the selector, the hover highlight or nothing.
@@ -401,6 +488,11 @@ impl Panel {
                 style.selected_color
             } else {
                 style.color
+            };
+            let color = if item.enabled {
+                color
+            } else {
+                color.with_alpha(DISABLED_ALPHA)
             };
             if self.icons
                 && let Some(icon) = Icon::for_action(item.action)

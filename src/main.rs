@@ -161,6 +161,7 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
         pads,
         emulator,
         states,
+        translator,
         launched,
     })?;
     // The overlay is gone and the controllers are the game's again; the
@@ -226,6 +227,7 @@ fn menu_items(translator: &Translator, emulator: &Emulator) -> Vec<MenuItem> {
     let item = |key: &str, action| MenuItem {
         label: translator.text(key),
         action,
+        enabled: true,
     };
     let mut items = vec![item("menu-continue", MenuAction::Continue)];
     if emulator.has_slots() {

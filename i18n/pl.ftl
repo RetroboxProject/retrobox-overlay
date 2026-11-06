@@ -3,6 +3,8 @@ menu-continue = Kontynuuj
 menu-save-state = Zapisz stan
 menu-load-state = Wczytaj stan
 menu-disc-tray = Otwórz/zamknij tackę
+menu-open-tray = Otwórz tackę
+menu-close-tray = Zamknij tackę
 menu-next-disc = Następna płyta
 menu-prev-disc = Poprzednia płyta
 menu-reset = Uruchom ponownie
@@ -17,3 +19,6 @@ slot-date-format = %-d %b %Y · %H:%M
 clock-date-format = %A, %-d %B %Y
 clock-time-format = %H:%M:%S
 clock-time-format-12h = %I:%M:%S %p
+# the disc line under the game's name (games of several discs)
+disc-status = Płyta { $current } z { $count }
+disc-tray-open = tacka otwarta

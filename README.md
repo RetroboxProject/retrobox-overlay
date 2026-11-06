@@ -37,6 +37,12 @@ while it is shown: nothing stays resident during the game.
   starts, else a command line. The menu offers what the channel says the emulator can do:
   save and load state, the disc tray and next/previous disc (`.m3u` playlists), reset, the
   emulator's menu and a screenshot, each with its icon.
+* **Discs** (`.m3u` playlists). A line under the game's name shows the disc in the drive and
+  whether the tray is open. The tray entry opens or closes it, and next/previous disc change
+  the disc, like Batocera: only with the tray open, and not past the first or last disc (the
+  entries are dimmed otherwise). These are done with the menu open, which shows the result.
+  The launcher keeps track of the disc (starting from the one RetroArch restores) because every
+  disc change goes through its control channel, the disc hotkeys too (`retrobox-control`).
 * **Pause.** The game is paused when the overlay opens (asked before it shows itself, while the
   game still has the keyboard focus) and runs again only when you go back to it: *Continue*
   or an action. Closing the overlay any other way (back, Home, a click outside, another window
@@ -47,7 +53,7 @@ while it is shown: nothing stays resident during the game.
   compositor gives it to another window (Alt+Tab, a click elsewhere), the overlay closes.
 * **Save states** (RetroArch). *Save state* and *Load state* open a page of four slots, each with
   the preview RetroArch saves with the state and its date. The slots are RetroArch's own
-  `<saves>/<folder>/<game>.state1`…`state4` files, so EmulationStation lists the same states.
+  `<saves>/<system>/<game>.state1`…`state4` files, where EmulationStation looks too.
   Loading is `LOAD_STATE_SLOT N`; for saving the launcher moves RetroArch's current slot to the
   chosen one (`STATE_SLOT_PLUS`/`MINUS`, keeping track of it, since Retrobox leaves no other way
   to change it) and sends `SAVE_STATE`.

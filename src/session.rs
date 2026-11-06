@@ -20,6 +20,10 @@ pub struct SessionController {
 
 /// The launcher's control channel (see emulator.rs).
 #[derive(Debug, Clone, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the flags session.json publishes"
+)]
 pub struct ControlInfo {
     pub socket: String,
     /// Whether the game can be paused.
@@ -31,6 +35,9 @@ pub struct ControlInfo {
     /// Whether save states go by slot.
     #[serde(default)]
     pub slots: bool,
+    /// Whether the channel knows the disc in the drive and the tray (`discs`).
+    #[serde(default)]
+    pub discs: bool,
     /// Whether requests may press keys (which need the game focused).
     #[serde(default)]
     pub focus: bool,

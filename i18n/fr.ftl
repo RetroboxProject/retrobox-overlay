@@ -3,6 +3,8 @@ menu-continue = Continuer
 menu-save-state = Sauvegarder l'état
 menu-load-state = Charger l'état
 menu-disc-tray = Ouvrir/fermer le tiroir
+menu-open-tray = Ouvrir le tiroir
+menu-close-tray = Fermer le tiroir
 menu-next-disc = Disque suivant
 menu-prev-disc = Disque précédent
 menu-reset = Réinitialiser
@@ -17,3 +19,6 @@ slot-date-format = %-d %b %Y · %H:%M
 clock-date-format = %A %-d %B %Y
 clock-time-format = %H:%M:%S
 clock-time-format-12h = %I:%M:%S %p
+# the disc line under the game's name (games of several discs)
+disc-status = Disque { $current } sur { $count }
+disc-tray-open = tiroir ouvert

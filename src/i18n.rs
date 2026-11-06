@@ -97,8 +97,15 @@ impl Translator {
 
     /// The text of a message with one numeric argument (`{ $name }`).
     pub fn text_with(&self, id: &str, name: &str, value: i64) -> String {
+        self.text_args(id, &[(name, value)])
+    }
+
+    /// The text of a message with numeric arguments.
+    pub fn text_args(&self, id: &str, values: &[(&str, i64)]) -> String {
         let mut args = FluentArgs::new();
-        args.set(name, value);
+        for (name, value) in values {
+            args.set(*name, *value);
+        }
         self.format(id, Some(&args))
     }
 

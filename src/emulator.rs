@@ -69,7 +69,7 @@ impl EmuAction {
     }
 
     /// Only for games made of several discs.
-    const fn is_disc(self) -> bool {
+    pub const fn is_disc(self) -> bool {
         matches!(self, Self::DiscTray | Self::NextDisc | Self::PrevDisc)
     }
 
@@ -84,6 +84,39 @@ impl EmuAction {
             Self::Reset => "reset",
             Self::Menu => "menu",
             Self::Screenshot => "screenshot",
+        }
+    }
+}
+
+/// The disc in the drive of a game made of several discs, and the tray.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiscInfo {
+    pub current: u32,
+    pub count: u32,
+    pub tray_open: bool,
+}
+
+impl DiscInfo {
+    /// From the channel's `discs` answer: `<current> <count> open|closed`.
+    fn parse(answer: &str) -> Option<Self> {
+        let mut words = answer.split_whitespace();
+        let current = words.next()?.parse().ok()?;
+        let count = words.next()?.parse().ok()?;
+        let tray_open = words.next()? == "open";
+        Some(Self {
+            current,
+            count,
+            tray_open,
+        })
+    }
+
+    /// Whether a disc entry can do anything now (a disc only changes with
+    /// the tray open, and not past the first or last disc).
+    pub fn allows(self, action: EmuAction) -> bool {
+        match action {
+            EmuAction::NextDisc => self.tray_open && self.current < self.count,
+            EmuAction::PrevDisc => self.tray_open && self.current > 1,
+            _ => true,
         }
     }
 }
@@ -184,11 +217,34 @@ impl Emulator {
         }
     }
 
-    /// Send one request and wait for its answer; true when it was done.
+    /// The disc in the drive and the tray, for a game of several discs.
+    pub fn discs(&self) -> Option<DiscInfo> {
+        if !self.control.as_ref().is_some_and(|control| control.discs) {
+            return None;
+        }
+        DiscInfo::parse(&self.request("discs")?)
+    }
+
+    /// Whether a disc action can be done with the overlay open (it needs no
+    /// keyboard focus), so the menu stays to show the result.
+    pub fn in_place(&self, action: EmuAction) -> bool {
+        action.is_disc() && self.control.as_ref().is_some_and(|control| !control.focus)
+    }
+
+    /// Do an action right away, with the overlay still open.
+    pub fn perform_now(&self, action: EmuAction) -> bool {
+        self.ask(&Request::Action(action).line())
+    }
+
+    /// Send one request; true when it was done.
     fn ask(&self, line: &str) -> bool {
-        let Some(control) = &self.control else {
-            return false;
-        };
+        self.request(line).is_some()
+    }
+
+    /// Send one request and wait for its answer: what follows its `ok`, or
+    /// None when it failed.
+    fn request(&self, line: &str) -> Option<String> {
+        let control = self.control.as_ref()?;
         let answer = UnixStream::connect(&control.socket).and_then(|mut stream| {
             stream.set_read_timeout(Some(ANSWER_TIMEOUT))?;
             stream.write_all(format!("{line}\n").as_bytes())?;
@@ -197,17 +253,17 @@ impl Emulator {
             Ok(answer.trim().to_owned())
         });
         match answer {
-            Ok(answer) if answer == "ok" => {
-                log::info!("{line}: ok");
-                true
+            Ok(answer) if answer == "ok" || answer.starts_with("ok ") => {
+                log::info!("{line}: {answer}");
+                Some(answer.trim_start_matches("ok").trim_start().to_owned())
             }
             Ok(answer) => {
                 log::warn!("{line}: {answer}");
-                false
+                None
             }
             Err(err) => {
                 log::error!("control channel {}: {err}", control.socket);
-                false
+                None
             }
         }
     }
@@ -278,6 +334,16 @@ mod tests {
             [EmuAction::SaveState, EmuAction::LoadState]
         );
         assert!(!emulator.pause_game);
+    }
+
+    #[test]
+    fn disc_answers() {
+        let discs = DiscInfo::parse("2 3 closed").unwrap();
+        assert_eq!(discs.current, 2);
+        assert!(!discs.tray_open && !discs.allows(EmuAction::NextDisc));
+        let open = DiscInfo::parse("3 3 open").unwrap();
+        assert!(!open.allows(EmuAction::NextDisc) && open.allows(EmuAction::PrevDisc));
+        assert!(DiscInfo::parse("garbage").is_none());
     }
 
     #[test]

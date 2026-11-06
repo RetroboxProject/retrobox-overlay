@@ -53,7 +53,8 @@ use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1;
 
 use crate::config::{Config, Side, VerticalPosition};
-use crate::emulator::{Emulator, Request};
+use crate::emulator::{EmuAction, Emulator, Request};
+use crate::i18n::Translator;
 use crate::input::{self, Nav, Pad};
 use crate::savestates::StateMode;
 use crate::theme::MenuTheme;
@@ -95,6 +96,8 @@ pub struct Content {
     pub emulator: Emulator,
     /// The save and load pages, when the emulator's states can be managed.
     pub states: Option<StatesMenu>,
+    /// For the texts that change while the menu is open (the disc line).
+    pub translator: Translator,
     /// When the process started, to log how long the menu took to show.
     pub launched: Instant,
 }
@@ -479,6 +482,43 @@ impl State {
         }
     }
 
+    /// Show the disc in the drive and the tray, and fit the disc entries to
+    /// them (open or close the tray; changing the disc needs it open).
+    fn refresh_discs(&mut self) {
+        let Some(discs) = self.content.emulator.discs() else {
+            return;
+        };
+        let Some((panel, _)) = self.panel.as_mut() else {
+            return;
+        };
+        let texts = &self.content.translator;
+        let mut status = texts.text_args(
+            "disc-status",
+            &[
+                ("current", i64::from(discs.current)),
+                ("count", i64::from(discs.count)),
+            ],
+        );
+        if discs.tray_open {
+            status.push_str(" · ");
+            status.push_str(&texts.text("disc-tray-open"));
+        }
+        panel.set_status(Some(status));
+        let tray = if discs.tray_open {
+            "menu-close-tray"
+        } else {
+            "menu-open-tray"
+        };
+        panel.set_entry(
+            MenuAction::Emulator(EmuAction::DiscTray),
+            Some(&texts.text(tray)),
+            true,
+        );
+        for action in [EmuAction::NextDisc, EmuAction::PrevDisc] {
+            panel.set_entry(MenuAction::Emulator(action), None, discs.allows(action));
+        }
+    }
+
     /// Do what an entry asks.
     fn choose(&mut self, index: usize) {
         let action = self
@@ -497,6 +537,14 @@ impl State {
             }
             Some(MenuAction::Continue) => Some(Outcome::Continue),
             Some(MenuAction::Quit) => Some(Outcome::Quit),
+            // disc changes are done with the menu open, which shows the result
+            Some(MenuAction::Emulator(action)) if self.content.emulator.in_place(action) => {
+                if self.content.emulator.perform_now(action) {
+                    self.refresh_discs();
+                    self.draw_panel();
+                }
+                return;
+            }
             Some(MenuAction::Emulator(action)) => Some(Outcome::Request(Request::Action(action))),
             Some(MenuAction::Slot(StateMode::Save, slot)) => {
                 Some(Outcome::Request(Request::SaveState(slot)))
@@ -585,6 +633,7 @@ impl LayerShellHandler for State {
             self.draw_dim();
             if first && size.0 > 0 && size.1 > 0 {
                 self.create_pieces();
+                self.refresh_discs();
             }
         } else if let Some((_, piece)) = self.panel.as_mut().filter(|(_, piece)| piece.is(surface))
         {

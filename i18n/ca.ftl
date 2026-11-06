@@ -3,6 +3,8 @@ menu-continue = Continua
 menu-save-state = Desa l'estat
 menu-load-state = Carrega l'estat
 menu-disc-tray = Obre/tanca la safata
+menu-open-tray = Obre la safata
+menu-close-tray = Tanca la safata
 menu-next-disc = Disc següent
 menu-prev-disc = Disc anterior
 menu-reset = Reinicia
@@ -17,3 +19,6 @@ slot-date-format = %-d %b %Y · %H:%M
 clock-date-format = %A, %-d %B de %Y
 clock-time-format = %H:%M:%S
 clock-time-format-12h = %I:%M:%S %p
+# the disc line under the game's name (games of several discs)
+disc-status = Disc { $current } de { $count }
+disc-tray-open = safata oberta

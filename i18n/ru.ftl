@@ -3,6 +3,8 @@ menu-continue = Продолжить
 menu-save-state = Сохранить состояние
 menu-load-state = Загрузить состояние
 menu-disc-tray = Открыть/закрыть лоток
+menu-open-tray = Открыть лоток
+menu-close-tray = Закрыть лоток
 menu-next-disc = Следующий диск
 menu-prev-disc = Предыдущий диск
 menu-reset = Перезапуск
@@ -17,3 +19,6 @@ slot-date-format = %-d %b %Y · %H:%M
 clock-date-format = %A, %-d %B %Y
 clock-time-format = %H:%M:%S
 clock-time-format-12h = %I:%M:%S %p
+# the disc line under the game's name (games of several discs)
+disc-status = Диск { $current } из { $count }
+disc-tray-open = лоток открыт

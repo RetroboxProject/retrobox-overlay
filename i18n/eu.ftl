@@ -3,6 +3,8 @@ menu-continue = Jarraitu
 menu-save-state = Gorde egoera
 menu-load-state = Kargatu egoera
 menu-disc-tray = Ireki/itxi erretilua
+menu-open-tray = Ireki erretilua
+menu-close-tray = Itxi erretilua
 menu-next-disc = Hurrengo diskoa
 menu-prev-disc = Aurreko diskoa
 menu-reset = Berrabiarazi
@@ -17,3 +19,6 @@ slot-date-format = %Y %b %-d · %H:%M
 clock-date-format = %A, %Y.eko %Bren %-da
 clock-time-format = %H:%M:%S
 clock-time-format-12h = %I:%M:%S %p
+# the disc line under the game's name (games of several discs)
+disc-status = { $count }tik { $current }. diskoa
+disc-tray-open = erretilua irekita

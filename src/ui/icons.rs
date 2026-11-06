@@ -25,6 +25,7 @@ pub enum Icon {
     Settings,
     Camera,
     LogOut,
+    Disc,
 }
 
 impl Icon {
@@ -61,6 +62,7 @@ impl Icon {
             Self::Settings => include_str!("../../assets/icons/settings.svg"),
             Self::Camera => include_str!("../../assets/icons/camera.svg"),
             Self::LogOut => include_str!("../../assets/icons/log-out.svg"),
+            Self::Disc => include_str!("../../assets/icons/disc-3.svg"),
         }
     }
 
@@ -103,6 +105,7 @@ mod tests {
             Icon::Settings,
             Icon::Camera,
             Icon::LogOut,
+            Icon::Disc,
         ];
         for icon in icons {
             let pixmap = icon.render(48, Rgba(0xff00_00ff)).unwrap();
