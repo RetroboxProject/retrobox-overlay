@@ -715,7 +715,7 @@ fn crop_and_scale(image_width: u32, pixels: &[u8], placement: &Placement) -> Vec
         let v = top + (bottom - top) * (y as f32 + 0.5) / height as f32;
         let source_row = ((v * image_height as f32) as usize).min(image_height.saturating_sub(1));
         let source = &pixels[source_row * image_width * 4..];
-        for (target, &x) in row.chunks_exact_mut(4).zip(&columns) {
+        for (target, &x) in row.as_chunks_mut::<4>().0.iter_mut().zip(&columns) {
             target.copy_from_slice(&source[x * 4..x * 4 + 4]);
         }
     }
