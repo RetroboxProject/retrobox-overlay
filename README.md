@@ -53,6 +53,9 @@ while it is shown: nothing stays resident during the game.
   (back, a click outside, another window taking the focus) leaves it paused. Pausing and resuming are absolute, not toggles: with
   RetroArch the launcher asks it first (`GET_STATUS`), so *Continue* always resumes the game,
   whoever paused it. Emulators without a pause, such as PC games, keep running.
+* **No window animations on top.** Under KDE Plasma the surfaces use the `on-screen-display`
+  namespace, which KWin's open and close effects (Scale, Fade, Glide) leave alone, so only the
+  overlay's own slide and fade play; elsewhere it is `retrobox-overlay`.
 * **The desktop stays usable.** The menu takes the keyboard on demand, not exclusively: when the
   compositor gives it to another window (Alt+Tab, a click elsewhere), the overlay closes.
 * **Save states** (RetroArch). *Load state* and *Save state* open a page of ten slots (it

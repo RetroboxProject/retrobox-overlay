@@ -28,7 +28,7 @@ use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1;
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 
-use super::{BTN_LEFT, BTN_RIGHT, FRAME, NAMESPACE, Outcome, Piece, State};
+use super::{BTN_LEFT, BTN_RIGHT, FRAME, Outcome, Piece, State, namespace};
 use crate::input::{Input, Nav};
 use crate::manual::{PageRequest, Rendered};
 use crate::theme::Rgba;
@@ -219,7 +219,7 @@ impl State {
             &self.qh,
             surface,
             Layer::Overlay,
-            Some(NAMESPACE),
+            Some(namespace()),
             None,
         );
         layer.set_anchor(Anchor::all());

@@ -77,7 +77,24 @@ mod manual_view;
 
 use manual_view::{ManualState, Sub};
 
+/// The layer surfaces' namespace, which compositors may match in their
+/// rules.
 const NAMESPACE: &str = "retrobox-overlay";
+/// KWin animates layer surfaces whose namespace it does not know as normal
+/// windows (its Scale, Fade or Glide effects, on top of the overlay's own
+/// slide and fade); an on-screen display it leaves alone, and it changes
+/// nothing else for a layer surface.
+const KWIN_NAMESPACE: &str = "on-screen-display";
+
+/// The namespace for this desktop.
+fn namespace() -> &'static str {
+    let kde = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktops| {
+        desktops
+            .split(':')
+            .any(|desktop| desktop.eq_ignore_ascii_case("KDE"))
+    });
+    if kde { KWIN_NAMESPACE } else { NAMESPACE }
+}
 const FRAME: Duration = Duration::from_millis(16);
 /// How long a controller direction is held before it repeats, and how often
 /// it does then.
@@ -240,7 +257,7 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
 
     let surface = compositor.create_surface(&qh);
     let layer =
-        layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some(NAMESPACE), None);
+        layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some(namespace()), None);
     layer.set_anchor(Anchor::all());
     layer.set_exclusive_zone(-1);
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
@@ -431,7 +448,7 @@ impl State {
             &self.qh,
             surface,
             Layer::Overlay,
-            Some(NAMESPACE),
+            Some(namespace()),
             None,
         );
         layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | edge);
@@ -465,7 +482,7 @@ impl State {
                 &self.qh,
                 surface,
                 Layer::Overlay,
-                Some(NAMESPACE),
+                Some(namespace()),
                 None,
             );
             let margin = (height as f32 * CLOCK_MARGIN) as i32;
