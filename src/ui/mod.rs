@@ -1,6 +1,7 @@
 //! Drawing: the side menu, the clock and their text.
 
 pub mod clock;
+pub mod icons;
 pub mod panel;
 pub mod states;
 pub mod text;

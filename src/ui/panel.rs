@@ -14,6 +14,7 @@ use tiny_skia::{
     Shader, SpreadMode, Transform,
 };
 
+use super::icons::Icon;
 use super::text::{FontRef, Fonts, TextBox};
 use crate::emulator::EmuAction;
 use crate::savestates::{SLOTS, StateMode};
@@ -61,6 +62,10 @@ pub struct SlotPage {
     pub slots: Vec<SlotView>,
 }
 
+/// The icons' size, relative to the height of the text's capital letters.
+const ICON_SCALE: f32 = 1.35;
+/// The gap between an icon and its text, relative to the panel's padding.
+const ICON_GAP: f32 = 0.7;
 /// Opacity of the frame drawn where a slot has no preview.
 const EMPTY_PREVIEW_ALPHA: u8 = 0x30;
 /// Opacity of the text of a slot that cannot be chosen.
@@ -128,6 +133,8 @@ pub struct Panel {
     page: Option<SlotPage>,
     /// The main entry selected when the page was opened.
     main_selected: usize,
+    /// Whether the main entries show their icons.
+    icons: bool,
     background: Rgba,
     title_element: Element,
     text: Element,
@@ -167,11 +174,17 @@ impl Panel {
             hovered: None,
             page: None,
             main_selected: 0,
+            icons: true,
             background: theme.background.center_color,
             title_element,
             text,
             small,
         }
+    }
+
+    /// Show or hide the icons of the main entries.
+    pub fn set_icons(&mut self, icons: bool) {
+        self.icons = icons;
     }
 
     /// Show a save state page instead of the main entries.
@@ -374,25 +387,47 @@ impl Panel {
         let line = self.line();
         let row_height = self.text.font.line_height;
         let style = &self.text.style;
+        // icons as tall as capital letters plus a bit, then a gap
+        let icon_size = (self.text.letter_height * ICON_SCALE).round().max(1.0);
+        let text_x = if self.icons {
+            padding + icon_size + padding * ICON_GAP
+        } else {
+            padding
+        };
         let mut y = header;
         for (index, item) in self.items.iter().enumerate() {
             self.draw_row_background(pixmap, index, y, row_height);
+            let color = if index == self.selected {
+                style.selected_color
+            } else {
+                style.color
+            };
+            if self.icons
+                && let Some(icon) = Icon::for_action(item.action)
+                && let Some(image) = icon.render(icon_size as u32, color)
+            {
+                let top = y + (row_height - icon_size) / 2.0;
+                pixmap.draw_pixmap(
+                    padding.round() as i32,
+                    top.round() as i32,
+                    image.as_ref(),
+                    &PixmapPaint::default(),
+                    Transform::identity(),
+                    None,
+                );
+            }
             fonts.draw(
                 pixmap,
                 &self.text.font,
                 &item.label.to_uppercase(),
                 TextBox {
-                    x: padding,
+                    x: text_x,
                     y,
-                    width: inner,
+                    width: inner - (text_x - padding),
                     height: row_height,
                     align: Align::Left,
                 },
-                if index == self.selected {
-                    style.selected_color
-                } else {
-                    style.color
-                },
+                color,
             );
             y += row_height;
             fill(pixmap, 0.0, y, width, line, style.separator_color);

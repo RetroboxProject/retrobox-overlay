@@ -5,6 +5,11 @@
 //! its command pipe (RetroArch), a key chord on a virtual keyboard of its
 //! own, or a command line. The overlay only asks, one line per request.
 //!
+//! The game is paused when the overlay opens and runs again only when the
+//! player chooses to go back to it ("Continue", or an action): closing the
+//! overlay any other way leaves it paused. `resume` always leaves it running,
+//! whoever paused it.
+//!
 //! Key chords only reach an emulator that has the keyboard focus. When the
 //! channel says it may press keys (`focus`), the overlay asks for the pause
 //! before it shows itself, and for everything else after it is gone and the
@@ -113,7 +118,6 @@ pub struct Emulator {
     control: Option<ControlInfo>,
     actions: Vec<EmuAction>,
     pause_game: bool,
-    paused: bool,
 }
 
 impl Emulator {
@@ -123,7 +127,6 @@ impl Emulator {
             control: None,
             actions: Vec::new(),
             pause_game: false,
-            paused: false,
         }
     }
 
@@ -146,7 +149,6 @@ impl Emulator {
             pause_game: pause_game && control.pause,
             control: Some(control),
             actions,
-            paused: false,
         }
     }
 
@@ -162,21 +164,20 @@ impl Emulator {
 
     /// Pause the game; called before the overlay shows itself, while the
     /// game still has the keyboard focus.
-    pub fn pause(&mut self) {
-        if self.pause_game && self.ask("pause") {
-            self.paused = true;
+    pub fn pause(&self) {
+        if self.pause_game {
+            self.ask("pause");
         }
     }
 
-    /// Once the overlay is gone: resume the game and do what the menu asked.
-    pub fn after_close(&mut self, request: Option<Request>) {
-        let focus = self.control.as_ref().is_some_and(|control| control.focus);
-        if focus && (self.paused || request.is_some()) {
+    /// Once the overlay is gone: the game runs again, after doing what the
+    /// menu asked.
+    pub fn back_to_game(&self, request: Option<Request>) {
+        if self.control.as_ref().is_some_and(|control| control.focus) {
             sleep(FOCUS_RETURN);
         }
-        if self.paused {
+        if self.pause_game {
             self.ask("resume");
-            self.paused = false;
         }
         if let Some(request) = request {
             self.ask(&request.line());

@@ -53,6 +53,7 @@ pub struct Config {
     pub side: Side,
     pub dim: f32,
     pub pause_game: bool,
+    pub icons: bool,
     pub animation_ms: u64,
     pub clock: ClockConfig,
 }
@@ -63,6 +64,7 @@ impl Default for Config {
             side: Side::Right,
             dim: 0.6,
             pause_game: true,
+            icons: true,
             animation_ms: 150,
             clock: ClockConfig {
                 enabled: true,
@@ -117,6 +119,9 @@ impl Config {
             }
             if let Some(pause) = section.get("pause_game") {
                 self.pause_game = !is_off(pause);
+            }
+            if let Some(icons) = section.get("icons") {
+                self.icons = !is_off(icons);
             }
             if let Some(ms) = section
                 .get("animation_ms")

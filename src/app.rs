@@ -71,8 +71,13 @@ const CLOCK_MARGIN: f32 = 0.08;
 /// How the overlay was left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
+    /// "Continue": back to the game, running.
     Continue,
+    /// An emulator action, then back to the game, running.
     Request(Request),
+    /// Closed without a choice (back, Home, a click outside, another window
+    /// taking the focus): the game stays as it is, paused.
+    Dismiss,
     Quit,
 }
 
@@ -215,7 +220,7 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
     let signals = Signals::new(&[Signal::SIGUSR1, Signal::SIGTERM, Signal::SIGINT])?;
     handle
         .insert_source(signals, |_, &mut (), state| {
-            state.outcome = Some(Outcome::Continue);
+            state.outcome = Some(Outcome::Dismiss);
         })
         .map_err(|err| anyhow!("cannot watch signals: {}", err.error))?;
 
@@ -273,7 +278,7 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
             .dispatch(None, &mut state)
             .context("event loop error")?;
     }
-    let outcome = state.outcome.unwrap_or(Outcome::Continue);
+    let outcome = state.outcome.unwrap_or(Outcome::Dismiss);
     // Hide the overlay first, then hand the controllers back once the button
     // that closed it is up (see input.rs).
     let mut pads = std::mem::take(&mut state.content.pads);
@@ -332,7 +337,7 @@ impl State {
     fn create_pieces(&mut self) {
         let (width, height) = self.dim.size;
         let config = &self.content.config;
-        let panel = Panel::new(
+        let mut panel = Panel::new(
             &self.content.theme,
             (width, height),
             &mut self.content.fonts,
@@ -340,6 +345,7 @@ impl State {
             &self.content.subtitle,
             std::mem::take(&mut self.content.items),
         );
+        panel.set_icons(config.icons);
         let (edge, other) = match config.side {
             Side::Right => (Anchor::RIGHT, Anchor::LEFT),
             Side::Left => (Anchor::LEFT, Anchor::RIGHT),
@@ -522,7 +528,7 @@ impl State {
         if closed_page {
             self.draw_panel();
         } else {
-            self.outcome = Some(Outcome::Continue);
+            self.outcome = Some(Outcome::Dismiss);
         }
     }
 
@@ -546,7 +552,7 @@ impl State {
                 self.activate(action);
             }
             Nav::Back => self.back(),
-            Nav::Close => self.outcome = Some(Outcome::Continue),
+            Nav::Close => self.outcome = Some(Outcome::Dismiss),
         }
     }
 }
@@ -560,7 +566,7 @@ fn set_edge_margin(layer: &LayerSurface, side: Side, margin: i32) {
 
 impl LayerShellHandler for State {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
-        self.outcome = Some(Outcome::Continue);
+        self.outcome = Some(Outcome::Dismiss);
     }
 
     fn configure(
@@ -619,7 +625,7 @@ impl KeyboardHandler for State {
     ) {
         if self.focused && self.outcome.is_none() {
             log::info!("keyboard focus lost: closing");
-            self.outcome = Some(Outcome::Continue);
+            self.outcome = Some(Outcome::Dismiss);
         }
         self.focused = false;
     }

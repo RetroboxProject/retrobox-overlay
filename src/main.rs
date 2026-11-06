@@ -113,7 +113,7 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
         .collect::<Vec<_>>()
         .join(" · ");
 
-    let (mut emulator, states) = emulator_for(session.as_ref(), demo, &config, &translator);
+    let (emulator, states) = emulator_for(session.as_ref(), demo, &config, &translator);
     let items = menu_items(&translator, &emulator);
 
     let time_key = if theme.clock12h {
@@ -149,7 +149,7 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
 
     // before the overlay shows itself: the game still has the keyboard focus
     emulator.pause();
-    let (outcome, mut emulator) = app::run(Content {
+    let (outcome, emulator) = app::run(Content {
         config,
         theme,
         fonts,
@@ -168,8 +168,9 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
     match outcome {
         Outcome::Quit if !demo => quit_game(),
         Outcome::Quit => {}
-        Outcome::Continue => emulator.after_close(None),
-        Outcome::Request(request) => emulator.after_close(Some(request)),
+        Outcome::Dismiss => log::info!("closed without a choice: the game stays paused"),
+        Outcome::Continue => emulator.back_to_game(None),
+        Outcome::Request(request) => emulator.back_to_game(Some(request)),
     }
     Ok(())
 }

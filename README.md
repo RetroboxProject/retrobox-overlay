@@ -36,12 +36,15 @@ while it is shown: nothing stays resident during the game.
   `stdin_cmd_enable`), else a key chord on a virtual keyboard the launcher creates when the game
   starts, else a command line. The menu offers what the channel says the emulator can do:
   save and load state, the disc tray and next/previous disc (`.m3u` playlists), reset, the
-  emulator's menu and a screenshot. The game is paused while the menu is open (asked before
-  the overlay shows itself, while the game still has the keyboard focus) and resumed when it
-  closes; emulators without a pause, such as PC games, keep running.
+  emulator's menu and a screenshot, each with its icon.
+* **Pause.** The game is paused when the overlay opens (asked before it shows itself, while the
+  game still has the keyboard focus) and runs again only when you go back to it: *Continue*
+  or an action. Closing the overlay any other way (back, Home, a click outside, another window
+  taking the focus) leaves it paused. Pausing and resuming are absolute, not toggles: with
+  RetroArch the launcher asks it first (`GET_STATUS`), so *Continue* always resumes the game,
+  whoever paused it. Emulators without a pause, such as PC games, keep running.
 * **The desktop stays usable.** The menu takes the keyboard on demand, not exclusively: when the
-  compositor gives it to another window (Alt+Tab, a click elsewhere), the overlay closes and the
-  game resumes.
+  compositor gives it to another window (Alt+Tab, a click elsewhere), the overlay closes.
 * **Save states** (RetroArch). *Save state* and *Load state* open a page of four slots, each with
   the preview RetroArch saves with the state and its date. The slots are RetroArch's own
   `<saves>/<folder>/<game>.state1`…`state4` files, so EmulationStation lists the same states.
@@ -83,3 +86,6 @@ Run it by hand with `RUST_LOG=debug retrobox-overlay --demo` from a Wayland sess
 ## License
 
 GPL-2.0-only, like Retrobox.
+
+The menu icons are [Lucide](https://lucide.dev)'s, under the ISC license
+([`assets/icons/LICENSE`](assets/icons/LICENSE)).
