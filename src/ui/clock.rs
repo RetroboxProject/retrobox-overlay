@@ -1,5 +1,6 @@
 //! The clock shown on the free side of the screen: time with seconds, big,
-//! and the date under it, in the menu title's font.
+//! and the date under it, in the menu title's font, aligned to the screen's
+//! edge on that side.
 
 use chrono::{DateTime, Local};
 use cosmic_text::Align;
@@ -8,8 +9,11 @@ use tiny_skia::Pixmap;
 use super::text::{FontRef, Fonts, TextBox};
 use crate::theme::Rgba;
 
-const TIME_SIZE: f32 = 0.11;
-const DATE_SIZE: f32 = 0.04;
+const TIME_SIZE: f32 = 0.095;
+const DATE_SIZE: f32 = 0.035;
+/// The space between the text and the screen's edge, relative to the screen
+/// height (the same as above it in a corner).
+pub const MARGIN: f32 = 0.045;
 const SHADOW: Rgba = Rgba(0x0000_0099);
 
 pub struct Clock {
@@ -19,6 +23,9 @@ pub struct Clock {
     color: Rgba,
     time_font: FontRef,
     date_font: FontRef,
+    /// Left or right: towards the screen's edge.
+    align: Align,
+    inset: f32,
 }
 
 impl Clock {
@@ -28,6 +35,7 @@ impl Clock {
         formats: (String, String),
         locale: chrono::Locale,
         color: Rgba,
+        align: Align,
     ) -> Self {
         let height = screen_height as f32;
         let font = |size: f32| FontRef {
@@ -42,6 +50,8 @@ impl Clock {
             color,
             time_font: font(height * TIME_SIZE),
             date_font: font(height * DATE_SIZE),
+            align,
+            inset: height * MARGIN,
         }
     }
 
@@ -65,11 +75,11 @@ impl Clock {
         let width = width as f32;
         let offset = (self.time_font.size / 40.0).max(1.0);
         let time_box = TextBox {
-            x: 0.0,
+            x: self.inset,
             y: 0.0,
-            width,
+            width: (width - self.inset * 2.0).max(1.0),
             height: self.time_font.line_height,
-            align: Align::Center,
+            align: self.align,
         };
         let date_box = TextBox {
             y: self.time_font.line_height,
@@ -114,6 +124,7 @@ mod tests {
             ("%H:%M:%S".into(), "%A, %-d de %B de %Y".into()),
             chrono::Locale::es_ES,
             Rgba(0xFFFF_FFFF),
+            Align::Left,
         );
         let moment = Local.with_ymd_and_hms(2026, 11, 4, 9, 5, 7).unwrap();
         assert_eq!(

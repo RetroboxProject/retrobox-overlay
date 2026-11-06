@@ -5,7 +5,7 @@
 //!   surface's margin (its buffer is drawn once, not on every frame); it takes
 //!   the keyboard, once the game is paused (the pause key has to reach the
 //!   game first, see emulator.rs);
-//! * the clock, on the other side, redrawn once a second;
+//! * the clock, in a corner on the other side, redrawn once a second;
 //! * the manual, when opened: a page over the whole screen (see
 //!   `manual_view.rs`);
 //! * the help prompts, at the bottom like EmulationStation's, on a
@@ -30,7 +30,7 @@ use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::signals::{Signal, Signals};
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay_client_toolkit::reexports::calloop::{
-    EventLoop, Interest, LoopHandle, Mode, PostAction,
+    EventLoop, Interest, LoopHandle, Mode, PostAction, RegistrationToken,
 };
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState, SimpleGlobal};
@@ -79,8 +79,12 @@ use manual_view::{ManualState, Sub};
 
 const NAMESPACE: &str = "retrobox-overlay";
 const FRAME: Duration = Duration::from_millis(16);
+/// How long a controller direction is held before it repeats, and how often
+/// it does then.
+const REPEAT_DELAY: Duration = Duration::from_millis(400);
+const REPEAT_INTERVAL: Duration = Duration::from_millis(70);
 /// Space between the clock and the screen edge when it is at the top or bottom.
-const CLOCK_MARGIN: f32 = 0.08;
+const CLOCK_MARGIN: f32 = crate::ui::clock::MARGIN;
 
 /// How the overlay was left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +207,8 @@ struct State {
     /// The menu's help prompts, on the dim.
     menu_help: Option<Sub>,
     manual: ManualState,
+    /// The controller direction held, repeating like a held key.
+    repeat: Option<(Nav, RegistrationToken)>,
     started: Option<Instant>,
     outcome: Option<Outcome>,
 }
@@ -286,6 +292,7 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
         help: None,
         menu_help: None,
         manual: ManualState::default(),
+        repeat: None,
         started: None,
         outcome: None,
     };
@@ -317,7 +324,7 @@ fn watch_controllers(handle: &LoopHandle<'static, State>, pads: &[Pad]) -> Resul
                 Generic::new(fd, Interest::READ, Mode::Level),
                 move |_, _, state| {
                     for input in state.content.pads[index].read() {
-                        state.input(input);
+                        state.pad_input(input);
                     }
                     Ok(PostAction::Continue)
                 },
@@ -447,6 +454,11 @@ impl State {
                 self.content.clock_formats.clone(),
                 self.content.locale,
                 config.clock.color,
+                // towards the edge of its corner: left when the menu is right
+                match config.side {
+                    Side::Right => cosmic_text::Align::Left,
+                    Side::Left => cosmic_text::Align::Right,
+                },
             );
             let surface = self.compositor.create_surface(&self.qh);
             let layer = self.layer_shell.create_layer_surface(
@@ -716,6 +728,35 @@ impl State {
         }
     }
 
+    /// A press or release on a controller: a held direction repeats, as a
+    /// held key does (the compositor repeats the keyboard's).
+    fn pad_input(&mut self, input: Input) {
+        let repeats = matches!(
+            input.nav,
+            Nav::Up | Nav::Down | Nav::Left | Nav::Right | Nav::PrevPage | Nav::NextPage
+        );
+        if repeats && (input.pressed || self.repeat.is_some_and(|(nav, _)| nav == input.nav)) {
+            if let Some((_, token)) = self.repeat.take() {
+                self.handle.remove(token);
+            }
+            if input.pressed {
+                let nav = input.nav;
+                let token = self.handle.insert_source(
+                    Timer::from_duration(REPEAT_DELAY),
+                    move |_, &mut (), state| {
+                        state.input(Input::press(nav));
+                        TimeoutAction::ToDuration(REPEAT_INTERVAL)
+                    },
+                );
+                match token {
+                    Ok(token) => self.repeat = Some((nav, token)),
+                    Err(err) => log::debug!("no repeat timer: {}", err.error),
+                }
+            }
+        }
+        self.input(input);
+    }
+
     /// A press or release, from a controller or the keyboard.
     fn input(&mut self, input: Input) {
         if self.manual_is_open() {
@@ -853,11 +894,14 @@ impl KeyboardHandler for State {
         _: u32,
         event: KeyEvent,
     ) {
-        let nav = key_nav(event.keysym);
-        if !self.manual_is_open()
-            && let Some(nav @ (Nav::Up | Nav::Down)) = nav
-        {
-            self.navigate(nav);
+        match key_nav(event.keysym) {
+            Some(nav @ (Nav::Up | Nav::Down)) if !self.manual_is_open() => self.navigate(nav),
+            // turning pages; a zoomed page follows the key being held instead
+            Some(
+                nav
+                @ (Nav::Up | Nav::Down | Nav::Left | Nav::Right | Nav::PrevPage | Nav::NextPage),
+            ) if self.manual_is_open() => self.input(Input::press(nav)),
+            _ => {}
         }
     }
 

@@ -11,7 +11,7 @@
 //! enabled = true
 //! time_format = %H:%M:%S  ; strftime; %p etc. follow the language
 //! date_format = %A, %-d %B %Y
-//! position = center       ; top | center | bottom
+//! position = top          ; top | center | bottom
 //! color = FFFFFFFF
 //!
 //! [manual]
@@ -77,7 +77,7 @@ impl Default for Config {
                 enabled: true,
                 time_format: None,
                 date_format: None,
-                position: VerticalPosition::Center,
+                position: VerticalPosition::Top,
                 color: Rgba(0xFFFF_FFFF),
             },
             compositor_scaling: true,
@@ -151,9 +151,9 @@ impl Config {
             }
             if let Some(position) = section.get("position") {
                 clock.position = match position.trim().to_ascii_lowercase().as_str() {
-                    "top" => VerticalPosition::Top,
+                    "center" => VerticalPosition::Center,
                     "bottom" => VerticalPosition::Bottom,
-                    _ => VerticalPosition::Center,
+                    _ => VerticalPosition::Top,
                 };
             }
             if let Some(color) = section.get("color").and_then(Rgba::parse) {

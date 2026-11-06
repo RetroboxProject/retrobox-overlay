@@ -3,7 +3,7 @@
 The in-game menu of [Retrobox](https://github.com/RetroboxProject/retrobox-core). Press the
 controller's hotkey alone (Home/Guide), Hotkey+A, or Shift+F7 while playing: a side menu slides in
 over the dimmed game, drawn with the menu style of the active EmulationStation theme, with a
-clock and the date on the other side.
+clock and the date in the top corner of the other side.
 
 It is a small Rust program (a few MB, ~35 ms from start to the menu on screen) that runs only
 while it is shown: nothing stays resident during the game.
@@ -35,7 +35,7 @@ while it is shown: nothing stays resident during the game.
   request the best way the emulator allows: RetroArch's command pipe (its standard input,
   `stdin_cmd_enable`), else a key chord on a virtual keyboard the launcher creates when the game
   starts, else a command line. The menu offers what the channel says the emulator can do:
-  save and load state, the disc tray and next/previous disc, reset, the emulator's menu
+  load and save state, the disc tray and next/previous disc, reset, the emulator's menu
   (RetroArch's only, for now) and a screenshot, each with its icon.
 * **Discs.** Games of a platform with an optical drive (`disc_drive: true` in the system's
   YAML in retrobox-core: Mega-CD, Saturn, PlayStation, Dreamcast...) always have the tray entry,
@@ -55,7 +55,7 @@ while it is shown: nothing stays resident during the game.
   whoever paused it. Emulators without a pause, such as PC games, keep running.
 * **The desktop stays usable.** The menu takes the keyboard on demand, not exclusively: when the
   compositor gives it to another window (Alt+Tab, a click elsewhere), the overlay closes.
-* **Save states** (RetroArch). *Save state* and *Load state* open a page of ten slots (it
+* **Save states** (RetroArch). *Load state* and *Save state* open a page of ten slots (it
   scrolls when they do not all fit), each with the preview RetroArch saves with the state and
   its date. The slots are RetroArch's own `<saves>/<system>/<game>.state1`…`state10` files,
   where EmulationStation looks too.

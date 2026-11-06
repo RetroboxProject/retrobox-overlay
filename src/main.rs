@@ -257,8 +257,8 @@ fn menu_items(translator: &Translator, emulator: &Emulator, manual: bool) -> Vec
     };
     let mut items = vec![item("menu-continue", MenuAction::Continue)];
     if emulator.has_slots() {
-        items.push(item("menu-save-state", MenuAction::States(StateMode::Save)));
         items.push(item("menu-load-state", MenuAction::States(StateMode::Load)));
+        items.push(item("menu-save-state", MenuAction::States(StateMode::Save)));
     }
     if manual {
         items.push(item("menu-manual", MenuAction::Manual));
