@@ -6,8 +6,10 @@
 //!   the keyboard, once the game is paused (the pause key has to reach the
 //!   game first, see emulator.rs);
 //! * the clock, on the other side, redrawn once a second;
-//! * the manual, when opened: a page over the whole screen. It never takes
-//!   the keyboard, so the panel keeps it (and the overlay stays open).
+//! * the manual, when opened: a page over the whole screen (see
+//!   `manual_view.rs`);
+//! * the help prompts, at the bottom like EmulationStation's, on a
+//!   subsurface of the dim.
 //!
 //! With `wp_alpha_modifier` (KWin 6.1+, labwc 0.9+) the three fade in as well,
 //! by the compositor: nothing is drawn again for the fade. (A single-pixel
@@ -24,7 +26,6 @@ use anyhow::{Context as _, Result, anyhow};
 use chrono::{Local, Timelike};
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
-use smithay_client_toolkit::reexports::calloop::channel::{self as loop_channel, Event};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::signals::{Signal, Signals};
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
@@ -47,6 +48,7 @@ use smithay_client_toolkit::shell::wlr_layer::{
 };
 use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
+use smithay_client_toolkit::subcompositor::SubcompositorState;
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use tiny_skia::Pixmap;
 use wayland_client::globals::registry_queue_init;
@@ -54,20 +56,26 @@ use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_s
 use wayland_client::{Connection, QueueHandle};
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1;
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1;
+use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
+use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 use crate::config::{Config, Side, VerticalPosition};
 use crate::emulator::{EmuAction, Emulator, Request};
 use crate::i18n::Translator;
-use crate::input::{self, Nav, Pad};
-use crate::manual::{Fit, Manual, PageRequest, Rendered};
+use crate::input::{self, Input, Nav, Pad};
+use crate::manual::Manual;
 use crate::savestates::StateMode;
 use crate::theme::MenuTheme;
 use crate::ui::clock::Clock;
+use crate::ui::help::{Help, Prompt};
 use crate::ui::panel::{MenuAction, MenuItem, Panel};
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
 use crate::ui::to_argb8888;
-use crate::ui::viewer::Viewer;
+
+mod manual_view;
+
+use manual_view::{ManualState, Sub};
 
 const NAMESPACE: &str = "retrobox-overlay";
 const FRAME: Duration = Duration::from_millis(16);
@@ -175,6 +183,8 @@ struct State {
     layer_shell: LayerShell,
     shm: Shm,
     alpha: Option<WpAlphaModifierV1>,
+    subcompositor: Option<SubcompositorState>,
+    viewporter: Option<WpViewporter>,
     pool: SlotPool,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     pointer: Option<ThemedPointer>,
@@ -187,10 +197,11 @@ struct State {
     dim: Piece,
     panel: Option<(Panel, Piece)>,
     clock: Option<(Clock, Piece)>,
-    /// The manual's page and fit, kept while it is closed.
-    viewer: Option<Viewer>,
-    /// The manual's surface, while it is open.
-    viewer_piece: Option<Piece>,
+    /// The help style, at this screen's size.
+    help: Option<Help>,
+    /// The menu's help prompts, on the dim.
+    menu_help: Option<Sub>,
+    manual: ManualState,
     started: Option<Instant>,
     outcome: Option<Outcome>,
 }
@@ -213,6 +224,12 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
     let alpha = SimpleGlobal::<WpAlphaModifierV1, 1>::bind(&globals, &qh)
         .ok()
         .and_then(|global| global.get().ok().cloned());
+    let (subcompositor, viewporter) = manual_globals(
+        &compositor,
+        &globals,
+        &qh,
+        content.config.compositor_scaling,
+    );
 
     let surface = compositor.create_surface(&qh);
     let layer =
@@ -238,32 +255,7 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
         })
         .map_err(|err| anyhow!("cannot watch signals: {}", err.error))?;
 
-    for index in 0..content.pads.len() {
-        let fd = content.pads[index].device.as_fd().try_clone_to_owned()?;
-        handle
-            .insert_source(
-                Generic::new(fd, Interest::READ, Mode::Level),
-                move |_, _, state| {
-                    for nav in state.content.pads[index].read() {
-                        state.navigate(nav);
-                    }
-                    Ok(PostAction::Continue)
-                },
-            )
-            .map_err(|err| anyhow!("cannot watch a controller: {}", err.error))?;
-    }
-    // a controller whose buttons are not all up yet is grabbed by then anyway
-    handle
-        .insert_source(
-            Timer::from_duration(input::GRAB_WAIT),
-            |_, &mut (), state| {
-                for pad in &mut state.content.pads {
-                    pad.try_grab();
-                }
-                TimeoutAction::Drop
-            },
-        )
-        .map_err(|err| anyhow!("cannot start a timer: {}", err.error))?;
+    watch_controllers(&handle, &content.pads)?;
 
     let mut state = State {
         registry_state: RegistryState::new(&globals),
@@ -274,6 +266,8 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
         shm,
         dim: Piece::new(layer, alpha.as_ref(), &qh),
         alpha,
+        subcompositor,
+        viewporter,
         pool,
         keyboard: None,
         pointer: None,
@@ -283,8 +277,9 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
         content,
         panel: None,
         clock: None,
-        viewer: None,
-        viewer_piece: None,
+        help: None,
+        menu_help: None,
+        manual: ManualState::default(),
         started: None,
         outcome: None,
     };
@@ -304,6 +299,57 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
     input::wait_released(&mut pads);
     drop(pads);
     Ok((outcome, emulator))
+}
+
+/// Read the controllers' events, and grab them all once `GRAB_WAIT` has
+/// passed (one whose buttons are not all up yet is grabbed by then anyway).
+fn watch_controllers(handle: &LoopHandle<'static, State>, pads: &[Pad]) -> Result<()> {
+    for (index, pad) in pads.iter().enumerate() {
+        let fd = pad.device.as_fd().try_clone_to_owned()?;
+        handle
+            .insert_source(
+                Generic::new(fd, Interest::READ, Mode::Level),
+                move |_, _, state| {
+                    for input in state.content.pads[index].read() {
+                        state.input(input);
+                    }
+                    Ok(PostAction::Continue)
+                },
+            )
+            .map_err(|err| anyhow!("cannot watch a controller: {}", err.error))?;
+    }
+    handle
+        .insert_source(
+            Timer::from_duration(input::GRAB_WAIT),
+            |_, &mut (), state| {
+                for pad in &mut state.content.pads {
+                    pad.try_grab();
+                }
+                TimeoutAction::Drop
+            },
+        )
+        .map_err(|err| anyhow!("cannot start a timer: {}", err.error))?;
+    Ok(())
+}
+
+/// What the manual is shown with: subsurfaces, cropped and scaled by the
+/// compositor when it has `wp_viewporter` (and the settings let it).
+fn manual_globals(
+    compositor: &CompositorState,
+    globals: &wayland_client::globals::GlobalList,
+    qh: &QueueHandle<State>,
+    compositor_scaling: bool,
+) -> (Option<SubcompositorState>, Option<WpViewporter>) {
+    let subcompositor =
+        SubcompositorState::bind(compositor.wl_compositor().clone(), globals, qh).ok();
+    let viewporter = SimpleGlobal::<WpViewporter, 1>::bind(globals, qh)
+        .ok()
+        .and_then(|global| global.get().ok().cloned())
+        .filter(|_| compositor_scaling);
+    if viewporter.is_none() {
+        log::info!("the manual is scaled by the overlay (no wp_viewporter, or the setting)");
+    }
+    (subcompositor, viewporter)
 }
 
 /// Smooth start and end of the animations.
@@ -420,6 +466,11 @@ impl State {
             self.schedule_clock();
         }
 
+        self.help = Some(Help::new(&self.content.theme, (width, height)));
+        let dim = self.dim.layer.wl_surface().clone();
+        self.menu_help = Sub::new(self, &dim, false, true);
+        self.draw_menu_help();
+
         self.started = Some(Instant::now());
         self.handle
             .insert_source(Timer::from_duration(FRAME), |_, &mut (), state| {
@@ -442,6 +493,12 @@ impl State {
         if let Some((_, piece)) = &self.clock {
             piece.set_opacity(t);
             piece.layer.commit();
+        }
+        if let Some(help) = &self.menu_help {
+            help.set_opacity(t);
+            help.commit();
+            // a subsurface's state takes effect with its parent's
+            self.dim.layer.commit();
         }
         if t >= 1.0 {
             TimeoutAction::Drop
@@ -493,6 +550,48 @@ impl State {
                 piece.present(&mut self.pool, &pixmap);
             }
         }
+    }
+
+    /// The menu's help prompts, as ES's menus have them, in the part of the
+    /// screen the panel leaves free.
+    fn draw_menu_help(&mut self) {
+        let (Some(help), Some(sub), Some((panel, _))) = (
+            self.help.as_mut(),
+            self.menu_help.as_mut(),
+            self.panel.as_ref(),
+        ) else {
+            return;
+        };
+        let texts = &self.content.translator;
+        let prompt = |icon: &str, key: &str| Prompt {
+            icon: icon.to_owned(),
+            label: texts.text(key),
+        };
+        let back = if panel.page_open() {
+            "help-back"
+        } else {
+            "help-close"
+        };
+        let prompts = [
+            prompt("up/down", "help-choose"),
+            prompt(help.ok(), "help-select"),
+            prompt(help.back(), back),
+        ];
+        let screen_width = self.dim.size.0 as f32;
+        let free = screen_width - panel.width as f32 - help.left() * 2.0;
+        match help.render(&mut self.content.fonts, &prompts, free, None) {
+            Some(pixmap) => {
+                let (mut x, y) = help.place(pixmap.width());
+                if self.content.config.side == Side::Left {
+                    x += panel.width as i32;
+                }
+                sub.move_to(x, y);
+                sub.show_pixmap(&mut self.pool, &pixmap);
+            }
+            None => sub.hide(),
+        }
+        sub.commit();
+        self.dim.layer.commit();
     }
 
     /// Show the disc in the drive and the tray, and fit the disc entries to
@@ -581,6 +680,7 @@ impl State {
         if let Some((panel, _)) = self.panel.as_mut() {
             panel.open_page(page);
             self.draw_panel();
+            self.draw_menu_help();
         }
     }
 
@@ -592,16 +692,23 @@ impl State {
             .is_some_and(|(panel, _)| panel.close_page());
         if closed_page {
             self.draw_panel();
+            self.draw_menu_help();
         } else {
             self.outcome = Some(Outcome::Dismiss);
         }
     }
 
-    fn navigate(&mut self, nav: Nav) {
-        if self.viewer_piece.is_some() {
-            self.navigate_manual(nav);
-            return;
+    /// A press or release, from a controller or the keyboard.
+    fn input(&mut self, input: Input) {
+        if self.manual_is_open() {
+            self.manual_input(input);
+        } else if input.pressed {
+            self.navigate(input.nav);
         }
+    }
+
+    /// A press on the menu.
+    fn navigate(&mut self, nav: Nav) {
         match nav {
             Nav::Up | Nav::Down => {
                 let delta = if nav == Nav::Up { -1 } else { 1 };
@@ -622,150 +729,8 @@ impl State {
             }
             Nav::Back => self.back(),
             Nav::Close => self.outcome = Some(Outcome::Dismiss),
-            Nav::Left | Nav::Right | Nav::PrevPage | Nav::NextPage => {}
-        }
-    }
-}
-
-/// The manual.
-impl State {
-    /// Show the manual over everything, where it was left.
-    fn open_manual(&mut self) {
-        let Some(manual) = self.content.manual.as_mut() else {
-            return;
-        };
-        if self.viewer.is_none() {
-            let (sender, pages) = loop_channel::channel::<Rendered>();
-            let inserted = self.handle.insert_source(pages, |event, &mut (), state| {
-                if let Event::Msg(rendered) = event {
-                    state.page_rendered(rendered);
-                }
-            });
-            if let Err(err) = inserted {
-                log::error!("cannot watch the manual renderer: {}", err.error);
-                return;
+            Nav::Left | Nav::Right | Nav::ZoomIn | Nav::ZoomOut | Nav::PrevPage | Nav::NextPage => {
             }
-            manual.start(move |rendered| {
-                // the overlay may be closing: nothing to show it on then
-                sender.send(rendered).ok();
-            });
-            self.viewer = Some(Viewer::new(
-                manual.pages(),
-                self.dim.size,
-                &self.content.theme.text.font.path,
-            ));
-        }
-        let surface = self.compositor.create_surface(&self.qh);
-        let layer = self.layer_shell.create_layer_surface(
-            &self.qh,
-            surface,
-            Layer::Overlay,
-            Some(NAMESPACE),
-            None,
-        );
-        layer.set_anchor(Anchor::all());
-        layer.set_exclusive_zone(-1);
-        // the panel keeps the keyboard: losing it would close the overlay
-        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_size(0, 0);
-        layer.commit();
-        let piece = Piece::new(layer, None, &self.qh);
-        self.viewer_piece = Some(piece);
-        self.hover(None);
-    }
-
-    /// Back to the menu.
-    fn close_manual(&mut self) {
-        self.viewer_piece = None;
-    }
-
-    /// The page shown now, at its size.
-    fn shown_page(&self) -> Option<PageRequest> {
-        let viewer = self.viewer.as_ref()?;
-        self.content
-            .manual
-            .as_ref()?
-            .request(viewer.page, viewer.fit, viewer.screen())
-    }
-
-    /// Show the current page; while it renders the last one stays on screen
-    /// (only the first time is there nothing but the page number).
-    fn draw_manual(&mut self) {
-        let request = self.shown_page();
-        let (Some(viewer), Some(manual), Some(piece)) = (
-            self.viewer.as_ref(),
-            self.content.manual.as_mut(),
-            self.viewer_piece.as_mut(),
-        ) else {
-            return;
-        };
-        if piece.size.0 == 0 {
-            return;
-        }
-        let page = request.and_then(|request| manual.page(request));
-        if page.is_none() && piece.buffer.is_some() {
-            return;
-        }
-        if let Some(pixmap) = viewer.render(&mut self.content.fonts, page) {
-            piece.present(&mut self.pool, &pixmap);
-        }
-        // the pages either side, for turning them without a wait
-        for page in [viewer.page + 1, viewer.page.saturating_sub(1)] {
-            if let Some(next) = manual.request(page, viewer.fit, viewer.screen()) {
-                manual.prefetch(next);
-            }
-        }
-    }
-
-    /// The renderer has finished a page.
-    fn page_rendered(&mut self, rendered: Rendered) {
-        let request = rendered.0;
-        if let Some(manual) = self.content.manual.as_mut() {
-            manual.store(rendered);
-        }
-        if self.viewer_piece.is_some() && self.shown_page() == Some(request) {
-            self.draw_manual();
-        }
-    }
-
-    fn navigate_manual(&mut self, nav: Nav) {
-        let page_height = self.shown_page().and_then(|request| {
-            let manual = self.content.manual.as_mut()?;
-            manual.page(request).map(Pixmap::height)
-        });
-        let Some(viewer) = self.viewer.as_mut() else {
-            return;
-        };
-        let zoomed = viewer.fit == Fit::Width;
-        log::debug!(
-            "manual: {nav:?} on page {} ({page_height:?} px)",
-            viewer.page
-        );
-        let changed = match nav {
-            // a zoomed page scrolls; else up and down turn pages too
-            Nav::Up if zoomed => viewer.scroll(-1.0, page_height),
-            Nav::Down if zoomed => viewer.scroll(1.0, page_height),
-            Nav::Left | Nav::PrevPage | Nav::Up => viewer.turn(-1),
-            Nav::Right | Nav::NextPage | Nav::Down => viewer.turn(1),
-            Nav::Confirm => {
-                viewer.toggle_fit();
-                true
-            }
-            Nav::Back => {
-                self.close_manual();
-                return;
-            }
-            Nav::Close => {
-                self.outcome = Some(Outcome::Dismiss);
-                return;
-            }
-        };
-        if changed {
-            // a new page is drawn as soon as it is rendered
-            if let Some(piece) = self.viewer_piece.as_mut() {
-                piece.buffer = None;
-            }
-            self.draw_manual();
         }
     }
 }
@@ -808,9 +773,8 @@ impl LayerShellHandler for State {
         {
             piece.size = size;
             self.draw_clock();
-        } else if let Some(piece) = self.viewer_piece.as_mut().filter(|piece| piece.is(surface)) {
-            piece.size = size;
-            self.draw_manual();
+        } else {
+            self.manual_configured(surface, size);
         }
     }
 }
@@ -856,45 +820,25 @@ impl KeyboardHandler for State {
         event: KeyEvent,
     ) {
         log::debug!("key {:?}", event.keysym);
-        let nav = match event.keysym {
-            Keysym::Up | Keysym::KP_Up => Some(Nav::Up),
-            Keysym::Down | Keysym::KP_Down => Some(Nav::Down),
-            Keysym::Left | Keysym::KP_Left => Some(Nav::Left),
-            Keysym::Right | Keysym::KP_Right => Some(Nav::Right),
-            Keysym::Prior | Keysym::KP_Prior => Some(Nav::PrevPage),
-            Keysym::Next | Keysym::KP_Next => Some(Nav::NextPage),
-            Keysym::Return | Keysym::KP_Enter | Keysym::space => Some(Nav::Confirm),
-            Keysym::Escape | Keysym::BackSpace => Some(Nav::Back),
-            Keysym::F7 => Some(Nav::Close),
-            _ => None,
-        };
-        if let Some(nav) = nav {
-            self.navigate(nav);
+        if let Some(nav) = key_nav(event.keysym) {
+            self.input(Input::press(nav));
         }
     }
 
+    /// Held keys repeat in the menu; the manual follows them being held.
     fn repeat_key(
         &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        keyboard: &wl_keyboard::WlKeyboard,
-        serial: u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
         event: KeyEvent,
     ) {
-        if matches!(
-            event.keysym,
-            Keysym::Up
-                | Keysym::Down
-                | Keysym::Left
-                | Keysym::Right
-                | Keysym::KP_Up
-                | Keysym::KP_Down
-                | Keysym::KP_Left
-                | Keysym::KP_Right
-                | Keysym::Prior
-                | Keysym::Next
-        ) {
-            self.press_key(conn, qh, keyboard, serial, event);
+        let nav = key_nav(event.keysym);
+        if !self.manual_is_open()
+            && let Some(nav @ (Nav::Up | Nav::Down)) = nav
+        {
+            self.navigate(nav);
         }
     }
 
@@ -904,8 +848,11 @@ impl KeyboardHandler for State {
         _: &QueueHandle<Self>,
         _: &wl_keyboard::WlKeyboard,
         _: u32,
-        _: KeyEvent,
+        event: KeyEvent,
     ) {
+        if let Some(nav) = key_nav(event.keysym) {
+            self.input(Input::release(nav));
+        }
     }
 
     fn update_modifiers(
@@ -919,6 +866,25 @@ impl KeyboardHandler for State {
         _: u32,
     ) {
     }
+}
+
+/// What a key does: the arrows, Enter, Esc and F7 like a controller; Page
+/// Up/Down turn the manual's pages, + and - zoom it.
+fn key_nav(keysym: Keysym) -> Option<Nav> {
+    Some(match keysym {
+        Keysym::Up | Keysym::KP_Up => Nav::Up,
+        Keysym::Down | Keysym::KP_Down => Nav::Down,
+        Keysym::Left | Keysym::KP_Left => Nav::Left,
+        Keysym::Right | Keysym::KP_Right => Nav::Right,
+        Keysym::Prior | Keysym::KP_Prior => Nav::PrevPage,
+        Keysym::Next | Keysym::KP_Next => Nav::NextPage,
+        Keysym::plus | Keysym::equal | Keysym::KP_Add => Nav::ZoomIn,
+        Keysym::minus | Keysym::KP_Subtract => Nav::ZoomOut,
+        Keysym::Return | Keysym::KP_Enter | Keysym::space => Nav::Confirm,
+        Keysym::Escape | Keysym::BackSpace => Nav::Back,
+        Keysym::F7 => Nav::Close,
+        _ => return None,
+    })
 }
 
 /// Linux's button codes (input-event-codes.h).
@@ -936,11 +902,7 @@ impl PointerHandler for State {
         events: &[PointerEvent],
     ) {
         for event in events {
-            if self
-                .viewer_piece
-                .as_ref()
-                .is_some_and(|piece| piece.is(&event.surface))
-            {
+            if self.is_manual_surface(&event.surface) {
                 self.manual_pointer(conn, event);
                 continue;
             }
@@ -989,41 +951,6 @@ impl PointerHandler for State {
 }
 
 impl State {
-    /// On the manual: a click on its left or right half turns the page back
-    /// or on, the right button goes back to the menu, the wheel scrolls a
-    /// zoomed page or turns pages.
-    fn manual_pointer(&mut self, conn: &Connection, event: &PointerEvent) {
-        let width = self.viewer_piece.as_ref().map_or(0, |piece| piece.size.0);
-        match event.kind {
-            PointerEventKind::Enter { .. } => {
-                if let Some(pointer) = &self.pointer
-                    && let Err(err) = pointer.set_cursor(conn, CursorIcon::Default)
-                {
-                    log::debug!("cannot set the cursor: {err}");
-                }
-            }
-            PointerEventKind::Press { button, .. } => match button {
-                BTN_LEFT if event.position.0 < f64::from(width) / 2.0 => {
-                    self.navigate(Nav::PrevPage);
-                }
-                BTN_LEFT => self.navigate(Nav::NextPage),
-                BTN_RIGHT => self.navigate(Nav::Back),
-                _ => {}
-            },
-            PointerEventKind::Axis { vertical, .. } => {
-                let steps = if vertical.discrete != 0 {
-                    vertical.discrete
-                } else {
-                    (vertical.absolute / 10.0) as i32
-                };
-                if steps != 0 {
-                    self.navigate(if steps < 0 { Nav::Up } else { Nav::Down });
-                }
-            }
-            _ => {}
-        }
-    }
-
     /// Highlight the entry under the pointer, without selecting it.
     fn hover(&mut self, item: Option<usize>) {
         let changed = self
@@ -1150,4 +1077,6 @@ impl ProvidesRegistryState for State {
 delegate_registry!(State);
 wayland_client::delegate_noop!(State: WpAlphaModifierV1);
 wayland_client::delegate_noop!(State: WpAlphaModifierSurfaceV1);
+wayland_client::delegate_noop!(State: WpViewporter);
+wayland_client::delegate_noop!(State: WpViewport);
 smithay_client_toolkit::delegate_dispatch2!(State);

@@ -4,6 +4,7 @@
 //! Every value has EmulationStation's own default (`ThemeData.h`), so the
 //! overlay still looks like ES's default menus when the file is missing.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -122,6 +123,59 @@ impl Default for Background {
     }
 }
 
+/// Where the help prompts' icons are when the theme names none: the
+/// resources of Retrobox's EmulationStation.
+const ES_HELP_ICONS: &str = "/opt/retrobox/frontend/resources/help";
+
+/// The help prompts at the bottom of the screen (`helpsystem` of the theme's
+/// system view, ES's `HelpStyle`), in pixels on ES's screen.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HelpTheme {
+    /// ES's "Show help prompts".
+    pub visible: bool,
+    /// None: ES's default, near the bottom left corner.
+    pub position: Option<(f32, f32)>,
+    pub origin: (f32, f32),
+    pub icon_color: Rgba,
+    pub text_color: Rgba,
+    pub font: FontSpec,
+    /// The icon of each prompt (`up/down`, `a`, `l`...).
+    pub icons: HashMap<String, PathBuf>,
+    /// The icon names of confirm and back.
+    pub ok: String,
+    pub back: String,
+}
+
+impl Default for HelpTheme {
+    fn default() -> Self {
+        let icon = |name: &str, file: &str| (name.to_owned(), Path::new(ES_HELP_ICONS).join(file));
+        Self {
+            visible: true,
+            position: None,
+            origin: (0.0, 0.0),
+            icon_color: Rgba(0x7777_77FF),
+            text_color: Rgba(0x7777_77FF),
+            font: FontSpec::default(),
+            icons: [
+                icon("up/down", "dpad_updown.svg"),
+                icon("left/right", "dpad_leftright.svg"),
+                icon("up/down/left/right", "dpad_all.svg"),
+                icon("a", "button_a.svg"),
+                icon("b", "button_b.svg"),
+                icon("l", "button_l.svg"),
+                icon("r", "button_r.svg"),
+                icon("lr", "button_lr.svg"),
+            ]
+            .into_iter()
+            .collect(),
+            // what ES shows with its default button settings
+            ok: "b".into(),
+            back: "a".into(),
+        }
+    }
+}
+
 /// ES's screen when it exported the theme.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(default)]
@@ -152,6 +206,7 @@ pub struct MenuTheme {
     pub text: TextStyle,
     pub text_small: TextStyle,
     pub footer: TextStyle,
+    pub help: HelpTheme,
 }
 
 impl Default for MenuTheme {
@@ -166,6 +221,7 @@ impl Default for MenuTheme {
             text: TextStyle::default(),
             text_small: TextStyle::default(),
             footer: TextStyle::with_colors(0xC6C6_C6FF, 0xC6C6_C6FF, 0xC6C6_C6FF, 0xFFFF_FFFF),
+            help: HelpTheme::default(),
         }
     }
 }
@@ -211,5 +267,20 @@ mod tests {
         assert_eq!(theme.text.selected_color, Rgba(0xFFFF_FFFF));
         assert_eq!(theme.title.color, Rgba(0x5555_55FF));
         assert_eq!(theme.screen.height, 720);
+        assert_eq!(theme.help.ok, "b");
+    }
+
+    #[test]
+    fn parses_the_help_style() {
+        let theme: MenuTheme = serde_json::from_str(
+            r#"{"help": {"visible": true, "position": [23.0, 1027.6], "origin": [0, 0],
+                "iconColor": "FFFFFFFF", "textColor": "C0C0C0FF",
+                "font": {"path": "/f.ttf", "size": 27, "letterHeight": 19},
+                "icons": {"a": "/t/a.svg"}, "ok": "a", "back": "b"}}"#,
+        )
+        .unwrap();
+        assert_eq!(theme.help.position, Some((23.0, 1027.6)));
+        assert_eq!(theme.help.icons["a"], Path::new("/t/a.svg"));
+        assert_eq!(theme.help.back, "b");
     }
 }

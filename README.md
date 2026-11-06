@@ -59,11 +59,23 @@ while it is shown: nothing stays resident during the game.
   chosen one (`STATE_SLOT_PLUS`/`MINUS`, keeping track of it, since Retrobox leaves no other way
   to change it) and sends `SAVE_STATE`.
 * **The manual.** When the game has a scraped manual (`manual` in `game.xml`, a PDF), the menu
-  offers *Instruction manual*: its pages over the whole screen, rendered by poppler's `pdftoppm`
-  (the pages either side are rendered ahead). Left/Right, the shoulder buttons, Page Up/Down,
-  Up/Down or a click on either half of the page turn pages; Confirm zooms the page to the
-  screen's width, and then Up/Down (or the wheel) scroll it. Back returns to the menu, where
-  the manual stays at the page it was left on.
+  offers *Instruction manual*, a viewer that works like EmulationStation's: the whole page,
+  Left/Right (or a click on either half) to turn pages, Confirm to zoom to the screen's width;
+  zoomed, L/R zoom out and in while held, the d-pad or stick moves the page, and Back returns
+  to the whole page. The triggers and Page Up/Down turn pages at any zoom; the mouse wheel zooms
+  and the left button drags. Back from the whole page returns to the menu, where the manual
+  stays at the page it was left on.
+  Pages are rendered by poppler's `pdftoppm` in a thread, as raw PPM (no PNG to compress and
+  decode), the page on screen first and the pages either side ahead, and kept (up to 128 MB).
+  A page is uploaded once, to a subsurface: the compositor crops and scales it with
+  `wp_viewporter`, so zooming and moving draw nothing, and the page is rendered sharp once a
+  zoom settles. `scaling = overlay` in `[manual]` makes the overlay crop and scale instead, for
+  compositors that show scaled buffers wrong (wlroots 0.17's software renderer blanks the
+  screen).
+* **Help prompts.** Like EmulationStation, the menu and the manual show at the bottom of the
+  screen what the buttons do, in the theme's help style (`helpsystem` of its system view:
+  position, colours, font and icons, the theme's own icons included), which ES exports with
+  the menu theme. Without it they look like ES's defaults, with the icons of Retrobox's ES.
 * **Leaving the game** runs `retrobox-emukill`.
 
 ## Requirements
@@ -79,7 +91,8 @@ while it is shown: nothing stays resident during the game.
 
 `overlay.ini` in `/etc/retrobox` and `~/.config/retrobox` (the user's file wins, key by key).
 See [`data/overlay.ini`](data/overlay.ini) for every key: the menu's side, the dim opacity, the
-animation length, whether to pause the game, and the clock (on/off, position, colour, `strftime` formats). Day and month
+animation length, whether to pause the game, the clock (on/off, position, colour, `strftime`
+formats) and who scales the manual. Day and month
 names follow the language, which is EmulationStation's (else the system's): English, Spanish,
 Catalan, Galician, Basque, Portuguese, French, Italian, German, Dutch, Polish and Russian.
 

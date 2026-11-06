@@ -23,3 +23,14 @@ clock-time-format-12h = %I:%M:%S %p
 # the disc line under the game's name (games of several discs)
 disc-status = { $count }tik { $current }. diskoa
 disc-tray-open = erretilua irekita
+
+# help prompts (EmulationStation's words)
+help-choose = AUKERATU
+help-select = HAUTATU
+help-back = ATZERA
+help-close = ITXI
+help-zoom = ZOOMA
+help-zoom-in = HANDIAGOTU
+help-zoom-out = TXIKIAGOTU
+help-move = MUGITU
+help-page = ORRIA

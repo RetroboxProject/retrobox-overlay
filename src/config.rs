@@ -13,6 +13,9 @@
 //! date_format = %A, %-d %B %Y
 //! position = center       ; top | center | bottom
 //! color = FFFFFFFF
+//!
+//! [manual]
+//! scaling = compositor    ; compositor | overlay
 //! ```
 
 use std::path::Path;
@@ -56,6 +59,10 @@ pub struct Config {
     pub icons: bool,
     pub animation_ms: u64,
     pub clock: ClockConfig,
+    /// Whether the compositor scales and crops the manual's page
+    /// (`wp_viewporter`); off, the overlay does, for compositors that show
+    /// scaled buffers wrong.
+    pub compositor_scaling: bool,
 }
 
 impl Default for Config {
@@ -73,6 +80,7 @@ impl Default for Config {
                 position: VerticalPosition::Center,
                 color: Rgba(0xFFFF_FFFF),
             },
+            compositor_scaling: true,
         }
     }
 }
@@ -150,6 +158,16 @@ impl Config {
             }
             if let Some(color) = section.get("color").and_then(Rgba::parse) {
                 clock.color = color;
+            }
+        }
+        if let Some(scaling) = ini
+            .section(Some("manual"))
+            .and_then(|section| section.get("scaling"))
+        {
+            match scaling.trim().to_ascii_lowercase().as_str() {
+                "compositor" => self.compositor_scaling = true,
+                "overlay" => self.compositor_scaling = false,
+                other => log::warn!("overlay.ini: unknown manual scaling {other:?}"),
             }
         }
     }

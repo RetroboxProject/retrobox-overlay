@@ -23,3 +23,14 @@ clock-time-format-12h = %I:%M:%S %p
 # the disc line under the game's name (games of several discs)
 disc-status = Disco { $current } de { $count }
 disc-tray-open = tabuleiro aberto
+
+# help prompts (EmulationStation's words)
+help-choose = ESCOLHA
+help-select = SELECIONAR
+help-back = VOLTAR
+help-close = FECHAR
+help-zoom = AMPLIAR
+help-zoom-in = AMPLIAR ZOOM
+help-zoom-out = REDUZIR ZOOM
+help-move = MOVER
+help-page = PÁGINA

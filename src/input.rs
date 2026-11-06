@@ -9,8 +9,9 @@
 //! comes up) is taken as stuck and ignored from then on, so the controller is
 //! always grabbed within that time.
 //! Events are read with the Linux gamepad conventions (`BTN_SOUTH`/`BTN_EAST`,
-//! d-pad buttons or hat, left stick, `BTN_MODE` for the guide button), which
-//! the usual drivers follow (xpad, xone, hid-playstation, hid-nintendo...).
+//! d-pad buttons or hat, left stick, shoulders and triggers, `BTN_MODE` for
+//! the guide button), which the usual drivers follow (xpad, xone,
+//! hid-playstation, hid-nintendo...).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -27,12 +28,36 @@ pub enum Nav {
     Down,
     Left,
     Right,
-    /// The shoulder buttons (and Page Up/Down): pages in the manual.
+    /// The shoulder buttons (L, R): zoom in the manual, like ES's viewer.
+    ZoomOut,
+    ZoomIn,
+    /// The triggers (L2, R2) and Page Up/Down: pages in the manual.
     PrevPage,
     NextPage,
     Confirm,
     Back,
     Close,
+}
+
+/// An input going down or coming back up: the manual moves and zooms while
+/// a direction or a shoulder is held, as ES's viewer does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Input {
+    pub nav: Nav,
+    pub pressed: bool,
+}
+
+impl Input {
+    pub const fn press(nav: Nav) -> Self {
+        Self { nav, pressed: true }
+    }
+
+    pub const fn release(nav: Nav) -> Self {
+        Self {
+            nav,
+            pressed: false,
+        }
+    }
 }
 
 /// Fraction of an axis' half-range past which the stick counts as pushed.
@@ -142,8 +167,8 @@ impl Pad {
         self.grabbed = true;
     }
 
-    /// The navigation the pending events ask for.
-    pub fn read(&mut self) -> Vec<Nav> {
+    /// The presses and releases in the pending events.
+    pub fn read(&mut self) -> Vec<Input> {
         let events: Vec<_> = match self.device.fetch_events() {
             Ok(events) => events.collect(),
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Vec::new(),
@@ -157,15 +182,21 @@ impl Pad {
             self.try_grab();
             return Vec::new();
         }
-        let mut navs = Vec::new();
+        let mut inputs = Vec::new();
         for event in events {
             match event.destructure() {
-                EventSummary::Key(_, code, 1) => navs.extend(self.button(code)),
-                EventSummary::AbsoluteAxis(_, axis, value) => navs.extend(self.axis(axis, value)),
+                // 2 is the kernel's auto-repeat: holding is followed here
+                EventSummary::Key(_, code, value @ (0 | 1)) => {
+                    inputs.extend(self.button(code).map(|nav| Input {
+                        nav,
+                        pressed: value == 1,
+                    }));
+                }
+                EventSummary::AbsoluteAxis(_, axis, value) => inputs.extend(self.axis(axis, value)),
                 _ => {}
             }
         }
-        navs
+        inputs
     }
 
     fn button(&self, code: KeyCode) -> Option<Nav> {
@@ -179,8 +210,10 @@ impl Pad {
             KeyCode::BTN_DPAD_DOWN => Some(Nav::Down),
             KeyCode::BTN_DPAD_LEFT => Some(Nav::Left),
             KeyCode::BTN_DPAD_RIGHT => Some(Nav::Right),
-            KeyCode::BTN_TL => Some(Nav::PrevPage),
-            KeyCode::BTN_TR => Some(Nav::NextPage),
+            KeyCode::BTN_TL => Some(Nav::ZoomOut),
+            KeyCode::BTN_TR => Some(Nav::ZoomIn),
+            KeyCode::BTN_TL2 => Some(Nav::PrevPage),
+            KeyCode::BTN_TR2 => Some(Nav::NextPage),
             KeyCode::BTN_MODE => Some(Nav::Close),
             KeyCode::BTN_START => Some(Nav::Confirm),
             code if code == confirm => Some(Nav::Confirm),
@@ -189,8 +222,12 @@ impl Pad {
         }
     }
 
-    fn axis(&mut self, axis: AbsoluteAxisCode, value: i32) -> Option<Nav> {
-        let (centre, half, last) = self.axes.get_mut(&axis)?;
+    /// A stick or hat moving: the direction it left goes up, the one it
+    /// reaches goes down.
+    fn axis(&mut self, axis: AbsoluteAxisCode, value: i32) -> Vec<Input> {
+        let Some((centre, half, last)) = self.axes.get_mut(&axis) else {
+            return Vec::new();
+        };
         let position = (value - *centre) as f32 / *half as f32;
         let direction = if position <= -STICK_THRESHOLD {
             -1
@@ -198,17 +235,22 @@ impl Pad {
             i32::from(position >= STICK_THRESHOLD)
         };
         if direction == *last {
-            return None;
+            return Vec::new();
         }
-        *last = direction;
+        let left = std::mem::replace(last, direction);
         let horizontal = [AbsoluteAxisCode::ABS_X, AbsoluteAxisCode::ABS_HAT0X].contains(&axis);
-        match (direction, horizontal) {
+        let nav = |direction| match (direction, horizontal) {
             (-1, false) => Some(Nav::Up),
             (1, false) => Some(Nav::Down),
             (-1, true) => Some(Nav::Left),
             (1, true) => Some(Nav::Right),
             _ => None,
-        }
+        };
+        nav(left)
+            .map(Input::release)
+            .into_iter()
+            .chain(nav(direction).map(Input::press))
+            .collect()
     }
 }
 

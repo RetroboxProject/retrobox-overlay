@@ -223,6 +223,11 @@ impl Panel {
         self.scroll_to_selection();
     }
 
+    /// Whether a save state page is shown.
+    pub const fn page_open(&self) -> bool {
+        self.page.is_some()
+    }
+
     /// Back to the main entries; false when no page was open.
     pub fn close_page(&mut self) -> bool {
         if self.page.take().is_none() {
