@@ -157,8 +157,7 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
         .filter_map(|controller| Pad::open(Path::new(&controller.device), theme.invert_buttons))
         .collect();
 
-    // before the overlay shows itself: the game still has the keyboard focus
-    emulator.pause();
+    // app::run pauses the game once it knows it can show the overlay
     let (outcome, emulator) = app::run(Content {
         config,
         theme,

@@ -16,24 +16,16 @@ use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::reexports::calloop::channel::{self as loop_channel, Event};
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
-use smithay_client_toolkit::seat::pointer::{CursorIcon, PointerEvent, PointerEventKind};
-use smithay_client_toolkit::shell::WaylandSurface;
-use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
-use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
+use smithay_client_toolkit::shell::wlr_layer::Anchor;
 use tiny_skia::Pixmap;
-use wayland_client::Connection;
-use wayland_client::protocol::wl_shm;
-use wayland_client::protocol::wl_subsurface::WlSubsurface;
-use wayland_client::protocol::wl_surface::WlSurface;
-use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1;
-use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
+use x11rb::protocol::xproto;
 
-use super::{BTN_LEFT, BTN_RIGHT, FRAME, Outcome, Piece, State, namespace};
+use super::display::{Piece, Spec, Sub, SurfaceId};
+use super::{BTN_LEFT, BTN_RIGHT, FRAME, Outcome, PointerInput, PointerKind, State};
 use crate::input::{Input, Nav};
 use crate::manual::{PageRequest, Rendered};
 use crate::theme::Rgba;
 use crate::ui::help::{Help, Prompt};
-use crate::ui::to_argb8888;
 use crate::ui::viewer::{Placement, Viewer};
 
 /// The backdrop behind the page, over everything else (opaque: nothing
@@ -45,119 +37,6 @@ const SETTLE: Duration = Duration::from_millis(200);
 const WHEEL_ZOOM: f32 = 1.15;
 /// How far the pointer moves before a press is a drag, not a click.
 const DRAG_THRESHOLD: f64 = 6.0;
-
-/// A subsurface with its buffer.
-pub(super) struct Sub {
-    subsurface: WlSubsurface,
-    surface: WlSurface,
-    viewport: Option<WpViewport>,
-    fade: Option<WpAlphaModifierSurfaceV1>,
-    buffer: Option<Buffer>,
-    pub(super) position: (i32, i32),
-}
-
-impl Sub {
-    pub(super) fn new(
-        state: &State,
-        parent: &WlSurface,
-        viewport: bool,
-        fade: bool,
-    ) -> Option<Self> {
-        let subcompositor = state.subcompositor.as_ref()?;
-        let (subsurface, surface) = subcompositor.create_subsurface(parent.clone(), &state.qh);
-        // nothing of a subsurface takes input: the pointer goes through to
-        // its parent (see State::manual_pointer)
-        let viewport = viewport
-            .then_some(state.viewporter.as_ref())
-            .flatten()
-            .map(|viewporter| viewporter.get_viewport(&surface, &state.qh, ()));
-        let fade = fade.then_some(state.alpha.as_ref()).flatten().map(|alpha| {
-            let fade = alpha.get_surface(&surface, &state.qh, ());
-            fade.set_multiplier(0);
-            fade
-        });
-        Some(Self {
-            subsurface,
-            surface,
-            viewport,
-            fade,
-            buffer: None,
-            position: (0, 0),
-        })
-    }
-
-    pub(super) fn is(&self, surface: &WlSurface) -> bool {
-        &self.surface == surface
-    }
-
-    pub(super) fn set_opacity(&self, opacity: f32) {
-        if let Some(fade) = &self.fade {
-            fade.set_multiplier((f64::from(opacity.clamp(0.0, 1.0)) * f64::from(u32::MAX)) as u32);
-        }
-    }
-
-    pub(super) fn move_to(&mut self, x: i32, y: i32) {
-        self.position = (x, y);
-        self.subsurface.set_position(x, y);
-    }
-
-    /// Show a pixmap, at its size (no viewport).
-    pub(super) fn show_pixmap(&mut self, pool: &mut SlotPool, pixmap: &Pixmap) {
-        let (width, height) = (pixmap.width(), pixmap.height());
-        self.attach(pool, width, height, |canvas| to_argb8888(pixmap, canvas));
-    }
-
-    /// Show ARGB8888 pixels (rows of `width * 4` bytes).
-    fn show_pixels(&mut self, pool: &mut SlotPool, width: u32, height: u32, pixels: &[u8]) {
-        self.attach(pool, width, height, |canvas| {
-            let length = canvas.len().min(pixels.len());
-            canvas[..length].copy_from_slice(&pixels[..length]);
-        });
-    }
-
-    fn attach(
-        &mut self,
-        pool: &mut SlotPool,
-        width: u32,
-        height: u32,
-        fill: impl FnOnce(&mut [u8]),
-    ) {
-        let (width, height) = (width as i32, height as i32);
-        let Ok((buffer, canvas)) =
-            pool.create_buffer(width, height, width * 4, wl_shm::Format::Argb8888)
-        else {
-            log::warn!("cannot allocate a {width}x{height} buffer");
-            return;
-        };
-        fill(canvas);
-        if buffer.attach_to(&self.surface).is_ok() {
-            self.surface.damage_buffer(0, 0, width, height);
-            self.buffer = Some(buffer);
-        }
-    }
-
-    pub(super) fn hide(&mut self) {
-        self.surface.attach(None, 0, 0);
-        self.buffer = None;
-    }
-
-    pub(super) fn commit(&self) {
-        self.surface.commit();
-    }
-}
-
-impl Drop for Sub {
-    fn drop(&mut self) {
-        if let Some(viewport) = &self.viewport {
-            viewport.destroy();
-        }
-        if let Some(fade) = &self.fade {
-            fade.destroy();
-        }
-        self.subsurface.destroy();
-        self.surface.destroy();
-    }
-}
 
 /// The manual's surfaces while it is open.
 pub(super) struct ManualScreen {
@@ -214,31 +93,23 @@ impl State {
             let view = manual_view_size(self.dim.size, self.help.as_ref());
             self.manual.viewer = Some(Viewer::new(manual.pages(), view));
         }
-        let surface = self.compositor.create_surface(&self.qh);
-        let layer = self.layer_shell.create_layer_surface(
-            &self.qh,
-            surface,
-            Layer::Overlay,
-            Some(namespace()),
-            None,
-        );
-        layer.set_anchor(Anchor::all());
-        layer.set_exclusive_zone(-1);
         // the panel keeps the keyboard: losing it would close the overlay
-        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_size(0, 0);
-        layer.commit();
-        let backdrop = Piece::new(layer, None, &self.qh);
-        let parent = backdrop.layer.wl_surface().clone();
+        let backdrop = self.display.create_piece(Spec {
+            anchor: Anchor::all(),
+            size: (0, 0),
+            margin: [0; 4],
+            keyboard: false,
+            fade: false,
+        });
         self.manual.screen = Some(ManualScreen {
-            page: Sub::new(self, &parent, true, false),
-            help: Sub::new(self, &parent, false, false),
+            page: Sub::new(&mut self.display, &backdrop, true, false),
+            help: Sub::new(&mut self.display, &backdrop, false, false),
             backdrop,
             shown: None,
             placement: None,
             prompts: None,
         });
-        if self.subcompositor.is_none() {
+        if !self.display.has_subsurfaces() {
             log::warn!("no wl_subcompositor: the manual cannot be shown");
         }
         self.hover(None);
@@ -256,7 +127,7 @@ impl State {
     }
 
     /// Whether a surface is one of the manual's.
-    pub(super) fn is_manual_surface(&self, surface: &WlSurface) -> bool {
+    pub(super) fn is_manual_surface(&self, surface: &SurfaceId) -> bool {
         self.manual.screen.as_ref().is_some_and(|screen| {
             screen.backdrop.is(surface)
                 || screen.page.as_ref().is_some_and(|page| page.is(surface))
@@ -265,7 +136,7 @@ impl State {
     }
 
     /// The backdrop has its size: draw it, once, and what is on it.
-    pub(super) fn manual_configured(&mut self, surface: &WlSurface, size: (u32, u32)) -> bool {
+    pub(super) fn manual_configured(&mut self, surface: &SurfaceId, size: (u32, u32)) -> bool {
         let Some(screen) = self
             .manual
             .screen
@@ -278,7 +149,7 @@ impl State {
         screen.backdrop.size = size;
         if first && let Some(mut pixmap) = Pixmap::new(size.0.max(1), size.1.max(1)) {
             pixmap.fill(BACKDROP.to_color());
-            screen.backdrop.present(&mut self.pool, &pixmap);
+            screen.backdrop.present(&mut self.display, &pixmap);
             self.show_page(true);
         }
         true
@@ -333,11 +204,16 @@ impl State {
             .map(|image| (wanted, image))
             .or_else(|| manual.best(viewer.page));
         if let Some(page) = screen.page.as_mut() {
-            match (image, page.viewport.clone()) {
+            match (image, page.viewport()) {
                 (None, _) => {} // the page shown before stays until this one is ready
                 (Some((request, image)), Some(viewport)) => {
                     if screen.shown != Some(request) {
-                        page.show_pixels(&mut self.pool, image.width, image.height, &image.pixels);
+                        page.show_pixels(
+                            &mut self.display,
+                            image.width,
+                            image.height,
+                            &image.pixels,
+                        );
                         screen.shown = Some(request);
                         screen.placement = None;
                     }
@@ -358,7 +234,7 @@ impl State {
                     if screen.shown != Some(request) || screen.placement != Some(placement) {
                         let pixels = crop_and_scale(image.width, &image.pixels, &placement);
                         page.show_pixels(
-                            &mut self.pool,
+                            &mut self.display,
                             placement.width,
                             placement.height,
                             &pixels,
@@ -376,7 +252,7 @@ impl State {
         self.draw_manual_help();
         if let Some(screen) = &self.manual.screen {
             // the subsurfaces' changes take effect with their parent's commit
-            screen.backdrop.layer.commit();
+            screen.backdrop.commit();
         }
     }
 
@@ -403,7 +279,7 @@ impl State {
             Some(pixmap) => {
                 let (x, y) = help.place(pixmap.width());
                 sub.move_to(x, y);
-                sub.show_pixmap(&mut self.pool, &pixmap);
+                sub.show_pixmap(&mut self.display, &pixmap);
             }
             None => sub.hide(),
         }
@@ -593,7 +469,7 @@ impl State {
     /// The pointer on the manual, as on ES's viewer: the wheel zooms, a
     /// zoomed page is dragged; a click on either half of a whole page turns
     /// it back or on; the right button goes back.
-    pub(super) fn manual_pointer(&mut self, conn: &Connection, event: &PointerEvent) {
+    pub(super) fn manual_pointer(&mut self, event: &PointerInput) {
         let Some(screen) = &self.manual.screen else {
             return;
         };
@@ -609,20 +485,9 @@ impl State {
         );
         let width = f64::from(screen.backdrop.size.0);
         match event.kind {
-            PointerEventKind::Enter { .. } => {
-                if let Some(pointer) = &self.pointer
-                    && let Err(err) = pointer.set_cursor(conn, CursorIcon::Default)
-                {
-                    log::debug!("cannot set the cursor: {err}");
-                }
-            }
-            PointerEventKind::Press {
-                button: BTN_LEFT, ..
-            } => self.manual.drag = Some((position, false)),
-            PointerEventKind::Motion { .. } => self.drag_to(position),
-            PointerEventKind::Release {
-                button: BTN_LEFT, ..
-            } => {
+            PointerKind::Press(BTN_LEFT) => self.manual.drag = Some((position, false)),
+            PointerKind::Motion => self.drag_to(position),
+            PointerKind::Release(BTN_LEFT) => {
                 let dragged = self.manual.drag.take().is_some_and(|(_, dragged)| dragged);
                 let zoomed = self.manual.viewer.as_ref().is_some_and(Viewer::zoomed);
                 if !dragged && !zoomed {
@@ -634,15 +499,8 @@ impl State {
                     self.manual_input(Input::press(nav));
                 }
             }
-            PointerEventKind::Press {
-                button: BTN_RIGHT, ..
-            } => self.manual_input(Input::press(Nav::Back)),
-            PointerEventKind::Axis { vertical, .. } => {
-                let steps = if vertical.discrete != 0 {
-                    vertical.discrete
-                } else {
-                    (vertical.absolute / 10.0) as i32
-                };
+            PointerKind::Press(BTN_RIGHT) => self.manual_input(Input::press(Nav::Back)),
+            PointerKind::Wheel(steps) if steps != 0 => {
                 let Some(points) = self.page_points() else {
                     return;
                 };
@@ -651,12 +509,25 @@ impl State {
                     .viewer
                     .as_mut()
                     .is_some_and(|viewer| viewer.zoom_by(WHEEL_ZOOM.powi(-steps), points));
-                if steps != 0 && zoomed {
+                if zoomed {
                     self.show_page(false);
                     self.settle_later();
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Paint a window of the manual again (X11).
+    pub(super) fn manual_expose(&self, window: xproto::Window) {
+        if let Some(screen) = &self.manual.screen
+            && !screen.backdrop.expose(window)
+        {
+            for sub in [&screen.page, &screen.help].into_iter().flatten() {
+                if sub.expose(window) {
+                    break;
+                }
+            }
         }
     }
 

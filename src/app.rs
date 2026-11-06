@@ -1,30 +1,33 @@
-//! The overlay on screen: three layer-shell surfaces in the overlay layer.
+//! The overlay on screen: pieces placed like layer-shell surfaces, on
+//! Wayland or X11 (see `display.rs`).
 //!
 //! * the dim: one translucent black buffer over the whole output;
-//! * the panel: the side menu, slid in from its edge by animating the layer
-//!   surface's margin (its buffer is drawn once, not on every frame); it takes
-//!   the keyboard, once the game is paused (the pause key has to reach the
-//!   game first, see emulator.rs);
+//! * the panel: the side menu, slid in from its edge by animating its margin
+//!   (its buffer is drawn once, not on every frame); it takes the keyboard,
+//!   once the game is paused (the pause key has to reach the game first, see
+//!   emulator.rs);
 //! * the clock, in a corner on the other side, redrawn once a second;
 //! * the manual, when opened: a page over the whole screen (see
 //!   `manual_view.rs`);
-//! * the help prompts, at the bottom like EmulationStation's, on a
-//!   subsurface of the dim.
+//! * the help prompts, at the bottom like EmulationStation's, inside the dim.
 //!
-//! With `wp_alpha_modifier` (KWin 6.1+, labwc 0.9+) the three fade in as well,
-//! by the compositor: nothing is drawn again for the fade. (A single-pixel
-//! buffer stretched by `wp_viewporter` would make the dim free, but software
-//! compositors filter it to nothing; a full buffer works everywhere.)
+//! Where the display can (Wayland's `wp_alpha_modifier`, KWin 6.1+ and labwc
+//! 0.9+; X11's window opacity, with a compositing manager) they fade in as
+//! well, by the compositor: nothing is drawn again for the fade. (A
+//! single-pixel buffer stretched by `wp_viewporter` would make the dim free,
+//! but software compositors filter it to nothing; a full buffer works
+//! everywhere.)
 //!
-//! The dim surface comes first: its configure tells the output size, which
-//! the other two are sized from.
+//! The dim comes first: its size is the output's, which the rest is sized
+//! from.
 
 use std::os::fd::AsFd;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
 use chrono::{Local, Timelike};
-use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
+use smithay_client_toolkit::compositor::CompositorHandler;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::signals::{Signal, Signals};
@@ -33,31 +36,30 @@ use smithay_client_toolkit::reexports::calloop::{
     EventLoop, Interest, LoopHandle, Mode, PostAction, RegistrationToken,
 };
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
-use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState, SimpleGlobal};
+use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
     KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
 };
 use smithay_client_toolkit::seat::pointer::{
-    CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
+    CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec,
 };
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
-    Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
-    LayerSurfaceConfigure,
+    Anchor, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
-use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
-use smithay_client_toolkit::subcompositor::SubcompositorState;
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
-use tiny_skia::Pixmap;
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
+use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface};
 use wayland_client::{Connection, QueueHandle};
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1;
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1;
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
+use x11rb::connection::Connection as _;
+use x11rb::protocol::Event as XEvent;
+use x11rb::protocol::xproto::{self, NotifyDetail, NotifyMode};
 
 use crate::config::{Config, Side, VerticalPosition};
 use crate::emulator::{EmuAction, Emulator, Request};
@@ -71,30 +73,13 @@ use crate::ui::help::{Help, Prompt};
 use crate::ui::panel::{MenuAction, MenuItem, Panel};
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
-use crate::ui::to_argb8888;
 
+mod display;
 mod manual_view;
 
-use manual_view::{ManualState, Sub};
+use display::{Display, Piece, Spec, Sub, SurfaceId, X11};
+use manual_view::ManualState;
 
-/// The layer surfaces' namespace, which compositors may match in their
-/// rules.
-const NAMESPACE: &str = "retrobox-overlay";
-/// KWin animates layer surfaces whose namespace it does not know as normal
-/// windows (its Scale, Fade or Glide effects, on top of the overlay's own
-/// slide and fade); an on-screen display it leaves alone, and it changes
-/// nothing else for a layer surface.
-const KWIN_NAMESPACE: &str = "on-screen-display";
-
-/// The namespace for this desktop.
-fn namespace() -> &'static str {
-    let kde = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktops| {
-        desktops
-            .split(':')
-            .any(|desktop| desktop.eq_ignore_ascii_case("KDE"))
-    });
-    if kde { KWIN_NAMESPACE } else { NAMESPACE }
-}
 const FRAME: Duration = Duration::from_millis(16);
 /// How long a controller direction is held before it repeats, and how often
 /// it does then.
@@ -117,7 +102,7 @@ pub enum Outcome {
     Quit,
 }
 
-/// Everything the overlay shows, prepared before it connects to Wayland.
+/// Everything the overlay shows, prepared before it connects to the display.
 pub struct Content {
     pub config: Config,
     pub theme: MenuTheme,
@@ -139,80 +124,10 @@ pub struct Content {
     pub launched: Instant,
 }
 
-/// A layer surface and what is shown on it.
-struct Piece {
-    layer: LayerSurface,
-    size: (u32, u32),
-    buffer: Option<Buffer>,
-    fade: Option<WpAlphaModifierSurfaceV1>,
-}
-
-impl Piece {
-    fn new(
-        layer: LayerSurface,
-        alpha: Option<&WpAlphaModifierV1>,
-        qh: &QueueHandle<State>,
-    ) -> Self {
-        let fade = alpha.map(|alpha| {
-            let fade = alpha.get_surface(layer.wl_surface(), qh, ());
-            fade.set_multiplier(0);
-            fade
-        });
-        Self {
-            layer,
-            size: (0, 0),
-            buffer: None,
-            fade,
-        }
-    }
-
-    /// Set the opacity the compositor applies (0..1), for the next commit.
-    fn set_opacity(&self, opacity: f32) {
-        if let Some(fade) = &self.fade {
-            fade.set_multiplier((f64::from(opacity.clamp(0.0, 1.0)) * f64::from(u32::MAX)) as u32);
-        }
-    }
-
-    fn is(&self, surface: &wl_surface::WlSurface) -> bool {
-        self.layer.wl_surface() == surface
-    }
-
-    /// Attach a pixmap as the surface's content.
-    fn present(&mut self, pool: &mut SlotPool, pixmap: &Pixmap) {
-        let (width, height) = (pixmap.width() as i32, pixmap.height() as i32);
-        let Ok((buffer, canvas)) =
-            pool.create_buffer(width, height, width * 4, wl_shm::Format::Argb8888)
-        else {
-            log::warn!("cannot allocate a {width}x{height} buffer");
-            return;
-        };
-        to_argb8888(pixmap, canvas);
-        let surface = self.layer.wl_surface();
-        if buffer.attach_to(surface).is_ok() {
-            surface.damage_buffer(0, 0, width, height);
-            self.layer.commit();
-            self.buffer = Some(buffer);
-        }
-    }
-}
-
-#[allow(clippy::struct_field_names, reason = "SCTK's usual names")]
 struct State {
-    registry_state: RegistryState,
-    seat_state: SeatState,
-    output_state: OutputState,
-    compositor: CompositorState,
-    layer_shell: LayerShell,
-    shm: Shm,
-    alpha: Option<WpAlphaModifierV1>,
-    subcompositor: Option<SubcompositorState>,
-    viewporter: Option<WpViewporter>,
-    pool: SlotPool,
-    keyboard: Option<wl_keyboard::WlKeyboard>,
-    pointer: Option<ThemedPointer>,
+    display: Display,
     /// Whether the menu has the keyboard focus.
     focused: bool,
-    qh: QueueHandle<State>,
     handle: LoopHandle<'static, State>,
 
     content: Content,
@@ -230,46 +145,41 @@ struct State {
     outcome: Option<Outcome>,
 }
 
-/// Show the overlay until the user leaves it.
+/// A pointer event, whichever the display.
+pub(crate) struct PointerInput {
+    surface: SurfaceId,
+    /// On the surface, in pixels.
+    position: (f64, f64),
+    kind: PointerKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointerKind {
+    Enter,
+    Leave,
+    Motion,
+    Press(u32),
+    Release(u32),
+    /// Wheel notches, down when positive.
+    Wheel(i32),
+}
+
+/// Show the overlay until the user leaves it: on Wayland with layer-shell,
+/// else on X11 (an X11 session, or `XWayland` where the compositor has no
+/// layer-shell).
 pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
-    let conn =
-        Connection::connect_to_env().context("no Wayland compositor to show the overlay on")?;
-    let (globals, queue) = registry_queue_init(&conn).context("cannot list the Wayland globals")?;
-    let qh: QueueHandle<State> = queue.handle();
-
-    let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor missing")?;
-    let layer_shell = LayerShell::bind(&globals, &qh).map_err(|_| {
-        anyhow!(
-            "the compositor has no layer-shell (KWin and wlroots compositors such as labwc have it)"
-        )
-    })?;
-    let shm = Shm::bind(&globals, &qh).context("wl_shm missing")?;
-    let pool = SlotPool::new(4 * 1024 * 1024, &shm).context("cannot create the shm pool")?;
-    let alpha = SimpleGlobal::<WpAlphaModifierV1, 1>::bind(&globals, &qh)
-        .ok()
-        .and_then(|global| global.get().ok().cloned());
-    let (subcompositor, viewporter) = manual_globals(
-        &compositor,
-        &globals,
-        &qh,
-        content.config.compositor_scaling,
-    );
-
-    let surface = compositor.create_surface(&qh);
-    let layer =
-        layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some(namespace()), None);
-    layer.set_anchor(Anchor::all());
-    layer.set_exclusive_zone(-1);
-    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-    layer.set_size(0, 0);
-    layer.commit();
-
     let mut event_loop: EventLoop<'static, State> =
         EventLoop::try_new().context("cannot create the event loop")?;
     let handle = event_loop.handle();
-    WaylandSource::new(conn.clone(), queue)
-        .insert(handle.clone())
-        .map_err(|err| anyhow!("cannot watch the Wayland socket: {}", err.error))?;
+    let mut display = match connect_wayland(&handle, content.config.compositor_scaling) {
+        Ok(display) => display,
+        Err(wayland) => {
+            log::info!("{wayland:#}: trying X11");
+            connect_x11(&handle)
+                .with_context(|| format!("{wayland:#}"))
+                .context("no display to show the overlay on")?
+        }
+    };
 
     // SIGUSR1: the overlay started again (the hotkey, Shift+F7) closes this
     // one, back to the game like Continue; being stopped leaves it paused
@@ -286,24 +196,25 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
 
     watch_controllers(&handle, &content.pads)?;
 
+    // Everything the overlay needs is there: pause the game now, before the
+    // overlay shows itself (the game still has the keyboard focus). Failing
+    // any sooner (no display it can show on) leaves the game running.
+    content.emulator.pause();
+
+    // the dim comes first: its size is the screen's, which the rest is sized from
+    let dim = display.create_piece(Spec {
+        anchor: Anchor::all(),
+        size: (0, 0),
+        margin: [0; 4],
+        keyboard: false,
+        fade: true,
+    });
     let mut state = State {
-        registry_state: RegistryState::new(&globals),
-        seat_state: SeatState::new(&globals, &qh),
-        output_state: OutputState::new(&globals, &qh),
-        compositor,
-        layer_shell,
-        shm,
-        dim: Piece::new(layer, alpha.as_ref(), &qh),
-        alpha,
-        subcompositor,
-        viewporter,
-        pool,
-        keyboard: None,
-        pointer: None,
+        display,
         focused: false,
-        qh,
         handle,
         content,
+        dim,
         panel: None,
         clock: None,
         help: None,
@@ -315,20 +226,55 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
     };
 
     while state.outcome.is_none() {
-        event_loop
-            .dispatch(None, &mut state)
-            .context("event loop error")?;
+        state.x11_configures();
+        state.display.flush();
+        if let Err(err) = event_loop.dispatch(None, &mut state) {
+            // the overlay is gone: do not leave the game paused behind it
+            state.content.emulator.back_to_game(None);
+            return Err(err).context("event loop error");
+        }
     }
     let outcome = state.outcome.unwrap_or(Outcome::Dismiss);
     // Hide the overlay first, then hand the controllers back once the button
     // that closed it is up (see input.rs).
     let mut pads = std::mem::take(&mut state.content.pads);
     let emulator = std::mem::replace(&mut state.content.emulator, Emulator::none());
-    drop(state);
-    conn.flush().ok();
+    let State { display, .. } = state;
+    display.flush();
+    drop(display);
     input::wait_released(&mut pads);
     drop(pads);
     Ok((outcome, emulator))
+}
+
+/// The Wayland compositor, if it has what the overlay needs.
+fn connect_wayland(
+    handle: &LoopHandle<'static, State>,
+    compositor_scaling: bool,
+) -> Result<Display> {
+    let conn = Connection::connect_to_env().context("no Wayland compositor")?;
+    let (globals, queue) = registry_queue_init(&conn).context("cannot list the Wayland globals")?;
+    let wl = display::bind_wayland(conn.clone(), &globals, queue.handle(), compositor_scaling)?;
+    WaylandSource::new(conn, queue)
+        .insert(handle.clone())
+        .map_err(|err| anyhow!("cannot watch the Wayland socket: {}", err.error))?;
+    Ok(Display::Wayland(Box::new(wl)))
+}
+
+/// The X server, its events read in the event loop.
+fn connect_x11(handle: &LoopHandle<'static, State>) -> Result<Display> {
+    let x11 = X11::connect()?;
+    let fd = x11.conn.stream().as_fd().try_clone_to_owned()?;
+    handle
+        .insert_source(
+            Generic::new(fd, Interest::READ, Mode::Level),
+            |_, _, state| {
+                state.x11_events();
+                Ok(PostAction::Continue)
+            },
+        )
+        .map_err(|err| anyhow!("cannot watch the X11 connection: {}", err.error))?;
+    Ok(Display::X11(x11))
 }
 
 /// Read the controllers' events, and grab them all once `GRAB_WAIT` has
@@ -362,26 +308,6 @@ fn watch_controllers(handle: &LoopHandle<'static, State>, pads: &[Pad]) -> Resul
     Ok(())
 }
 
-/// What the manual is shown with: subsurfaces, cropped and scaled by the
-/// compositor when it has `wp_viewporter` (and the settings let it).
-fn manual_globals(
-    compositor: &CompositorState,
-    globals: &wayland_client::globals::GlobalList,
-    qh: &QueueHandle<State>,
-    compositor_scaling: bool,
-) -> (Option<SubcompositorState>, Option<WpViewporter>) {
-    let subcompositor =
-        SubcompositorState::bind(compositor.wl_compositor().clone(), globals, qh).ok();
-    let viewporter = SimpleGlobal::<WpViewporter, 1>::bind(globals, qh)
-        .ok()
-        .and_then(|global| global.get().ok().cloned())
-        .filter(|_| compositor_scaling);
-    if viewporter.is_none() {
-        log::info!("the manual is scaled by the overlay (no wp_viewporter, or the setting)");
-    }
-    (subcompositor, viewporter)
-}
-
 /// Smooth start and end of the animations.
 fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
@@ -402,27 +328,11 @@ impl State {
     /// The dim: translucent black over the whole output, drawn straight into
     /// the buffer (no pixmap: it can be a 4K screen).
     fn draw_dim(&mut self) {
-        let (width, height) = self.dim.size;
         let alpha = (self.content.config.dim.clamp(0.0, 1.0) * 255.0).round() as u8;
-        let (width, height) = (width.max(1) as i32, height.max(1) as i32);
-        let Ok((buffer, canvas)) =
-            self.pool
-                .create_buffer(width, height, width * 4, wl_shm::Format::Argb8888)
-        else {
-            log::warn!("cannot allocate the {width}x{height} dim buffer");
-            return;
-        };
+        self.dim
+            .set_opacity(&self.display, ease_out(self.progress()));
         // premultiplied black: only the alpha byte (B, G, R, A in memory)
-        for pixel in canvas.as_chunks_mut::<4>().0 {
-            *pixel = [0, 0, 0, alpha];
-        }
-        let surface = self.dim.layer.wl_surface();
-        if buffer.attach_to(surface).is_ok() {
-            surface.damage_buffer(0, 0, width, height);
-            self.dim.set_opacity(ease_out(self.progress()));
-            self.dim.layer.commit();
-            self.dim.buffer = Some(buffer);
-        }
+        self.dim.fill(&mut self.display, [0, 0, 0, alpha]);
     }
 
     /// Once the output size is known: create the panel and the clock.
@@ -443,24 +353,15 @@ impl State {
             Side::Left => (Anchor::LEFT, Anchor::RIGHT),
         };
 
-        let surface = self.compositor.create_surface(&self.qh);
-        let layer = self.layer_shell.create_layer_surface(
-            &self.qh,
-            surface,
-            Layer::Overlay,
-            Some(namespace()),
-            None,
-        );
-        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | edge);
-        layer.set_exclusive_zone(-1);
-        // The keyboard on demand, not exclusively: the compositor may give it
-        // to another window (Alt+Tab, a click), and then the overlay closes.
-        layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
-        layer.set_size(panel.width, 0);
-        let hidden = -(panel.width as i32);
-        set_edge_margin(&layer, config.side, hidden);
-        layer.commit();
-        self.panel = Some((panel, Piece::new(layer, self.alpha.as_ref(), &self.qh)));
+        // hidden past its edge; it slides in (see animate)
+        let piece = self.display.create_piece(Spec {
+            anchor: Anchor::TOP | Anchor::BOTTOM | edge,
+            size: (panel.width, 0),
+            margin: edge_margin(config.side, -(panel.width as i32)),
+            keyboard: true,
+            fade: true,
+        });
+        self.panel = Some((panel, piece));
 
         if config.clock.enabled {
             let free =
@@ -477,33 +378,25 @@ impl State {
                     Side::Left => cosmic_text::Align::Right,
                 },
             );
-            let surface = self.compositor.create_surface(&self.qh);
-            let layer = self.layer_shell.create_layer_surface(
-                &self.qh,
-                surface,
-                Layer::Overlay,
-                Some(namespace()),
-                None,
-            );
             let margin = (height as f32 * CLOCK_MARGIN) as i32;
             let (vertical, top, bottom) = match config.clock.position {
                 VerticalPosition::Top => (Anchor::TOP, margin, 0),
                 VerticalPosition::Bottom => (Anchor::BOTTOM, 0, margin),
                 VerticalPosition::Center => (Anchor::empty(), 0, 0),
             };
-            layer.set_anchor(other | vertical);
-            layer.set_margin(top, 0, bottom, 0);
-            layer.set_exclusive_zone(-1);
-            layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-            layer.set_size(free.max(1), clock.height());
-            layer.commit();
-            self.clock = Some((clock, Piece::new(layer, self.alpha.as_ref(), &self.qh)));
+            let piece = self.display.create_piece(Spec {
+                anchor: other | vertical,
+                size: (free.max(1), clock.height()),
+                margin: [top, 0, bottom, 0],
+                keyboard: false,
+                fade: true,
+            });
+            self.clock = Some((clock, piece));
             self.schedule_clock();
         }
 
         self.help = Some(Help::new(&self.content.theme, (width, height)));
-        let dim = self.dim.layer.wl_surface().clone();
-        self.menu_help = Sub::new(self, &dim, false, true);
+        self.menu_help = Sub::new(&mut self.display, &self.dim, false, true);
         self.draw_menu_help();
 
         self.started = Some(Instant::now());
@@ -517,23 +410,22 @@ impl State {
     /// One animation frame: opacities and the panel's position.
     fn animate(&mut self) -> TimeoutAction {
         let t = ease_out(self.progress());
-        self.dim.set_opacity(t);
-        self.dim.layer.commit();
-        if let Some((panel, piece)) = &self.panel {
-            let margin = (-(panel.width as f32) * (1.0 - t)).round() as i32;
-            set_edge_margin(&piece.layer, self.content.config.side, margin);
-            piece.set_opacity(t);
-            piece.layer.commit();
-        }
-        if let Some((_, piece)) = &self.clock {
-            piece.set_opacity(t);
-            piece.layer.commit();
-        }
+        self.dim.set_opacity(&self.display, t);
         if let Some(help) = &self.menu_help {
             help.set_opacity(t);
             help.commit();
-            // a subsurface's state takes effect with its parent's
-            self.dim.layer.commit();
+        }
+        // a subsurface's state takes effect with its parent's
+        self.dim.commit();
+        if let Some((panel, piece)) = &mut self.panel {
+            let margin = (-(panel.width as f32) * (1.0 - t)).round() as i32;
+            piece.set_margin(&self.display, edge_margin(self.content.config.side, margin));
+            piece.set_opacity(&self.display, t);
+            piece.commit();
+        }
+        if let Some((_, piece)) = &self.clock {
+            piece.set_opacity(&self.display, t);
+            piece.commit();
         }
         if t >= 1.0 {
             TimeoutAction::Drop
@@ -564,13 +456,13 @@ impl State {
                 return;
             }
             if let Some(pixmap) = panel.render(&mut self.content.fonts, piece.size.1) {
-                if piece.buffer.is_none() {
+                if !piece.has_content() {
                     log::debug!(
                         "menu shown {} ms after start",
                         self.content.launched.elapsed().as_millis()
                     );
                 }
-                piece.present(&mut self.pool, &pixmap);
+                piece.present(&mut self.display, &pixmap);
             }
         }
     }
@@ -582,7 +474,7 @@ impl State {
             }
             if let Some(pixmap) = clock.render(&mut self.content.fonts, piece.size.0, &Local::now())
             {
-                piece.present(&mut self.pool, &pixmap);
+                piece.present(&mut self.display, &pixmap);
             }
         }
     }
@@ -621,12 +513,12 @@ impl State {
                     x += panel.width as i32;
                 }
                 sub.move_to(x, y);
-                sub.show_pixmap(&mut self.pool, &pixmap);
+                sub.show_pixmap(&mut self.display, &pixmap);
             }
             None => sub.hide(),
         }
         sub.commit();
-        self.dim.layer.commit();
+        self.dim.commit();
     }
 
     /// Show the disc in the drive and the tray, and fit the disc entries to
@@ -812,28 +704,19 @@ impl State {
     }
 }
 
-fn set_edge_margin(layer: &LayerSurface, side: Side, margin: i32) {
+/// The panel's margins (top, right, bottom, left): `margin` on its edge.
+const fn edge_margin(side: Side, margin: i32) -> [i32; 4] {
     match side {
-        Side::Right => layer.set_margin(0, margin, 0, 0),
-        Side::Left => layer.set_margin(0, 0, 0, margin),
+        Side::Right => [0, margin, 0, 0],
+        Side::Left => [0, 0, 0, margin],
     }
 }
 
-impl LayerShellHandler for State {
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
-        self.outcome = Some(Outcome::Dismiss);
-    }
-
-    fn configure(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        layer: &LayerSurface,
-        configure: LayerSurfaceConfigure,
-        _: u32,
-    ) {
-        let size = configure.new_size;
-        let surface = layer.wl_surface();
+/// What the overlay does whatever the display: sizes, keys, the pointer,
+/// the focus.
+impl State {
+    /// A surface has its size (Wayland's configure; at once on X11).
+    fn configured(&mut self, surface: &SurfaceId, size: (u32, u32)) {
         if self.dim.is(surface) {
             let first = self.dim.size == (0, 0);
             self.dim.size = size;
@@ -854,6 +737,241 @@ impl LayerShellHandler for State {
             self.manual_configured(surface, size);
         }
     }
+
+    fn focus_in(&mut self) {
+        log::debug!("keyboard focus");
+        self.focused = true;
+    }
+
+    /// Another window took the keyboard (Alt+Tab, a click elsewhere): get
+    /// out of the way.
+    fn focus_out(&mut self) {
+        if self.focused && self.outcome.is_none() {
+            log::info!("keyboard focus lost: closing");
+            self.outcome = Some(Outcome::Dismiss);
+        }
+        self.focused = false;
+    }
+
+    fn key_press(&mut self, nav: Nav) {
+        self.input(Input::press(nav));
+    }
+
+    /// Held keys repeat in the menu; the manual follows them being held.
+    fn key_repeat(&mut self, nav: Nav) {
+        match nav {
+            Nav::Up | Nav::Down if !self.manual_is_open() => self.navigate(nav),
+            // turning pages; a zoomed page follows the key being held instead
+            Nav::Up | Nav::Down | Nav::Left | Nav::Right | Nav::PrevPage | Nav::NextPage
+                if self.manual_is_open() =>
+            {
+                self.input(Input::press(nav));
+            }
+            _ => {}
+        }
+    }
+
+    fn key_release(&mut self, nav: Nav) {
+        self.input(Input::release(nav));
+    }
+
+    /// Hovering an entry highlights it, a click opens it; a click anywhere else
+    /// (or the right button) closes the overlay; the wheel moves the selection.
+    fn pointer(&mut self, event: &PointerInput) {
+        if self.is_manual_surface(&event.surface) {
+            self.manual_pointer(event);
+            return;
+        }
+        let on_panel = self
+            .panel
+            .as_ref()
+            .is_some_and(|(_, piece)| piece.is(&event.surface));
+        let item = if on_panel {
+            self.panel
+                .as_ref()
+                .and_then(|(panel, _)| panel.item_at(event.position.1 as f32))
+        } else {
+            None
+        };
+        match event.kind {
+            PointerKind::Enter | PointerKind::Motion => self.hover(item),
+            PointerKind::Leave => self.hover(None),
+            PointerKind::Press(button) => match (button, item) {
+                (BTN_LEFT, Some(index)) => self.choose(index),
+                (BTN_LEFT, None) if !on_panel => self.navigate(Nav::Back),
+                (BTN_RIGHT, _) => self.navigate(Nav::Back),
+                _ => {}
+            },
+            PointerKind::Wheel(steps) if on_panel && steps != 0 => {
+                self.navigate(if steps < 0 { Nav::Up } else { Nav::Down });
+            }
+            _ => {}
+        }
+    }
+}
+
+/// X11's events.
+impl State {
+    /// The sizes of the windows created since, as configures.
+    fn x11_configures(&mut self) {
+        let configures = self
+            .display
+            .x11()
+            .map(|x11| std::mem::take(&mut x11.configures))
+            .unwrap_or_default();
+        for (window, size) in configures {
+            self.configured(&SurfaceId::X11(window), size);
+        }
+    }
+
+    fn x11_events(&mut self) {
+        let Some(conn) = self.display.x11().map(|x11| Rc::clone(&x11.conn)) else {
+            return;
+        };
+        loop {
+            match conn.poll_for_event() {
+                Ok(Some(event)) => self.x11_event(event),
+                Ok(None) => break,
+                Err(err) => {
+                    log::error!("X11 connection lost: {err}");
+                    self.outcome = Some(Outcome::Dismiss);
+                    break;
+                }
+            }
+        }
+    }
+
+    fn x11_event(&mut self, event: XEvent) {
+        let pointer = |window, x: i16, y: i16, kind| PointerInput {
+            surface: SurfaceId::X11(window),
+            position: (f64::from(x), f64::from(y)),
+            kind,
+        };
+        match event {
+            XEvent::Expose(event) if event.count == 0 => self.x11_expose(event.window),
+            XEvent::KeyPress(event) => {
+                if let Some(nav) = x11_key_nav(event.detail) {
+                    self.key_press(nav);
+                }
+            }
+            XEvent::KeyRelease(event) => {
+                if let Some(nav) = x11_key_nav(event.detail) {
+                    self.key_release(nav);
+                }
+            }
+            XEvent::ButtonPress(event) => {
+                let kind = match event.detail {
+                    1 => PointerKind::Press(BTN_LEFT),
+                    3 => PointerKind::Press(BTN_RIGHT),
+                    4 => PointerKind::Wheel(-1),
+                    5 => PointerKind::Wheel(1),
+                    _ => return,
+                };
+                self.pointer(&pointer(event.event, event.event_x, event.event_y, kind));
+            }
+            XEvent::ButtonRelease(event) => {
+                let kind = match event.detail {
+                    1 => PointerKind::Release(BTN_LEFT),
+                    3 => PointerKind::Release(BTN_RIGHT),
+                    _ => return,
+                };
+                self.pointer(&pointer(event.event, event.event_x, event.event_y, kind));
+            }
+            XEvent::MotionNotify(event) => self.pointer(&pointer(
+                event.event,
+                event.event_x,
+                event.event_y,
+                PointerKind::Motion,
+            )),
+            XEvent::EnterNotify(event) => self.pointer(&pointer(
+                event.event,
+                event.event_x,
+                event.event_y,
+                PointerKind::Enter,
+            )),
+            XEvent::LeaveNotify(event) => self.pointer(&pointer(
+                event.event,
+                event.event_x,
+                event.event_y,
+                PointerKind::Leave,
+            )),
+            XEvent::FocusIn(event) if event.mode != NotifyMode::GRAB => self.focus_in(),
+            // a grab (a shortcut held by the window manager) or a child
+            // window taking it is not another window taking the keyboard
+            XEvent::FocusOut(event)
+                if event.mode == NotifyMode::NORMAL && event.detail != NotifyDetail::INFERIOR =>
+            {
+                self.focus_out();
+            }
+            XEvent::Error(err) => log::warn!("X11 error: {err:?}"),
+            _ => {}
+        }
+    }
+
+    /// Paint a window again: X11 keeps nothing of what is not on screen.
+    fn x11_expose(&self, window: xproto::Window) {
+        let pieces = [
+            Some(&self.dim),
+            self.panel.as_ref().map(|(_, piece)| piece),
+            self.clock.as_ref().map(|(_, piece)| piece),
+        ];
+        if pieces
+            .into_iter()
+            .flatten()
+            .any(|piece| piece.expose(window))
+        {
+            return;
+        }
+        if self
+            .menu_help
+            .as_ref()
+            .is_some_and(|sub| sub.expose(window))
+        {
+            return;
+        }
+        self.manual_expose(window);
+    }
+}
+
+/// What a key does on X11, by its key code: an evdev code plus 8 with the
+/// usual drivers (evdev, libinput), whatever the keyboard layout.
+fn x11_key_nav(keycode: u8) -> Option<Nav> {
+    use evdev::KeyCode;
+    let code = KeyCode::new(u16::from(keycode).checked_sub(8)?);
+    Some(match code {
+        KeyCode::KEY_UP | KeyCode::KEY_KP8 => Nav::Up,
+        KeyCode::KEY_DOWN | KeyCode::KEY_KP2 => Nav::Down,
+        KeyCode::KEY_LEFT | KeyCode::KEY_KP4 => Nav::Left,
+        KeyCode::KEY_RIGHT | KeyCode::KEY_KP6 => Nav::Right,
+        KeyCode::KEY_PAGEUP | KeyCode::KEY_KP9 => Nav::PrevPage,
+        KeyCode::KEY_PAGEDOWN | KeyCode::KEY_KP3 => Nav::NextPage,
+        KeyCode::KEY_EQUAL | KeyCode::KEY_KPPLUS => Nav::ZoomIn,
+        KeyCode::KEY_MINUS | KeyCode::KEY_KPMINUS => Nav::ZoomOut,
+        KeyCode::KEY_ENTER | KeyCode::KEY_KPENTER | KeyCode::KEY_SPACE => Nav::Confirm,
+        KeyCode::KEY_ESC | KeyCode::KEY_BACKSPACE => Nav::Back,
+        KeyCode::KEY_F7 => Nav::Close,
+        _ => return None,
+    })
+}
+
+impl LayerShellHandler for State {
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
+        self.outcome = Some(Outcome::Dismiss);
+    }
+
+    fn configure(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        layer: &LayerSurface,
+        configure: LayerSurfaceConfigure,
+        _: u32,
+    ) {
+        self.configured(
+            &SurfaceId::Wayland(layer.wl_surface().clone()),
+            configure.new_size,
+        );
+    }
 }
 
 impl KeyboardHandler for State {
@@ -867,8 +985,7 @@ impl KeyboardHandler for State {
         _: &[u32],
         _: &[Keysym],
     ) {
-        log::debug!("keyboard focus");
-        self.focused = true;
+        self.focus_in();
     }
 
     /// The compositor gave the keyboard to another window (Alt+Tab, a
@@ -881,11 +998,7 @@ impl KeyboardHandler for State {
         _: &wl_surface::WlSurface,
         _: u32,
     ) {
-        if self.focused && self.outcome.is_none() {
-            log::info!("keyboard focus lost: closing");
-            self.outcome = Some(Outcome::Dismiss);
-        }
-        self.focused = false;
+        self.focus_out();
     }
 
     fn press_key(
@@ -898,11 +1011,10 @@ impl KeyboardHandler for State {
     ) {
         log::debug!("key {:?}", event.keysym);
         if let Some(nav) = key_nav(event.keysym) {
-            self.input(Input::press(nav));
+            self.key_press(nav);
         }
     }
 
-    /// Held keys repeat in the menu; the manual follows them being held.
     fn repeat_key(
         &mut self,
         _: &Connection,
@@ -911,14 +1023,8 @@ impl KeyboardHandler for State {
         _: u32,
         event: KeyEvent,
     ) {
-        match key_nav(event.keysym) {
-            Some(nav @ (Nav::Up | Nav::Down)) if !self.manual_is_open() => self.navigate(nav),
-            // turning pages; a zoomed page follows the key being held instead
-            Some(
-                nav
-                @ (Nav::Up | Nav::Down | Nav::Left | Nav::Right | Nav::PrevPage | Nav::NextPage),
-            ) if self.manual_is_open() => self.input(Input::press(nav)),
-            _ => {}
+        if let Some(nav) = key_nav(event.keysym) {
+            self.key_repeat(nav);
         }
     }
 
@@ -931,7 +1037,7 @@ impl KeyboardHandler for State {
         event: KeyEvent,
     ) {
         if let Some(nav) = key_nav(event.keysym) {
-            self.input(Input::release(nav));
+            self.key_release(nav);
         }
     }
 
@@ -972,8 +1078,6 @@ const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 
 impl PointerHandler for State {
-    /// Hovering an entry highlights it, a click opens it; a click anywhere else
-    /// (or the right button) closes the overlay; the wheel moves the selection.
     fn pointer_frame(
         &mut self,
         conn: &Connection,
@@ -982,50 +1086,32 @@ impl PointerHandler for State {
         events: &[PointerEvent],
     ) {
         for event in events {
-            if self.is_manual_surface(&event.surface) {
-                self.manual_pointer(conn, event);
-                continue;
-            }
-            let on_panel = self
-                .panel
-                .as_ref()
-                .is_some_and(|(_, piece)| piece.is(&event.surface));
-            let item = if on_panel {
-                self.panel
-                    .as_ref()
-                    .and_then(|(panel, _)| panel.item_at(event.position.1 as f32))
-            } else {
-                None
-            };
-            match event.kind {
+            let kind = match event.kind {
                 PointerEventKind::Enter { .. } => {
-                    if let Some(pointer) = &self.pointer
+                    if let Some(pointer) = &self.display.wl().pointer
                         && let Err(err) = pointer.set_cursor(conn, CursorIcon::Default)
                     {
                         log::debug!("cannot set the cursor: {err}");
                     }
-                    self.hover(item);
+                    PointerKind::Enter
                 }
-                PointerEventKind::Motion { .. } => self.hover(item),
-                PointerEventKind::Leave { .. } => self.hover(None),
-                PointerEventKind::Press { button, .. } => match (button, item) {
-                    (BTN_LEFT, Some(index)) => self.choose(index),
-                    (BTN_LEFT, None) if !on_panel => self.navigate(Nav::Back),
-                    (BTN_RIGHT, _) => self.navigate(Nav::Back),
-                    _ => {}
-                },
-                PointerEventKind::Axis { vertical, .. } if on_panel => {
-                    let steps = if vertical.discrete != 0 {
+                PointerEventKind::Leave { .. } => PointerKind::Leave,
+                PointerEventKind::Motion { .. } => PointerKind::Motion,
+                PointerEventKind::Press { button, .. } => PointerKind::Press(button),
+                PointerEventKind::Release { button, .. } => PointerKind::Release(button),
+                PointerEventKind::Axis { vertical, .. } => {
+                    PointerKind::Wheel(if vertical.discrete != 0 {
                         vertical.discrete
                     } else {
                         (vertical.absolute / 10.0) as i32
-                    };
-                    if steps != 0 {
-                        self.navigate(if steps < 0 { Nav::Up } else { Nav::Down });
-                    }
+                    })
                 }
-                _ => {}
-            }
+            };
+            self.pointer(&PointerInput {
+                surface: SurfaceId::Wayland(event.surface.clone()),
+                position: event.position,
+                kind,
+            });
         }
     }
 }
@@ -1045,7 +1131,7 @@ impl State {
 
 impl SeatHandler for State {
     fn seat_state(&mut self) -> &mut SeatState {
-        &mut self.seat_state
+        &mut self.display.wl().seat_state
     }
 
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
@@ -1058,22 +1144,23 @@ impl SeatHandler for State {
         capability: Capability,
     ) {
         log::debug!("seat capability: {capability}");
-        if capability == Capability::Keyboard && self.keyboard.is_none() {
-            match self.seat_state.get_keyboard(qh, &seat, None) {
-                Ok(keyboard) => self.keyboard = Some(keyboard),
+        let wl = self.display.wl();
+        if capability == Capability::Keyboard && wl.keyboard.is_none() {
+            match wl.seat_state.get_keyboard(qh, &seat, None) {
+                Ok(keyboard) => wl.keyboard = Some(keyboard),
                 Err(err) => log::warn!("no keyboard: {err}"),
             }
         }
-        if capability == Capability::Pointer && self.pointer.is_none() {
-            let cursor_surface = self.compositor.create_surface(qh);
-            match self.seat_state.get_pointer_with_theme::<Self, ()>(
+        if capability == Capability::Pointer && wl.pointer.is_none() {
+            let cursor_surface = wl.compositor.create_surface(qh);
+            match wl.seat_state.get_pointer_with_theme::<Self, ()>(
                 qh,
                 &seat,
-                self.shm.wl_shm(),
+                wl.shm.wl_shm(),
                 cursor_surface,
                 ThemeSpec::default(),
             ) {
-                Ok(pointer) => self.pointer = Some(pointer),
+                Ok(pointer) => wl.pointer = Some(pointer),
                 Err(err) => log::warn!("no pointer: {err}"),
             }
         }
@@ -1087,7 +1174,7 @@ impl SeatHandler for State {
         capability: Capability,
     ) {
         if capability == Capability::Keyboard
-            && let Some(keyboard) = self.keyboard.take()
+            && let Some(keyboard) = self.display.wl().keyboard.take()
         {
             keyboard.release();
         }
@@ -1134,7 +1221,7 @@ impl CompositorHandler for State {
 
 impl OutputHandler for State {
     fn output_state(&mut self) -> &mut OutputState {
-        &mut self.output_state
+        &mut self.display.wl().output_state
     }
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
@@ -1143,13 +1230,13 @@ impl OutputHandler for State {
 
 impl ShmHandler for State {
     fn shm_state(&mut self) -> &mut Shm {
-        &mut self.shm
+        &mut self.display.wl().shm
     }
 }
 
 impl ProvidesRegistryState for State {
     fn registry(&mut self) -> &mut RegistryState {
-        &mut self.registry_state
+        &mut self.display.wl().registry_state
     }
     registry_handlers![OutputState, SeatState];
 }

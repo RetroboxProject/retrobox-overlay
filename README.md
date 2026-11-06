@@ -55,7 +55,11 @@ while it is shown: nothing stays resident during the game.
   whoever paused it. Emulators without a pause, such as PC games, keep running.
 * **No window animations on top.** Under KDE Plasma the surfaces use the `on-screen-display`
   namespace, which KWin's open and close effects (Scale, Fade, Glide) leave alone, so only the
-  overlay's own slide and fade play; elsewhere it is `retrobox-overlay`.
+  overlay's own slide and fade play; elsewhere it is `retrobox-overlay`. On X11 the windows are
+  override-redirect and typed as on-screen displays.
+* **X11.** The same menu, in override-redirect windows with a 32-bit visual on the primary
+  monitor (RandR); the panel takes the keyboard focus, and losing it closes the overlay as on
+  Wayland. The manual's page is cropped and scaled by the overlay (no `wp_viewporter`).
 * **The desktop stays usable.** The menu takes the keyboard on demand, not exclusively: when the
   compositor gives it to another window (Alt+Tab, a click elsewhere), the overlay closes.
 * **Save states** (RetroArch). *Load state* and *Save state* open a page of ten slots (it
@@ -87,9 +91,13 @@ while it is shown: nothing stays resident during the game.
 
 ## Requirements
 
-* A Wayland compositor with `wlr-layer-shell`: KWin (Plasma), labwc, sway and other wlroots
-  compositors. GNOME has no layer-shell and is not supported.
-* `wp_alpha_modifier` (KWin 6.1+, labwc 0.9+) adds the fade-in; without it the menu only slides.
+* A Wayland compositor with `wlr-layer-shell` (KWin, labwc, sway and other wlroots compositors),
+  or an X11 server: Plasma on X11, for instance where the GPU driver has no good Wayland support
+  (Nvidia Tegra, as on Switchroot). Without layer-shell (GNOME) it falls back to X11 through
+  XWayland.
+* On Wayland, `wp_alpha_modifier` (KWin 6.1+, labwc 0.9+) adds the fade-in; without it the menu
+  only slides. On X11 a compositing manager (KWin's, picom...) makes the dim translucent and
+  fades the menu in (`_NET_WM_WINDOW_OPACITY`); without one the dim is opaque black.
 * retrobox-core and retrobox-emulationstation (the packages depend on both).
 * poppler's command line tools (`poppler-utils`, recommended by the packages) for the manuals;
   without them the menu has no manual entry.
@@ -116,7 +124,7 @@ It needs `libxkbcommon` (development files to build). GitHub Actions build the `
 `.rpm` for amd64 and arm64 on every `v*` tag and publish them with a `SHA256SUMS` file, like the
 other Retrobox components.
 
-Run it by hand with `RUST_LOG=debug retrobox-overlay --demo` from a Wayland session.
+Run it by hand with `RUST_LOG=debug retrobox-overlay --demo` from a Wayland or X11 session.
 
 ## License
 

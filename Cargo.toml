@@ -31,6 +31,7 @@ tiny-skia = "0.12"
 unic-langid = "0.9"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+x11rb = { version = "0.14", default-features = false, features = ["randr"] }
 
 [lints.rust]
 unsafe_code = "forbid"
