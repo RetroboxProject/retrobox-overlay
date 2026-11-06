@@ -2,6 +2,7 @@
 menu-continue = Продолжить
 menu-save-state = Сохранить состояние
 menu-load-state = Загрузить состояние
+menu-manual = Инструкция
 menu-disc-tray = Открыть/закрыть лоток
 menu-open-tray = Открыть лоток
 menu-close-tray = Закрыть лоток

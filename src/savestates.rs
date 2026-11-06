@@ -13,7 +13,7 @@ use std::time::SystemTime;
 use crate::session::SaveStatesInfo;
 
 /// The slots the overlay offers.
-pub const SLOTS: [u32; 4] = [1, 2, 3, 4];
+pub const SLOTS: [u32; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 /// Save or load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +82,7 @@ mod tests {
             name: "Game (Disc 1)".into(),
         });
         let slots = states.slots();
-        assert_eq!(slots.len(), 4);
+        assert_eq!(slots.len(), SLOTS.len());
         assert!(slots[0].saved.is_none());
         assert!(slots[1].saved.is_some() && slots[1].preview.is_some());
         assert!(slots[2].saved.is_some() && slots[2].preview.is_none());

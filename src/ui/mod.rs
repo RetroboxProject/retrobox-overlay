@@ -1,10 +1,11 @@
-//! Drawing: the side menu, the clock and their text.
+//! Drawing: the side menu, the clock, the manual and their text.
 
 pub mod clock;
 pub mod icons;
 pub mod panel;
 pub mod states;
 pub mod text;
+pub mod viewer;
 
 /// Copy a tiny-skia pixmap (premultiplied RGBA) into a `wl_shm` ARGB8888 buffer
 /// (premultiplied, little-endian: B, G, R, A in memory).

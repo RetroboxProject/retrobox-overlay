@@ -2,6 +2,7 @@
 menu-continue = Fortsetzen
 menu-save-state = Zustand speichern
 menu-load-state = Zustand laden
+menu-manual = Spielanleitung
 menu-disc-tray = Laufwerk öffnen/schließen
 menu-open-tray = Laufwerk öffnen
 menu-close-tray = Laufwerk schließen

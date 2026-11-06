@@ -2,6 +2,7 @@
 menu-continue = Continue
 menu-save-state = Save state
 menu-load-state = Load state
+menu-manual = Instruction manual
 menu-disc-tray = Open/close disc tray
 menu-open-tray = Open disc tray
 menu-close-tray = Close disc tray

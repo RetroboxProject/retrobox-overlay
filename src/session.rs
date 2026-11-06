@@ -100,6 +100,8 @@ pub struct GameInfo {
     pub name: String,
     pub developer: String,
     pub release_year: String,
+    /// The scraped manual (a PDF; ES writes the full path).
+    pub manual: String,
 }
 
 impl GameInfo {
@@ -135,6 +137,7 @@ impl GameInfo {
             developer: field("developer"),
             // ES stores dates as 19950811T000000
             release_year: field("releasedate").chars().take(4).collect(),
+            manual: field("manual"),
         })
     }
 }
@@ -162,10 +165,12 @@ mod tests {
     fn parses_game_xml() {
         let info = GameInfo::parse(
             "<gameList><game><path>/r/s.md</path><name>Sonic</name>\
-             <developer>Sega</developer><releasedate>19910623T000000</releasedate></game></gameList>",
+             <developer>Sega</developer><releasedate>19910623T000000</releasedate>\
+             <manual>/r/manuals/s.pdf</manual></game></gameList>",
         )
         .unwrap();
         assert_eq!(info.name, "Sonic");
         assert_eq!(info.release_year, "1991");
+        assert_eq!(info.manual, "/r/manuals/s.pdf");
     }
 }

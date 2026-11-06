@@ -2,6 +2,7 @@
 menu-continue = Continua
 menu-save-state = Desa l'estat
 menu-load-state = Carrega l'estat
+menu-manual = Manual d'instruccions
 menu-disc-tray = Obre/tanca la safata
 menu-open-tray = Obre la safata
 menu-close-tray = Tanca la safata

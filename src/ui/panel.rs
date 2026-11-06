@@ -41,6 +41,8 @@ pub enum MenuAction {
     States(StateMode),
     /// Save into, or load, a slot.
     Slot(StateMode, u32),
+    /// Read the game's manual.
+    Manual,
     Quit,
 }
 
@@ -135,6 +137,8 @@ pub struct Panel {
     page: Option<SlotPage>,
     /// The main entry selected when the page was opened.
     main_selected: usize,
+    /// The first slot shown: the page scrolls when not all of them fit.
+    first_slot: usize,
     /// Whether the main entries show their icons.
     icons: bool,
     /// A line about the game's state under the header (the disc in the
@@ -179,6 +183,7 @@ impl Panel {
             hovered: None,
             page: None,
             main_selected: 0,
+            first_slot: 0,
             icons: true,
             status: None,
             background: theme.background.center_color,
@@ -214,6 +219,8 @@ impl Panel {
         self.selected = page.slots.iter().position(|slot| slot.enabled).unwrap_or(0);
         self.hovered = None;
         self.page = Some(page);
+        self.first_slot = 0;
+        self.scroll_to_selection();
     }
 
     /// Back to the main entries; false when no page was open.
@@ -242,7 +249,21 @@ impl Panel {
         let next = (self.selected as i32 + delta).rem_euclid(count) as usize;
         let changed = next != self.selected;
         self.selected = next;
+        self.scroll_to_selection();
         changed
+    }
+
+    /// Scroll the slots so that the selected one is shown.
+    fn scroll_to_selection(&mut self) {
+        if self.page.is_none() {
+            return;
+        }
+        let visible = self.visible_slots();
+        if self.selected < self.first_slot {
+            self.first_slot = self.selected;
+        } else if self.selected >= self.first_slot + visible {
+            self.first_slot = self.selected + 1 - visible;
+        }
     }
 
     /// Highlight the entry under the pointer (None: none); true when it changed.
@@ -281,15 +302,28 @@ impl Panel {
         } else {
             self.text.font.line_height + self.line()
         };
-        let index = ((y - top) / pitch) as usize;
+        let row = ((y - top) / pitch) as usize;
+        let index = if self.page.is_some() {
+            if row >= self.visible_slots() {
+                return None;
+            }
+            self.first_slot + row
+        } else {
+            row
+        };
         (index < self.count()).then_some(index)
     }
 
-    /// The height of a slot row: the four fill the panel, previews no larger
-    /// than about a third of its width.
-    fn slot_height(&self) -> f32 {
+    /// How many slot rows fit, with previews no larger than about a third of
+    /// the panel's width.
+    fn visible_slots(&self) -> usize {
         let free = self.screen_height - self.header_height();
-        (free / SLOTS.len() as f32).min(self.width as f32 * 0.3)
+        ((free / (self.width as f32 * 0.3)).floor() as usize).clamp(1, SLOTS.len())
+    }
+
+    /// The height of a slot row: the visible rows fill the panel.
+    fn slot_height(&self) -> f32 {
+        (self.screen_height - self.header_height()) / self.visible_slots() as f32
     }
 
     /// The thickness of the separators.
@@ -546,8 +580,15 @@ impl Panel {
         let text_x = padding + preview_width + padding;
         let text_width = (width - text_x - padding).max(1.0);
 
-        for (index, slot) in page.slots.iter().enumerate() {
-            let y = header + index as f32 * row;
+        let visible = self.visible_slots();
+        let shown = page
+            .slots
+            .iter()
+            .enumerate()
+            .skip(self.first_slot)
+            .take(visible);
+        for (index, slot) in shown {
+            let y = header + (index - self.first_slot) as f32 * row;
             self.draw_row_background(pixmap, index, y, row - line);
             let color = if index == self.selected {
                 style.selected_color
@@ -611,6 +652,14 @@ impl Panel {
                 line,
                 style.separator_color,
             );
+        }
+        // where the shown slots are among all of them
+        if page.slots.len() > visible {
+            let track = self.screen_height - header;
+            let bar = (width * 0.006).max(3.0);
+            let length = track * visible as f32 / page.slots.len() as f32;
+            let top = header + track * self.first_slot as f32 / page.slots.len() as f32;
+            fill(pixmap, width - bar, top, bar, length, style.selector_color);
         }
     }
 }

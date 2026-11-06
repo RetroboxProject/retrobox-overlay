@@ -11,6 +11,7 @@ mod emulator;
 mod i18n;
 mod input;
 mod instance;
+mod manual;
 mod paths;
 mod savestates;
 mod session;
@@ -29,6 +30,7 @@ use crate::emulator::Emulator;
 use crate::i18n::Translator;
 use crate::input::Pad;
 use crate::instance::Instance;
+use crate::manual::Manual;
 use crate::savestates::{SaveStates, StateMode};
 use crate::session::{GameInfo, Session};
 use crate::theme::MenuTheme;
@@ -47,6 +49,9 @@ runtime directory), or closes it when it is already open.
   --demo     show it even without a running game (to try a theme)
   --version  print the version
   --help     print this help
+
+The game's manual (a PDF scraped by EmulationStation) is shown with
+poppler's pdftoppm and pdfinfo.
 
 Settings: overlay.ini in /etc/retrobox and ~/.config/retrobox.
 Log: stderr from a terminal, else ~/.local/state/retrobox/logs/overlay.log; RUST_LOG=debug for details.";
@@ -114,7 +119,12 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
         .join(" · ");
 
     let (emulator, states) = emulator_for(session.as_ref(), demo, &config, &translator);
-    let items = menu_items(&translator, &emulator);
+    let manual = manual_path(
+        &info.manual,
+        session.as_ref().map(|session| session.rom.as_str()),
+    )
+    .and_then(|path| Manual::open(&path));
+    let items = menu_items(&translator, &emulator, manual.is_some());
 
     let time_key = if theme.clock12h {
         "clock-time-format-12h"
@@ -161,6 +171,7 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
         pads,
         emulator,
         states,
+        manual,
         translator,
         launched,
     })?;
@@ -222,8 +233,23 @@ fn emulator_for(
     (emulator, states)
 }
 
-/// Continue, what the emulator can do, and leaving the game.
-fn menu_items(translator: &Translator, emulator: &Emulator) -> Vec<MenuItem> {
+/// Where the game's manual is: ES writes full paths, but a gamelist may
+/// still hold one relative to the ROM's folder (`./manuals/...`).
+fn manual_path(manual: &str, rom: Option<&str>) -> Option<PathBuf> {
+    if manual.is_empty() {
+        return None;
+    }
+    let path = Path::new(manual);
+    if path.is_absolute() {
+        return Some(path.to_owned());
+    }
+    let folder = Path::new(rom?).parent()?;
+    Some(folder.join(path.strip_prefix("./").unwrap_or(path)))
+}
+
+/// Continue, the save states, the manual, what the emulator can do, and
+/// leaving the game.
+fn menu_items(translator: &Translator, emulator: &Emulator, manual: bool) -> Vec<MenuItem> {
     let item = |key: &str, action| MenuItem {
         label: translator.text(key),
         action,
@@ -233,6 +259,9 @@ fn menu_items(translator: &Translator, emulator: &Emulator) -> Vec<MenuItem> {
     if emulator.has_slots() {
         items.push(item("menu-save-state", MenuAction::States(StateMode::Save)));
         items.push(item("menu-load-state", MenuAction::States(StateMode::Load)));
+    }
+    if manual {
+        items.push(item("menu-manual", MenuAction::Manual));
     }
     items.extend(
         emulator

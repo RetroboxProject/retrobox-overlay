@@ -5,7 +5,9 @@
 //!   surface's margin (its buffer is drawn once, not on every frame); it takes
 //!   the keyboard, once the game is paused (the pause key has to reach the
 //!   game first, see emulator.rs);
-//! * the clock, on the other side, redrawn once a second.
+//! * the clock, on the other side, redrawn once a second;
+//! * the manual, when opened: a page over the whole screen. It never takes
+//!   the keyboard, so the panel keeps it (and the overlay stays open).
 //!
 //! With `wp_alpha_modifier` (KWin 6.1+, labwc 0.9+) the three fade in as well,
 //! by the compositor: nothing is drawn again for the fade. (A single-pixel
@@ -22,6 +24,7 @@ use anyhow::{Context as _, Result, anyhow};
 use chrono::{Local, Timelike};
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
+use smithay_client_toolkit::reexports::calloop::channel::{self as loop_channel, Event};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::signals::{Signal, Signals};
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
@@ -56,6 +59,7 @@ use crate::config::{Config, Side, VerticalPosition};
 use crate::emulator::{EmuAction, Emulator, Request};
 use crate::i18n::Translator;
 use crate::input::{self, Nav, Pad};
+use crate::manual::{Fit, Manual, PageRequest, Rendered};
 use crate::savestates::StateMode;
 use crate::theme::MenuTheme;
 use crate::ui::clock::Clock;
@@ -63,6 +67,7 @@ use crate::ui::panel::{MenuAction, MenuItem, Panel};
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
 use crate::ui::to_argb8888;
+use crate::ui::viewer::Viewer;
 
 const NAMESPACE: &str = "retrobox-overlay";
 const FRAME: Duration = Duration::from_millis(16);
@@ -96,6 +101,8 @@ pub struct Content {
     pub emulator: Emulator,
     /// The save and load pages, when the emulator's states can be managed.
     pub states: Option<StatesMenu>,
+    /// The game's manual, when it has one that can be shown.
+    pub manual: Option<Manual>,
     /// For the texts that change while the menu is open (the disc line).
     pub translator: Translator,
     /// When the process started, to log how long the menu took to show.
@@ -180,6 +187,10 @@ struct State {
     dim: Piece,
     panel: Option<(Panel, Piece)>,
     clock: Option<(Clock, Piece)>,
+    /// The manual's page and fit, kept while it is closed.
+    viewer: Option<Viewer>,
+    /// The manual's surface, while it is open.
+    viewer_piece: Option<Piece>,
     started: Option<Instant>,
     outcome: Option<Outcome>,
 }
@@ -272,6 +283,8 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
         content,
         panel: None,
         clock: None,
+        viewer: None,
+        viewer_piece: None,
         started: None,
         outcome: None,
     };
@@ -535,6 +548,10 @@ impl State {
                 self.open_states(mode);
                 return;
             }
+            Some(MenuAction::Manual) => {
+                self.open_manual();
+                return;
+            }
             Some(MenuAction::Continue) => Some(Outcome::Continue),
             Some(MenuAction::Quit) => Some(Outcome::Quit),
             // disc changes are done with the menu open, which shows the result
@@ -581,6 +598,10 @@ impl State {
     }
 
     fn navigate(&mut self, nav: Nav) {
+        if self.viewer_piece.is_some() {
+            self.navigate_manual(nav);
+            return;
+        }
         match nav {
             Nav::Up | Nav::Down => {
                 let delta = if nav == Nav::Up { -1 } else { 1 };
@@ -601,6 +622,150 @@ impl State {
             }
             Nav::Back => self.back(),
             Nav::Close => self.outcome = Some(Outcome::Dismiss),
+            Nav::Left | Nav::Right | Nav::PrevPage | Nav::NextPage => {}
+        }
+    }
+}
+
+/// The manual.
+impl State {
+    /// Show the manual over everything, where it was left.
+    fn open_manual(&mut self) {
+        let Some(manual) = self.content.manual.as_mut() else {
+            return;
+        };
+        if self.viewer.is_none() {
+            let (sender, pages) = loop_channel::channel::<Rendered>();
+            let inserted = self.handle.insert_source(pages, |event, &mut (), state| {
+                if let Event::Msg(rendered) = event {
+                    state.page_rendered(rendered);
+                }
+            });
+            if let Err(err) = inserted {
+                log::error!("cannot watch the manual renderer: {}", err.error);
+                return;
+            }
+            manual.start(move |rendered| {
+                // the overlay may be closing: nothing to show it on then
+                sender.send(rendered).ok();
+            });
+            self.viewer = Some(Viewer::new(
+                manual.pages(),
+                self.dim.size,
+                &self.content.theme.text.font.path,
+            ));
+        }
+        let surface = self.compositor.create_surface(&self.qh);
+        let layer = self.layer_shell.create_layer_surface(
+            &self.qh,
+            surface,
+            Layer::Overlay,
+            Some(NAMESPACE),
+            None,
+        );
+        layer.set_anchor(Anchor::all());
+        layer.set_exclusive_zone(-1);
+        // the panel keeps the keyboard: losing it would close the overlay
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_size(0, 0);
+        layer.commit();
+        let piece = Piece::new(layer, None, &self.qh);
+        self.viewer_piece = Some(piece);
+        self.hover(None);
+    }
+
+    /// Back to the menu.
+    fn close_manual(&mut self) {
+        self.viewer_piece = None;
+    }
+
+    /// The page shown now, at its size.
+    fn shown_page(&self) -> Option<PageRequest> {
+        let viewer = self.viewer.as_ref()?;
+        self.content
+            .manual
+            .as_ref()?
+            .request(viewer.page, viewer.fit, viewer.screen())
+    }
+
+    /// Show the current page; while it renders the last one stays on screen
+    /// (only the first time is there nothing but the page number).
+    fn draw_manual(&mut self) {
+        let request = self.shown_page();
+        let (Some(viewer), Some(manual), Some(piece)) = (
+            self.viewer.as_ref(),
+            self.content.manual.as_mut(),
+            self.viewer_piece.as_mut(),
+        ) else {
+            return;
+        };
+        if piece.size.0 == 0 {
+            return;
+        }
+        let page = request.and_then(|request| manual.page(request));
+        if page.is_none() && piece.buffer.is_some() {
+            return;
+        }
+        if let Some(pixmap) = viewer.render(&mut self.content.fonts, page) {
+            piece.present(&mut self.pool, &pixmap);
+        }
+        // the pages either side, for turning them without a wait
+        for page in [viewer.page + 1, viewer.page.saturating_sub(1)] {
+            if let Some(next) = manual.request(page, viewer.fit, viewer.screen()) {
+                manual.prefetch(next);
+            }
+        }
+    }
+
+    /// The renderer has finished a page.
+    fn page_rendered(&mut self, rendered: Rendered) {
+        let request = rendered.0;
+        if let Some(manual) = self.content.manual.as_mut() {
+            manual.store(rendered);
+        }
+        if self.viewer_piece.is_some() && self.shown_page() == Some(request) {
+            self.draw_manual();
+        }
+    }
+
+    fn navigate_manual(&mut self, nav: Nav) {
+        let page_height = self.shown_page().and_then(|request| {
+            let manual = self.content.manual.as_mut()?;
+            manual.page(request).map(Pixmap::height)
+        });
+        let Some(viewer) = self.viewer.as_mut() else {
+            return;
+        };
+        let zoomed = viewer.fit == Fit::Width;
+        log::debug!(
+            "manual: {nav:?} on page {} ({page_height:?} px)",
+            viewer.page
+        );
+        let changed = match nav {
+            // a zoomed page scrolls; else up and down turn pages too
+            Nav::Up if zoomed => viewer.scroll(-1.0, page_height),
+            Nav::Down if zoomed => viewer.scroll(1.0, page_height),
+            Nav::Left | Nav::PrevPage | Nav::Up => viewer.turn(-1),
+            Nav::Right | Nav::NextPage | Nav::Down => viewer.turn(1),
+            Nav::Confirm => {
+                viewer.toggle_fit();
+                true
+            }
+            Nav::Back => {
+                self.close_manual();
+                return;
+            }
+            Nav::Close => {
+                self.outcome = Some(Outcome::Dismiss);
+                return;
+            }
+        };
+        if changed {
+            // a new page is drawn as soon as it is rendered
+            if let Some(piece) = self.viewer_piece.as_mut() {
+                piece.buffer = None;
+            }
+            self.draw_manual();
         }
     }
 }
@@ -643,6 +808,9 @@ impl LayerShellHandler for State {
         {
             piece.size = size;
             self.draw_clock();
+        } else if let Some(piece) = self.viewer_piece.as_mut().filter(|piece| piece.is(surface)) {
+            piece.size = size;
+            self.draw_manual();
         }
     }
 }
@@ -691,6 +859,10 @@ impl KeyboardHandler for State {
         let nav = match event.keysym {
             Keysym::Up | Keysym::KP_Up => Some(Nav::Up),
             Keysym::Down | Keysym::KP_Down => Some(Nav::Down),
+            Keysym::Left | Keysym::KP_Left => Some(Nav::Left),
+            Keysym::Right | Keysym::KP_Right => Some(Nav::Right),
+            Keysym::Prior | Keysym::KP_Prior => Some(Nav::PrevPage),
+            Keysym::Next | Keysym::KP_Next => Some(Nav::NextPage),
             Keysym::Return | Keysym::KP_Enter | Keysym::space => Some(Nav::Confirm),
             Keysym::Escape | Keysym::BackSpace => Some(Nav::Back),
             Keysym::F7 => Some(Nav::Close),
@@ -711,7 +883,16 @@ impl KeyboardHandler for State {
     ) {
         if matches!(
             event.keysym,
-            Keysym::Up | Keysym::Down | Keysym::KP_Up | Keysym::KP_Down
+            Keysym::Up
+                | Keysym::Down
+                | Keysym::Left
+                | Keysym::Right
+                | Keysym::KP_Up
+                | Keysym::KP_Down
+                | Keysym::KP_Left
+                | Keysym::KP_Right
+                | Keysym::Prior
+                | Keysym::Next
         ) {
             self.press_key(conn, qh, keyboard, serial, event);
         }
@@ -755,6 +936,14 @@ impl PointerHandler for State {
         events: &[PointerEvent],
     ) {
         for event in events {
+            if self
+                .viewer_piece
+                .as_ref()
+                .is_some_and(|piece| piece.is(&event.surface))
+            {
+                self.manual_pointer(conn, event);
+                continue;
+            }
             let on_panel = self
                 .panel
                 .as_ref()
@@ -800,6 +989,41 @@ impl PointerHandler for State {
 }
 
 impl State {
+    /// On the manual: a click on its left or right half turns the page back
+    /// or on, the right button goes back to the menu, the wheel scrolls a
+    /// zoomed page or turns pages.
+    fn manual_pointer(&mut self, conn: &Connection, event: &PointerEvent) {
+        let width = self.viewer_piece.as_ref().map_or(0, |piece| piece.size.0);
+        match event.kind {
+            PointerEventKind::Enter { .. } => {
+                if let Some(pointer) = &self.pointer
+                    && let Err(err) = pointer.set_cursor(conn, CursorIcon::Default)
+                {
+                    log::debug!("cannot set the cursor: {err}");
+                }
+            }
+            PointerEventKind::Press { button, .. } => match button {
+                BTN_LEFT if event.position.0 < f64::from(width) / 2.0 => {
+                    self.navigate(Nav::PrevPage);
+                }
+                BTN_LEFT => self.navigate(Nav::NextPage),
+                BTN_RIGHT => self.navigate(Nav::Back),
+                _ => {}
+            },
+            PointerEventKind::Axis { vertical, .. } => {
+                let steps = if vertical.discrete != 0 {
+                    vertical.discrete
+                } else {
+                    (vertical.absolute / 10.0) as i32
+                };
+                if steps != 0 {
+                    self.navigate(if steps < 0 { Nav::Up } else { Nav::Down });
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Highlight the entry under the pointer, without selecting it.
     fn hover(&mut self, item: Option<usize>) {
         let changed = self

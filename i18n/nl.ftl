@@ -2,6 +2,7 @@
 menu-continue = Doorgaan
 menu-save-state = Status opslaan
 menu-load-state = Status laden
+menu-manual = Handleiding
 menu-disc-tray = Lade openen/sluiten
 menu-open-tray = Lade openen
 menu-close-tray = Lade sluiten

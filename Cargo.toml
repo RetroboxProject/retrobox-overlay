@@ -57,6 +57,8 @@ section = "games"
 priority = "optional"
 # $auto: the shared libraries the binary links (libc, libxkbcommon)
 depends = "$auto, retrobox-core, retrobox-emulationstation"
+# pdftoppm and pdfinfo, for the games' manuals
+recommends = "poppler-utils"
 extended-description = """\
 Retrobox's in-game menu: opened with the controller's hotkey or Shift+F7, it
 shows a side menu over the dimmed game, drawn with the active EmulationStation
@@ -81,3 +83,7 @@ assets = [
 retrobox-core = "*"
 retrobox-emulationstation = "*"
 libxkbcommon = "*"
+
+[package.metadata.generate-rpm.recommends]
+# pdftoppm and pdfinfo, for the games' manuals
+poppler-utils = "*"

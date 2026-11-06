@@ -25,6 +25,11 @@ use evdev::{AbsoluteAxisCode, Device, EventSummary, KeyCode};
 pub enum Nav {
     Up,
     Down,
+    Left,
+    Right,
+    /// The shoulder buttons (and Page Up/Down): pages in the manual.
+    PrevPage,
+    NextPage,
     Confirm,
     Back,
     Close,
@@ -69,7 +74,14 @@ impl Pad {
         let mut axes = HashMap::new();
         if let Ok(infos) = device.get_absinfo() {
             for (axis, info) in infos {
-                if [AbsoluteAxisCode::ABS_Y, AbsoluteAxisCode::ABS_HAT0Y].contains(&axis) {
+                if [
+                    AbsoluteAxisCode::ABS_X,
+                    AbsoluteAxisCode::ABS_Y,
+                    AbsoluteAxisCode::ABS_HAT0X,
+                    AbsoluteAxisCode::ABS_HAT0Y,
+                ]
+                .contains(&axis)
+                {
                     let centre = i32::midpoint(info.minimum(), info.maximum());
                     let half = ((info.maximum() - info.minimum()) / 2).max(1);
                     axes.insert(axis, (centre, half, 0));
@@ -165,6 +177,10 @@ impl Pad {
         match code {
             KeyCode::BTN_DPAD_UP => Some(Nav::Up),
             KeyCode::BTN_DPAD_DOWN => Some(Nav::Down),
+            KeyCode::BTN_DPAD_LEFT => Some(Nav::Left),
+            KeyCode::BTN_DPAD_RIGHT => Some(Nav::Right),
+            KeyCode::BTN_TL => Some(Nav::PrevPage),
+            KeyCode::BTN_TR => Some(Nav::NextPage),
             KeyCode::BTN_MODE => Some(Nav::Close),
             KeyCode::BTN_START => Some(Nav::Confirm),
             code if code == confirm => Some(Nav::Confirm),
@@ -185,9 +201,12 @@ impl Pad {
             return None;
         }
         *last = direction;
-        match direction {
-            -1 => Some(Nav::Up),
-            1 => Some(Nav::Down),
+        let horizontal = [AbsoluteAxisCode::ABS_X, AbsoluteAxisCode::ABS_HAT0X].contains(&axis);
+        match (direction, horizontal) {
+            (-1, false) => Some(Nav::Up),
+            (1, false) => Some(Nav::Down),
+            (-1, true) => Some(Nav::Left),
+            (1, true) => Some(Nav::Right),
             _ => None,
         }
     }

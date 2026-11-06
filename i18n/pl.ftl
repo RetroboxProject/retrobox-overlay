@@ -2,6 +2,7 @@
 menu-continue = Kontynuuj
 menu-save-state = Zapisz stan
 menu-load-state = Wczytaj stan
+menu-manual = Instrukcja obsługi
 menu-disc-tray = Otwórz/zamknij tackę
 menu-open-tray = Otwórz tackę
 menu-close-tray = Zamknij tackę

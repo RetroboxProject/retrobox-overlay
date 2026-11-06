@@ -26,6 +26,7 @@ pub enum Icon {
     Camera,
     LogOut,
     Disc,
+    BookOpen,
 }
 
 impl Icon {
@@ -45,6 +46,7 @@ impl Icon {
             MenuAction::Emulator(EmuAction::Reset) => Self::RotateCcw,
             MenuAction::Emulator(EmuAction::Menu) => Self::Settings,
             MenuAction::Emulator(EmuAction::Screenshot) => Self::Camera,
+            MenuAction::Manual => Self::BookOpen,
             MenuAction::Quit => Self::LogOut,
             MenuAction::Slot(..) => return None,
         })
@@ -63,6 +65,7 @@ impl Icon {
             Self::Camera => include_str!("../../assets/icons/camera.svg"),
             Self::LogOut => include_str!("../../assets/icons/log-out.svg"),
             Self::Disc => include_str!("../../assets/icons/disc-3.svg"),
+            Self::BookOpen => include_str!("../../assets/icons/book-open.svg"),
         }
     }
 
@@ -106,6 +109,7 @@ mod tests {
             Icon::Camera,
             Icon::LogOut,
             Icon::Disc,
+            Icon::BookOpen,
         ];
         for icon in icons {
             let pixmap = icon.render(48, Rgba(0xff00_00ff)).unwrap();

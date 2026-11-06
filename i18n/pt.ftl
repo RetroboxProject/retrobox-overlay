@@ -2,6 +2,7 @@
 menu-continue = Continuar
 menu-save-state = Guardar estado
 menu-load-state = Carregar estado
+menu-manual = Manual de instruções
 menu-disc-tray = Abrir/fechar tabuleiro
 menu-open-tray = Abrir tabuleiro
 menu-close-tray = Fechar tabuleiro

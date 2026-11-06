@@ -26,7 +26,7 @@ while it is shown: nothing stays resident during the game.
   (name, developer, release date...).
 * **Controllers.** While open, the overlay grabs the game's controllers (evdev), so neither the
   emulator nor gamepadly sees a press. It reads them with the Linux gamepad conventions
-  (`BTN_SOUTH`/`BTN_EAST`, d-pad, left stick, `BTN_MODE`), following EmulationStation's
+  (`BTN_SOUTH`/`BTN_EAST`, d-pad, left stick, shoulders, `BTN_MODE`), following EmulationStation's
   *Switch confirm & cancel buttons*. Home or B closes it; the keyboard works too (arrows, Enter,
   Esc, F7), and the mouse: hovering highlights an entry, a click opens it, the wheel moves the
   selection, and a click outside the menu or a right click closes it.
@@ -51,12 +51,19 @@ while it is shown: nothing stays resident during the game.
   whoever paused it. Emulators without a pause, such as PC games, keep running.
 * **The desktop stays usable.** The menu takes the keyboard on demand, not exclusively: when the
   compositor gives it to another window (Alt+Tab, a click elsewhere), the overlay closes.
-* **Save states** (RetroArch). *Save state* and *Load state* open a page of four slots, each with
-  the preview RetroArch saves with the state and its date. The slots are RetroArch's own
-  `<saves>/<system>/<game>.state1`…`state4` files, where EmulationStation looks too.
+* **Save states** (RetroArch). *Save state* and *Load state* open a page of ten slots (it
+  scrolls when they do not all fit), each with the preview RetroArch saves with the state and
+  its date. The slots are RetroArch's own `<saves>/<system>/<game>.state1`…`state10` files,
+  where EmulationStation looks too.
   Loading is `LOAD_STATE_SLOT N`; for saving the launcher moves RetroArch's current slot to the
   chosen one (`STATE_SLOT_PLUS`/`MINUS`, keeping track of it, since Retrobox leaves no other way
   to change it) and sends `SAVE_STATE`.
+* **The manual.** When the game has a scraped manual (`manual` in `game.xml`, a PDF), the menu
+  offers *Instruction manual*: its pages over the whole screen, rendered by poppler's `pdftoppm`
+  (the pages either side are rendered ahead). Left/Right, the shoulder buttons, Page Up/Down,
+  Up/Down or a click on either half of the page turn pages; Confirm zooms the page to the
+  screen's width, and then Up/Down (or the wheel) scroll it. Back returns to the menu, where
+  the manual stays at the page it was left on.
 * **Leaving the game** runs `retrobox-emukill`.
 
 ## Requirements
@@ -65,6 +72,8 @@ while it is shown: nothing stays resident during the game.
   compositors. GNOME has no layer-shell and is not supported.
 * `wp_alpha_modifier` (KWin 6.1+, labwc 0.9+) adds the fade-in; without it the menu only slides.
 * retrobox-core and retrobox-emulationstation (the packages depend on both).
+* poppler's command line tools (`poppler-utils`, recommended by the packages) for the manuals;
+  without them the menu has no manual entry.
 
 ## Settings
 

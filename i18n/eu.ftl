@@ -2,6 +2,7 @@
 menu-continue = Jarraitu
 menu-save-state = Gorde egoera
 menu-load-state = Kargatu egoera
+menu-manual = Argibide-eskuliburua
 menu-disc-tray = Ireki/itxi erretilua
 menu-open-tray = Ireki erretilua
 menu-close-tray = Itxi erretilua
