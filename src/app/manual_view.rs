@@ -503,7 +503,7 @@ impl State {
                 self.show_page(true);
             }
             Nav::Back => self.close_manual(),
-            Nav::Close => self.outcome = Some(Outcome::Dismiss),
+            Nav::Close => self.outcome = Some(Outcome::Continue),
             Nav::ZoomIn | Nav::ZoomOut => {}
         }
     }

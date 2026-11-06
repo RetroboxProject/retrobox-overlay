@@ -85,12 +85,13 @@ const CLOCK_MARGIN: f32 = 0.08;
 /// How the overlay was left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// "Continue": back to the game, running.
+    /// "Continue", or the shortcut that opened the overlay pressed again
+    /// (Home, Shift+F7): back to the game, running.
     Continue,
     /// An emulator action, then back to the game, running.
     Request(Request),
-    /// Closed without a choice (back, Home, a click outside, another window
-    /// taking the focus): the game stays as it is, paused.
+    /// Closed without a choice (back, a click outside, another window taking
+    /// the focus): the game stays as it is, paused.
     Dismiss,
     Quit,
 }
@@ -247,11 +248,16 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
         .insert(handle.clone())
         .map_err(|err| anyhow!("cannot watch the Wayland socket: {}", err.error))?;
 
-    // SIGUSR1: the overlay started again (hotkey, Shift+F7) asks this one to close
+    // SIGUSR1: the overlay started again (the hotkey, Shift+F7) closes this
+    // one, back to the game like Continue; being stopped leaves it paused
     let signals = Signals::new(&[Signal::SIGUSR1, Signal::SIGTERM, Signal::SIGINT])?;
     handle
-        .insert_source(signals, |_, &mut (), state| {
-            state.outcome = Some(Outcome::Dismiss);
+        .insert_source(signals, |event, &mut (), state| {
+            state.outcome = Some(if event.signal() == Signal::SIGUSR1 {
+                Outcome::Continue
+            } else {
+                Outcome::Dismiss
+            });
         })
         .map_err(|err| anyhow!("cannot watch signals: {}", err.error))?;
 
@@ -604,18 +610,30 @@ impl State {
             return;
         };
         let texts = &self.content.translator;
-        let mut status = texts.text_args(
-            "disc-status",
-            &[
-                ("current", i64::from(discs.current)),
-                ("count", i64::from(discs.count)),
-            ],
-        );
-        if discs.tray_open {
-            status.push_str(" · ");
-            status.push_str(&texts.text("disc-tray-open"));
+        // a single disc: only whether the tray is open
+        let mut parts = Vec::new();
+        if discs.count > 1 {
+            parts.push(texts.text_args(
+                "disc-status",
+                &[
+                    ("current", i64::from(discs.current)),
+                    ("count", i64::from(discs.count)),
+                ],
+            ));
         }
-        panel.set_status(Some(status));
+        if discs.tray_open {
+            parts.push(texts.text("disc-tray-open"));
+        }
+        // "Tray open" on its own starts the line
+        let status = (!parts.is_empty()).then(|| {
+            let line = parts.join(" · ");
+            let mut chars = line.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().chain(chars).collect())
+                .unwrap_or_default()
+        });
+        panel.set_status(status);
         let tray = if discs.tray_open {
             "menu-close-tray"
         } else {
@@ -728,7 +746,8 @@ impl State {
                 self.activate(action);
             }
             Nav::Back => self.back(),
-            Nav::Close => self.outcome = Some(Outcome::Dismiss),
+            // the shortcut that opened the overlay, again: back to the game
+            Nav::Close => self.outcome = Some(Outcome::Continue),
             Nav::Left | Nav::Right | Nav::ZoomIn | Nav::ZoomOut | Nav::PrevPage | Nav::NextPage => {
             }
         }

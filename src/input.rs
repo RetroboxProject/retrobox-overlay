@@ -36,6 +36,7 @@ pub enum Nav {
     NextPage,
     Confirm,
     Back,
+    /// Home (or F7): the shortcut that opens the overlay, now closing it.
     Close,
 }
 

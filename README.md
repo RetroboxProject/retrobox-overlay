@@ -35,18 +35,22 @@ while it is shown: nothing stays resident during the game.
   request the best way the emulator allows: RetroArch's command pipe (its standard input,
   `stdin_cmd_enable`), else a key chord on a virtual keyboard the launcher creates when the game
   starts, else a command line. The menu offers what the channel says the emulator can do:
-  save and load state, the disc tray and next/previous disc (`.m3u` playlists), reset, the
-  emulator's menu and a screenshot, each with its icon.
-* **Discs** (`.m3u` playlists). A line under the game's name shows the disc in the drive and
-  whether the tray is open. The tray entry opens or closes it, and next/previous disc change
-  the disc, like Batocera: only with the tray open, and not past the first or last disc (the
-  entries are dimmed otherwise). These are done with the menu open, which shows the result.
+  save and load state, the disc tray and next/previous disc, reset, the emulator's menu
+  (RetroArch's only, for now) and a screenshot, each with its icon.
+* **Discs.** Games of a platform with an optical drive (`disc_drive: true` in the system's
+  YAML in retrobox-core: Mega-CD, Saturn, PlayStation, Dreamcast...) always have the tray entry,
+  which also reaches a console's BIOS menu with the tray open. A game of several discs (an
+  `.m3u` playlist) also has next/previous disc, and a line under the game's name shows the
+  disc in the drive; a line tells whether the tray is open. Next/previous change the disc, like
+  Batocera: only with the tray open, and not past the first or last disc (the entries are
+  dimmed otherwise). These are done with the menu open, which shows the result.
   The launcher keeps track of the disc (starting from the one RetroArch restores) because every
   disc change goes through its control channel, the disc hotkeys too (`retrobox-control`).
 * **Pause.** The game is paused when the overlay opens (asked before it shows itself, while the
-  game still has the keyboard focus) and runs again only when you go back to it: *Continue*
-  or an action. Closing the overlay any other way (back, Home, a click outside, another window
-  taking the focus) leaves it paused. Pausing and resuming are absolute, not toggles: with
+  game still has the keyboard focus) and runs again only when you go back to it: *Continue*,
+  the shortcut that opened the overlay pressed again (Home, Hotkey, Shift+F7) or an action
+  (opening RetroArch's menu too: leaving it, the game runs). Closing the overlay any other way
+  (back, a click outside, another window taking the focus) leaves it paused. Pausing and resuming are absolute, not toggles: with
   RetroArch the launcher asks it first (`GET_STATUS`), so *Continue* always resumes the game,
   whoever paused it. Emulators without a pause, such as PC games, keep running.
 * **The desktop stays usable.** The menu takes the keyboard on demand, not exclusively: when the

@@ -55,7 +55,9 @@ copyright = "Manu Romero"
 license-file = ["LICENSE", "0"]
 section = "games"
 priority = "optional"
-# $auto: the shared libraries the binary links (libc, libxkbcommon)
+# $auto: the shared libraries the binary links (libc, libxkbcommon);
+# retrobox-emulationstation: its theme export and its help icons, read at
+# run time; retrobox-core: the launcher's control channel, retrobox-emukill
 depends = "$auto, retrobox-core, retrobox-emulationstation"
 # pdftoppm and pdfinfo, for the games' manuals
 recommends = "poppler-utils"
@@ -80,6 +82,7 @@ assets = [
 ]
 
 [package.metadata.generate-rpm.requires]
+# as the deb: ES's theme export and help icons, the core's control channel
 retrobox-core = "*"
 retrobox-emulationstation = "*"
 libxkbcommon = "*"
