@@ -29,7 +29,7 @@ use crate::emulator::Emulator;
 use crate::i18n::Translator;
 use crate::input::Pad;
 use crate::instance::Instance;
-use crate::savestates::StateMode;
+use crate::savestates::{SaveStates, StateMode};
 use crate::session::{GameInfo, Session};
 use crate::theme::MenuTheme;
 use crate::ui::panel::{MenuAction, MenuItem};
@@ -113,21 +113,7 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
         .collect::<Vec<_>>()
         .join(" · ");
 
-    let emulator = match &session {
-        Some(session) if !demo => {
-            log::info!(
-                "game: {} on {} ({})",
-                session.rom,
-                session.system,
-                session.emulator
-            );
-            Emulator::new(session, config.pause_game, &runtime_dir)
-        }
-        _ => Emulator::none(),
-    };
-    let states = emulator
-        .states()
-        .map(|states| StatesMenu::new(states.clone(), &translator));
+    let (mut emulator, states) = emulator_for(session.as_ref(), demo, &config, &translator);
     let items = menu_items(&translator, &emulator);
 
     let time_key = if theme.clock12h {
@@ -161,6 +147,8 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
         .filter_map(|controller| Pad::open(Path::new(&controller.device), theme.invert_buttons))
         .collect();
 
+    // before the overlay shows itself: the game still has the keyboard focus
+    emulator.pause();
     let (outcome, mut emulator) = app::run(Content {
         config,
         theme,
@@ -207,6 +195,31 @@ fn init_log() {
     builder.init();
 }
 
+/// The running game's emulator and, when its states go by slot, the pages.
+fn emulator_for(
+    session: Option<&Session>,
+    demo: bool,
+    config: &Config,
+    translator: &Translator,
+) -> (Emulator, Option<StatesMenu>) {
+    let Some(session) = session.filter(|_| !demo) else {
+        return (Emulator::none(), None);
+    };
+    log::info!(
+        "game: {} on {} ({})",
+        session.rom,
+        session.system,
+        session.emulator
+    );
+    let emulator = Emulator::new(session, config.pause_game);
+    let states = session
+        .savestates
+        .as_ref()
+        .filter(|_| emulator.has_slots())
+        .map(|info| StatesMenu::new(SaveStates::new(info), translator));
+    (emulator, states)
+}
+
 /// Continue, what the emulator can do, and leaving the game.
 fn menu_items(translator: &Translator, emulator: &Emulator) -> Vec<MenuItem> {
     let item = |key: &str, action| MenuItem {
@@ -214,14 +227,15 @@ fn menu_items(translator: &Translator, emulator: &Emulator) -> Vec<MenuItem> {
         action,
     };
     let mut items = vec![item("menu-continue", MenuAction::Continue)];
-    if emulator.states().is_some() {
+    if emulator.has_slots() {
         items.push(item("menu-save-state", MenuAction::States(StateMode::Save)));
         items.push(item("menu-load-state", MenuAction::States(StateMode::Load)));
     }
     items.extend(
         emulator
             .actions()
-            .into_iter()
+            .iter()
+            .copied()
             .map(|action| item(action.label_key(), MenuAction::Emulator(action))),
     );
     items.push(item("menu-quit", MenuAction::Quit));

@@ -1,7 +1,6 @@
 //! The game being played: `session.json` (written by the launcher) and the
 //! game information EmulationStation exported (`/tmp/game.xml`).
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -19,31 +18,30 @@ pub struct SessionController {
     pub device: String,
 }
 
-/// How the emulator performs one standard hotkey action.
+/// The launcher's control channel (see emulator.rs).
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum Binding {
-    Keys {
-        keys: Vec<String>,
-    },
-    Exec {
-        argv: Vec<String>,
-    },
-    Native {
-        #[serde(default)]
-        keys: Vec<String>,
-    },
+pub struct ControlInfo {
+    pub socket: String,
+    /// Whether the game can be paused.
+    #[serde(default)]
+    pub pause: bool,
+    /// The hotkey actions the emulator can do.
+    #[serde(default)]
+    pub actions: Vec<String>,
+    /// Whether save states go by slot.
+    #[serde(default)]
+    pub slots: bool,
+    /// Whether requests may press keys (which need the game focused).
+    #[serde(default)]
+    pub focus: bool,
 }
 
-/// Where the game's save states are and how to ask the emulator for them
-/// (RetroArch: its command pipe; states are `<dir>/<name>.state<N>`).
+/// Where the game's save states are: `<dir>/<name>.state<N>`, each with a
+/// `.png` preview.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SaveStatesInfo {
-    pub control: String,
     pub dir: String,
     pub name: String,
-    #[serde(default)]
-    pub slot: i32,
 }
 
 /// What `session.json` says (only the parts the overlay uses).
@@ -59,7 +57,7 @@ pub struct Session {
     #[serde(default)]
     pub controllers: Vec<SessionController>,
     #[serde(default)]
-    pub hotkeys: HashMap<String, Binding>,
+    pub control: Option<ControlInfo>,
     #[serde(default)]
     pub game_info: String,
     #[serde(default)]
@@ -139,19 +137,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_session_bindings() {
+    fn parses_session_control() {
         let session: Session = serde_json::from_str(
-            r#"{"pid": 1, "hotkeys": {
-                "exit": {"type": "exec", "argv": ["retrobox-emukill"]},
-                "save_state": {"type": "native", "keys": ["KEY_LEFTSHIFT", "KEY_F3"]},
-                "pause": {"type": "keys", "keys": ["KEY_F10"]}},
+            r#"{"pid": 1, "control": {"socket": "/run/x/control.sock", "pause": true,
+                "actions": ["reset"], "slots": true, "focus": false},
+                "savestates": {"dir": "/saves/psx", "name": "Game", "slot": 0},
                 "unknown": 3}"#,
         )
         .unwrap();
-        assert!(matches!(session.hotkeys["exit"], Binding::Exec { .. }));
-        assert!(
-            matches!(&session.hotkeys["save_state"], Binding::Native { keys } if keys.len() == 2)
-        );
+        let control = session.control.unwrap();
+        assert!(control.pause && control.slots && !control.focus);
+        assert_eq!(control.actions, ["reset"]);
+        assert_eq!(session.savestates.unwrap().name, "Game");
     }
 
     #[test]

@@ -30,22 +30,24 @@ while it is shown: nothing stays resident during the game.
   *Switch confirm & cancel buttons*. Home or B closes it; the keyboard works too (arrows, Enter,
   Esc, F7), and the mouse: hovering highlights an entry, a click opens it, the wheel moves the
   selection, and a click outside the menu or a right click closes it.
-* **The emulator.** `session.json` says how the running emulator performs each standard hotkey
-  action (a key chord, a command, or the emulator's own controller combination with its
-  keyboard shortcut). From that the menu offers what the emulator can do: save and load
-  state, the disc tray and next/previous disc (`.m3u` playlists), reset, the emulator's menu
-  and a screenshot. Chords are
-  pressed on a virtual keyboard of the overlay's own (uinput: the user needs write access to
-  `/dev/uinput`, as for gamepadly). The game is paused (its pause toggle) while the menu is
-  open and resumed when it closes; emulators without a pause key, such as PC games, keep
-  running.
+* **The emulator.** The overlay only asks; the launcher does. While the game runs, the launcher
+  serves a control channel (a Unix socket, `control` in `session.json`) and carries out each
+  request the best way the emulator allows: RetroArch's command pipe (its standard input,
+  `stdin_cmd_enable`), else a key chord on a virtual keyboard the launcher creates when the game
+  starts, else a command line. The menu offers what the channel says the emulator can do:
+  save and load state, the disc tray and next/previous disc (`.m3u` playlists), reset, the
+  emulator's menu and a screenshot. The game is paused while the menu is open (asked before
+  the overlay shows itself, while the game still has the keyboard focus) and resumed when it
+  closes; emulators without a pause, such as PC games, keep running.
+* **The desktop stays usable.** The menu takes the keyboard on demand, not exclusively: when the
+  compositor gives it to another window (Alt+Tab, a click elsewhere), the overlay closes and the
+  game resumes.
 * **Save states** (RetroArch). *Save state* and *Load state* open a page of four slots, each with
   the preview RetroArch saves with the state and its date. The slots are RetroArch's own
   `<saves>/<folder>/<game>.state1`…`state4` files, so EmulationStation lists the same states.
-  The overlay talks to RetroArch through the command pipe the launcher gives it as standard
-  input (`stdin_cmd_enable`): `LOAD_STATE_SLOT N` to load; to save, it moves RetroArch's current
-  slot to the chosen one (`STATE_SLOT_PLUS`/`MINUS`, keeping track of it, since Retrobox leaves
-  no other way to change it) and sends `SAVE_STATE`.
+  Loading is `LOAD_STATE_SLOT N`; for saving the launcher moves RetroArch's current slot to the
+  chosen one (`STATE_SLOT_PLUS`/`MINUS`, keeping track of it, since Retrobox leaves no other way
+  to change it) and sends `SAVE_STATE`.
 * **Leaving the game** runs `retrobox-emukill`.
 
 ## Requirements

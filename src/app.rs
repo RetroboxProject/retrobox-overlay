@@ -53,7 +53,7 @@ use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1;
 
 use crate::config::{Config, Side, VerticalPosition};
-use crate::emulator::{self, Emulator, Request};
+use crate::emulator::{Emulator, Request};
 use crate::input::{self, Nav, Pad};
 use crate::savestates::StateMode;
 use crate::theme::MenuTheme;
@@ -163,6 +163,8 @@ struct State {
     pool: SlotPool,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     pointer: Option<ThemedPointer>,
+    /// Whether the menu has the keyboard focus.
+    focused: bool,
     qh: QueueHandle<State>,
     handle: LoopHandle<'static, State>,
 
@@ -256,6 +258,7 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
         pool,
         keyboard: None,
         pointer: None,
+        focused: false,
         qh,
         handle,
         content,
@@ -352,29 +355,14 @@ impl State {
         );
         layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | edge);
         layer.set_exclusive_zone(-1);
-        // with a pause to press, the keyboard focus stays with the game until then
-        let pausing = self.content.emulator.can_pause();
-        layer.set_keyboard_interactivity(if pausing {
-            KeyboardInteractivity::None
-        } else {
-            KeyboardInteractivity::Exclusive
-        });
+        // The keyboard on demand, not exclusively: the compositor may give it
+        // to another window (Alt+Tab, a click), and then the overlay closes.
+        layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
         layer.set_size(panel.width, 0);
         let hidden = -(panel.width as i32);
         set_edge_margin(&layer, config.side, hidden);
         layer.commit();
         self.panel = Some((panel, Piece::new(layer, self.alpha.as_ref(), &self.qh)));
-        if pausing {
-            self.handle
-                .insert_source(
-                    Timer::from_duration(emulator::KEYBOARD_SETTLE),
-                    |_, &mut (), state| {
-                        state.pause_game();
-                        TimeoutAction::Drop
-                    },
-                )
-                .ok();
-        }
 
         if config.clock.enabled {
             let free =
@@ -482,20 +470,6 @@ impl State {
             {
                 piece.present(&mut self.pool, &pixmap);
             }
-        }
-    }
-
-    /// Pause the game, then give the menu the keyboard.
-    fn pause_game(&mut self) {
-        if self.outcome.is_some() {
-            return; // closed before the pause: nothing to undo later
-        }
-        self.content.emulator.pause();
-        if let Some((_, piece)) = &self.panel {
-            piece
-                .layer
-                .set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
-            piece.layer.commit();
         }
     }
 
@@ -630,8 +604,11 @@ impl KeyboardHandler for State {
         _: &[Keysym],
     ) {
         log::debug!("keyboard focus");
+        self.focused = true;
     }
 
+    /// The compositor gave the keyboard to another window (Alt+Tab, a
+    /// click elsewhere): get out of the way.
     fn leave(
         &mut self,
         _: &Connection,
@@ -640,6 +617,11 @@ impl KeyboardHandler for State {
         _: &wl_surface::WlSurface,
         _: u32,
     ) {
+        if self.focused && self.outcome.is_none() {
+            log::info!("keyboard focus lost: closing");
+            self.outcome = Some(Outcome::Continue);
+        }
+        self.focused = false;
     }
 
     fn press_key(

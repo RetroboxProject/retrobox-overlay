@@ -1,41 +1,27 @@
-//! Talking to the emulator: its pause, and the actions the menu offers.
+//! Talking to the emulator: through the launcher's control channel.
 //!
-//! session.json says how the running emulator performs each standard hotkey
-//! action (Retrobox's `hotkeys.py`): a key chord, a command, or a combination
-//! the emulator reads from the controller itself, which may come with the
-//! emulator's own keyboard shortcut for the same thing. The overlay presses
-//! the chords on a virtual keyboard of its own (uinput) and runs the commands.
+//! The launcher serves a Unix socket while the game runs (session.json's
+//! `control`) and carries out each request the best way the emulator allows:
+//! its command pipe (RetroArch), a key chord on a virtual keyboard of its
+//! own, or a command line. The overlay only asks, one line per request.
 //!
-//! A chord only reaches an emulator that reads the keyboard through the
-//! compositor while that emulator has the keyboard focus, so it is pressed
-//! before the menu takes the focus (the pause) or after the menu has given
-//! it back (everything else). Emulators that read the keyboards directly
-//! (RetroArch's udev driver) get it either way.
+//! Key chords only reach an emulator that has the keyboard focus. When the
+//! channel says it may press keys (`focus`), the overlay asks for the pause
+//! before it shows itself, and for everything else after it is gone and the
+//! focus is back with the game.
 
-use std::collections::HashMap;
-use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
-use std::str::FromStr;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
 use std::thread::sleep;
 use std::time::Duration;
 
-use evdev::uinput::VirtualDevice;
-use evdev::{AttributeSet, KeyCode, KeyEvent};
+use crate::session::{ControlInfo, Session};
 
-use crate::savestates::SaveStates;
-use crate::session::{Binding, Session};
-
-/// Name of the virtual keyboard (visible in `libinput list-devices`).
-const KEYBOARD_NAME: &str = "retrobox-overlay keyboard";
-/// How long a chord stays down: a few frames, so emulators that poll the
-/// keyboard once per frame (or more slowly while paused) see it.
-const HOLD: Duration = Duration::from_millis(60);
 /// After the overlay closed, for the compositor to give the keyboard focus
 /// back to the game and repaint it (screenshots).
 const FOCUS_RETURN: Duration = Duration::from_millis(150);
-/// A new uinput device takes a moment to be picked up by the compositor and
-/// by the emulators that watch for new keyboards.
-pub const KEYBOARD_SETTLE: Duration = Duration::from_millis(300);
+/// How long an answer may take (a chord is pressed in well under that).
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// What the menu can ask of the emulator, besides leaving the game.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -82,8 +68,8 @@ impl EmuAction {
         matches!(self, Self::DiscTray | Self::NextDisc | Self::PrevDisc)
     }
 
-    /// The hotkey action (session.json's name) that performs it.
-    const fn hotkey(self) -> &'static str {
+    /// The action's name on the control channel (Retrobox's hotkey actions).
+    const fn name(self) -> &'static str {
         match self {
             Self::SaveState => "save_state",
             Self::LoadState => "load_state",
@@ -105,31 +91,12 @@ pub enum Request {
     LoadState(u32),
 }
 
-/// One thing to do to the emulator.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Step {
-    Keys(Vec<KeyCode>),
-    Exec(Vec<String>),
-}
-
-/// What a binding lets the overlay do: press its chord or run its command.
-fn step_of(binding: &Binding) -> Option<Step> {
-    let keys = match binding {
-        Binding::Exec { argv } => {
-            return (!argv.is_empty()).then(|| Step::Exec(argv.clone()));
-        }
-        Binding::Keys { keys } | Binding::Native { keys } => keys,
-    };
-    let codes: Option<Vec<KeyCode>> = keys
-        .iter()
-        .map(|name| KeyCode::from_str(name).ok())
-        .collect();
-    match codes {
-        Some(codes) if !codes.is_empty() => Some(Step::Keys(codes)),
-        Some(_) => None,
-        None => {
-            log::warn!("unknown key in {keys:?}: ignored");
-            None
+impl Request {
+    fn line(self) -> String {
+        match self {
+            Self::Action(action) => format!("do {}", action.name()),
+            Self::SaveState(slot) => format!("save_slot {slot}"),
+            Self::LoadState(slot) => format!("load_slot {slot}"),
         }
     }
 }
@@ -141,213 +108,115 @@ fn is_playlist(rom: &str) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("m3u"))
 }
 
-/// How the emulator does each action and pauses, as session.json says.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct Plan {
-    pause: Option<Vec<KeyCode>>,
-    actions: HashMap<EmuAction, Step>,
-}
-
-impl Plan {
-    fn new(session: &Session, pause_game: bool) -> Self {
-        let step = |name: &str| session.hotkeys.get(name).and_then(step_of);
-        let playlist = is_playlist(&session.rom);
-        let actions = EmuAction::ALL
-            .into_iter()
-            .filter(|action| playlist || !action.is_disc())
-            .filter_map(|action| Some((action, step(action.hotkey())?)))
-            .collect();
-        let pause = match step("pause") {
-            Some(Step::Keys(keys)) if pause_game => Some(keys),
-            _ => None,
-        };
-        Self { pause, actions }
-    }
-
-    /// Every key the plan may press, for the virtual keyboard's capabilities.
-    fn keys(&self) -> AttributeSet<KeyCode> {
-        let mut set = AttributeSet::new();
-        let chords = self.actions.values().filter_map(|step| match step {
-            Step::Keys(keys) => Some(keys),
-            Step::Exec(_) => None,
-        });
-        for key in chords.chain(self.pause.iter()).flatten() {
-            set.insert(*key);
-        }
-        set
-    }
-
-    fn needs_keyboard(&self) -> bool {
-        self.keys().iter().next().is_some()
-    }
-}
-
 /// The emulator of the running game, as far as the overlay can drive it.
 pub struct Emulator {
-    plan: Plan,
-    keyboard: Option<VirtualDevice>,
+    control: Option<ControlInfo>,
+    actions: Vec<EmuAction>,
+    pause_game: bool,
     paused: bool,
-    states: Option<SaveStates>,
 }
 
 impl Emulator {
-    /// No emulator: the demo, or a game without session.
+    /// No emulator: the demo, or a game without a control channel.
     pub fn none() -> Self {
         Self {
-            plan: Plan::default(),
-            keyboard: None,
+            control: None,
+            actions: Vec::new(),
+            pause_game: false,
             paused: false,
-            states: None,
         }
     }
 
-    pub fn new(session: &Session, pause_game: bool, runtime_dir: &std::path::Path) -> Self {
-        let mut plan = Plan::new(session, pause_game);
-        let states = session
-            .savestates
-            .as_ref()
-            .and_then(|info| SaveStates::new(info, session.pid, runtime_dir));
-        if states.is_some() {
-            // by slot, in their own menu pages, instead of the current slot's
-            plan.actions.remove(&EmuAction::SaveState);
-            plan.actions.remove(&EmuAction::LoadState);
-        }
-        let keyboard = if plan.needs_keyboard() {
-            match create_keyboard(&plan.keys()) {
-                Ok(device) => Some(device),
-                Err(err) => {
-                    log::warn!("cannot create the virtual keyboard (/dev/uinput): {err}");
-                    None
-                }
-            }
-        } else {
-            None
+    pub fn new(session: &Session, pause_game: bool) -> Self {
+        let Some(control) = session.control.clone() else {
+            log::warn!("no control channel in session.json: the menu can only leave the game");
+            return Self::none();
         };
-        if keyboard.is_none() {
-            // without a keyboard only the commands are left
-            plan.pause = None;
-            plan.actions.retain(|_, step| matches!(step, Step::Exec(_)));
-        }
+        let playlist = is_playlist(&session.rom);
+        let actions = EmuAction::ALL
+            .into_iter()
+            .filter(|action| control.actions.iter().any(|name| name == action.name()))
+            .filter(|action| playlist || !action.is_disc())
+            // by slot, in their own pages, when the emulator allows it
+            .filter(|action| {
+                !(control.slots && matches!(action, EmuAction::SaveState | EmuAction::LoadState))
+            })
+            .collect();
         Self {
-            plan,
-            keyboard,
+            pause_game: pause_game && control.pause,
+            control: Some(control),
+            actions,
             paused: false,
-            states,
         }
-    }
-
-    /// The game's save states by slot, when the overlay manages them.
-    pub fn states(&self) -> Option<&SaveStates> {
-        self.states.as_ref()
     }
 
     /// The actions the menu can offer, in menu order.
-    pub fn actions(&self) -> Vec<EmuAction> {
-        EmuAction::ALL
-            .into_iter()
-            .filter(|action| self.plan.actions.contains_key(action))
-            .collect()
+    pub fn actions(&self) -> &[EmuAction] {
+        &self.actions
     }
 
-    /// Whether opening the overlay pauses the game (so the menu must wait
-    /// for that before taking the keyboard focus).
-    pub fn can_pause(&self) -> bool {
-        self.plan.pause.is_some()
+    /// Whether save states go by slot (the save and load pages).
+    pub fn has_slots(&self) -> bool {
+        self.control.as_ref().is_some_and(|control| control.slots)
     }
 
-    /// Pause the game (its pause toggle), once.
+    /// Pause the game; called before the overlay shows itself, while the
+    /// game still has the keyboard focus.
     pub fn pause(&mut self) {
-        if self.paused {
-            return;
-        }
-        if let Some(keys) = self.plan.pause.clone() {
-            log::info!("pausing the game");
-            self.press(&keys);
+        if self.pause_game && self.ask("pause") {
             self.paused = true;
         }
     }
 
     /// Once the overlay is gone: resume the game and do what the menu asked.
     pub fn after_close(&mut self, request: Option<Request>) {
-        if self.paused || request.is_some() {
+        let focus = self.control.as_ref().is_some_and(|control| control.focus);
+        if focus && (self.paused || request.is_some()) {
             sleep(FOCUS_RETURN);
         }
-        self.resume();
-        match (request, &self.states) {
-            (Some(Request::Action(action)), _) => self.perform(action),
-            (Some(Request::SaveState(slot)), Some(states)) => states.save(slot),
-            (Some(Request::LoadState(slot)), Some(states)) => states.load(slot),
-            _ => {}
+        if self.paused {
+            self.ask("resume");
+            self.paused = false;
+        }
+        if let Some(request) = request {
+            self.ask(&request.line());
         }
     }
 
-    /// Undo `pause`: the same toggle again, so a game the user had paused
-    /// before opening the overlay stays paused.
-    fn resume(&mut self) {
-        if !self.paused {
-            return;
-        }
-        if let Some(keys) = self.plan.pause.clone() {
-            log::info!("resuming the game");
-            self.press(&keys);
-        }
-        self.paused = false;
-    }
-
-    /// Do what the menu entry asks.
-    fn perform(&mut self, action: EmuAction) {
-        let Some(step) = self.plan.actions.get(&action).cloned() else {
-            return;
+    /// Send one request and wait for its answer; true when it was done.
+    fn ask(&self, line: &str) -> bool {
+        let Some(control) = &self.control else {
+            return false;
         };
-        log::info!("{action:?}");
-        match step {
-            Step::Keys(keys) => self.press(&keys),
-            Step::Exec(argv) => spawn(&argv),
+        let answer = UnixStream::connect(&control.socket).and_then(|mut stream| {
+            stream.set_read_timeout(Some(ANSWER_TIMEOUT))?;
+            stream.write_all(format!("{line}\n").as_bytes())?;
+            let mut answer = String::new();
+            BufReader::new(stream).read_line(&mut answer)?;
+            Ok(answer.trim().to_owned())
+        });
+        match answer {
+            Ok(answer) if answer == "ok" => {
+                log::info!("{line}: ok");
+                true
+            }
+            Ok(answer) => {
+                log::warn!("{line}: {answer}");
+                false
+            }
+            Err(err) => {
+                log::error!("control channel {}: {err}", control.socket);
+                false
+            }
         }
     }
-
-    /// Press a chord: modifiers first, released in reverse order.
-    fn press(&mut self, keys: &[KeyCode]) {
-        let Some(device) = self.keyboard.as_mut() else {
-            return;
-        };
-        let down: Vec<_> = keys.iter().map(|key| *KeyEvent::new(*key, 1)).collect();
-        let up: Vec<_> = keys
-            .iter()
-            .rev()
-            .map(|key| *KeyEvent::new(*key, 0))
-            .collect();
-        if let Err(err) = device.emit(&down) {
-            log::warn!("cannot press {keys:?}: {err}");
-            return;
-        }
-        sleep(HOLD);
-        if let Err(err) = device.emit(&up) {
-            log::warn!("cannot release {keys:?}: {err}");
-        }
-    }
-}
-
-/// The virtual keyboard. It declares every ordinary key, not only the ones
-/// it presses: udev tags a device as a keyboard (`ID_INPUT_KEYBOARD`) only
-/// then, and emulators reading the keyboards themselves (RetroArch's udev
-/// driver) ignore anything else.
-fn create_keyboard(keys: &AttributeSet<KeyCode>) -> std::io::Result<VirtualDevice> {
-    let mut all = AttributeSet::new();
-    for code in 1..=KeyCode::KEY_MICMUTE.code() {
-        all.insert(KeyCode::new(code));
-    }
-    for key in keys {
-        all.insert(key);
-    }
-    VirtualDevice::builder()?
-        .name(KEYBOARD_NAME)
-        .with_keys(&all)?
-        .build()
 }
 
 /// Run a command detached from the overlay, which exits right after.
 pub fn spawn(argv: &[String]) {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
     let Some((program, arguments)) = argv.split_first() else {
         return;
     };
@@ -367,70 +236,53 @@ pub fn spawn(argv: &[String]) {
 mod tests {
     use super::*;
 
-    fn session(rom: &str, hotkeys: &str) -> Session {
+    fn session(rom: &str, control: &str) -> Session {
         serde_json::from_str(&format!(
-            r#"{{"pid": 1, "rom": "{rom}", "hotkeys": {hotkeys}}}"#
+            r#"{{"pid": 1, "rom": "{rom}", "control": {control}}}"#
         ))
         .unwrap()
     }
 
-    const RETROARCH: &str = r#"{
-        "pause": {"type": "keys", "keys": ["KEY_LEFTSHIFT", "KEY_P"]},
-        "save_state": {"type": "native", "keys": ["KEY_LEFTSHIFT", "KEY_F3"]},
-        "menu": {"type": "native", "keys": []},
-        "disk_next": {"type": "native", "keys": ["KEY_LEFTSHIFT", "KEY_PAGEDOWN"]},
-        "disk_eject": {"type": "keys", "keys": ["KEY_LEFTSHIFT", "KEY_F8"]},
-        "disk_prev": {"type": "keys", "keys": ["KEY_LEFTSHIFT", "KEY_PAGEUP"]},
-        "screenshot": {"type": "exec", "argv": ["/opt/retrobox/bin/retrobox-screenshot"]},
-        "reset": {"type": "keys", "keys": ["KEY_NOPE"]}
-    }"#;
+    const RETROARCH: &str = r#"{"socket": "/run/x/control.sock", "pause": true, "slots": true,
+        "focus": false, "actions": ["save_state", "load_state", "reset", "disk_eject",
+        "disk_next", "disk_prev", "screenshot"]}"#;
 
     #[test]
-    fn plan_keeps_what_can_be_done() {
-        let plan = Plan::new(&session("/roms/psx/ff7.m3u", RETROARCH), true);
+    fn menu_keeps_what_applies() {
+        let emulator = Emulator::new(&session("/roms/psx/ff7.m3u", RETROARCH), true);
         assert_eq!(
-            plan.pause,
-            Some(vec![KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_P])
+            emulator.actions(),
+            [
+                EmuAction::DiscTray,
+                EmuAction::NextDisc,
+                EmuAction::PrevDisc,
+                EmuAction::Reset,
+                EmuAction::Screenshot
+            ]
         );
-        // a native binding without keys, and an unknown key, give nothing
-        assert!(!plan.actions.contains_key(&EmuAction::Menu));
-        assert!(!plan.actions.contains_key(&EmuAction::Reset));
-        assert_eq!(
-            plan.actions[&EmuAction::SaveState],
-            Step::Keys(vec![KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_F3])
-        );
-        assert_eq!(
-            plan.actions[&EmuAction::Screenshot],
-            Step::Exec(vec!["/opt/retrobox/bin/retrobox-screenshot".into()])
-        );
-        for disc in [
-            EmuAction::DiscTray,
-            EmuAction::NextDisc,
-            EmuAction::PrevDisc,
-        ] {
-            assert!(plan.actions.contains_key(&disc));
-        }
-        assert!(plan.needs_keyboard());
+        assert!(emulator.has_slots() && emulator.pause_game);
+
+        let single = Emulator::new(&session("/roms/psx/game.chd", RETROARCH), false);
+        assert!(!single.actions().contains(&EmuAction::NextDisc));
+        assert!(!single.pause_game);
     }
 
     #[test]
-    fn next_disc_only_for_playlists_and_pause_optional() {
-        let plan = Plan::new(&session("/roms/psx/game.chd", RETROARCH), false);
-        assert!(!plan.actions.contains_key(&EmuAction::DiscTray));
-        assert!(!plan.actions.contains_key(&EmuAction::NextDisc));
-        assert_eq!(plan.pause, None);
+    fn plain_states_without_slots() {
+        let control = r#"{"socket": "s", "pause": false, "slots": false, "focus": true,
+            "actions": ["save_state", "load_state"]}"#;
+        let emulator = Emulator::new(&session("/roms/gc/game.rvz", control), true);
+        assert_eq!(
+            emulator.actions(),
+            [EmuAction::SaveState, EmuAction::LoadState]
+        );
+        assert!(!emulator.pause_game);
     }
 
     #[test]
-    fn commands_need_no_keyboard() {
-        let plan = Plan::new(
-            &session(
-                "/roms/steam/game.steam",
-                r#"{"screenshot": {"type": "exec", "argv": ["shot"]}}"#,
-            ),
-            true,
-        );
-        assert!(!plan.needs_keyboard());
-        assert_eq!(plan.pause, None);
+    fn requests_as_lines() {
+        assert_eq!(Request::Action(EmuAction::NextDisc).line(), "do disk_next");
+        assert_eq!(Request::SaveState(3).line(), "save_slot 3");
+        assert_eq!(Request::LoadState(2).line(), "load_slot 2");
     }
 }
