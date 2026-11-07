@@ -58,10 +58,11 @@ while it is shown: nothing stays resident during the game.
   overlay's own slide and fade play; elsewhere it is `retrobox-overlay`. On X11 the windows are
   override-redirect and typed as on-screen displays.
 * **X11.** The same menu, in override-redirect windows with a 32-bit visual on the primary
-  monitor (RandR); the panel takes the keyboard focus, and losing it closes the overlay as on
-  Wayland. The manual's page is cropped and scaled by the overlay (no `wp_viewporter`).
-* **The desktop stays usable.** The menu takes the keyboard on demand, not exclusively: when the
-  compositor gives it to another window (Alt+Tab, a click elsewhere), the overlay closes.
+  monitor (RandR). The overlay grabs the keyboard, so a window manager handing the focus back to
+  the game (xfwm4 does) cannot take the menu's keys away, and it raises itself again whenever
+  another window is restacked above it. The manual's page is cropped and scaled by the overlay (no `wp_viewporter`).
+* **The desktop stays usable.** On Wayland the menu takes the keyboard on demand, not
+  exclusively: when the compositor gives it to another window (Alt+Tab, a click elsewhere), the overlay closes.
 * **Save states** (RetroArch). *Load state* and *Save state* open a page of ten slots (it
   scrolls when they do not all fit), each with the preview RetroArch saves with the state and
   its date. The slots are RetroArch's own `<saves>/<system>/<game>.state1`…`state10` files,
@@ -108,7 +109,8 @@ while it is shown: nothing stays resident during the game.
 See [`data/overlay.ini`](data/overlay.ini) for every key: the menu's side, the dim opacity, the
 animation length, whether to pause the game, the clock (on/off, position, colour, `strftime`
 formats) and who scales the manual. Day and month
-names follow the language, which is EmulationStation's (else the system's): English, Spanish,
+names follow the language, which is EmulationStation's when one is chosen there, else the
+system's (`LANGUAGE`, `LC_ALL`, `LC_MESSAGES`, `LANG`): English, Spanish,
 Catalan, Galician, Basque, Portuguese, French, Italian, German, Dutch, Polish and Russian.
 
 ## Building

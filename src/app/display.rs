@@ -12,10 +12,14 @@
 //! * on X11 a piece is an override-redirect window with an ARGB visual
 //!   (translucent where a compositing manager runs, opaque otherwise), a sub
 //!   a child window; the fade is `_NET_WM_WINDOW_OPACITY`, the windows are
-//!   kept out of KWin's window animations as on-screen displays, and the
-//!   panel takes the keyboard focus (losing it closes the overlay, as on
-//!   Wayland). Pixels go to the server with `PutImage`.
+//!   kept out of KWin's window animations as on-screen displays, raised
+//!   again whenever the window manager restacks another window (xfwm4 puts
+//!   a fullscreen game back on top when it gets the focus back), and the
+//!   overlay grabs the keyboard, so that a window manager handing the focus
+//!   back to the game does not take the menu's keys away. Pixels go to the
+//!   server with `PutImage`.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::{Context as _, Result, anyhow};
@@ -43,8 +47,9 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use x11rb::connection::{Connection as _, RequestConnection as _};
 use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::xproto::{
-    self, AtomEnum, ColormapAlloc, ConfigureWindowAux, ConnectionExt as _, CreateGCAux,
-    CreateWindowAux, EventMask, ImageFormat, InputFocus, PropMode, VisualClass, WindowClass,
+    self, AtomEnum, ChangeWindowAttributesAux, ColormapAlloc, ConfigureWindowAux,
+    ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask, GrabMode, GrabStatus, ImageFormat,
+    InputFocus, PropMode, StackMode, VisualClass, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -127,6 +132,8 @@ pub(super) struct X11 {
     window_types: [xproto::Atom; 2],
     /// Sizes to tell, as a Wayland compositor's configures would.
     pub configures: Vec<(xproto::Window, (u32, u32))>,
+    /// The overlay's top-level windows, bottom to top.
+    tops: Rc<RefCell<Vec<xproto::Window>>>,
 }
 
 pub(super) enum Display {
@@ -267,6 +274,11 @@ impl X11 {
             atom("_NET_WM_WINDOW_TYPE_NOTIFICATION")?,
         ];
         let monitor = primary_monitor(&conn, root).unwrap_or(whole);
+        // other windows being mapped or restacked: the overlay goes back on top
+        conn.change_window_attributes(
+            root,
+            &ChangeWindowAttributesAux::new().event_mask(EventMask::SUBSTRUCTURE_NOTIFY),
+        )?;
         log::info!(
             "X11: {}x{} at {},{}{}",
             monitor.2,
@@ -290,7 +302,42 @@ impl X11 {
             window_type,
             window_types,
             configures: Vec::new(),
+            tops: Rc::default(),
         })
+    }
+
+    /// Whether a window is one of the overlay's top-level ones.
+    pub fn is_top(&self, window: xproto::Window) -> bool {
+        self.tops.borrow().contains(&window)
+    }
+
+    /// Put the overlay's windows back above every other one, in their order.
+    pub fn raise(&self) {
+        for &window in self.tops.borrow().iter() {
+            log_error(self.conn.configure_window(
+                window,
+                &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
+            ));
+        }
+    }
+
+    /// Take the whole keyboard for a window, so that keys reach the overlay
+    /// whichever window has the focus. False while another client (a
+    /// window manager shortcut being held) has it.
+    pub fn grab_keyboard(&self, window: xproto::Window) -> bool {
+        let status = self
+            .conn
+            .grab_keyboard(
+                true,
+                window,
+                x11rb::CURRENT_TIME,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+            )
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|reply| reply.status);
+        status == Some(GrabStatus::SUCCESS)
     }
 
     /// Where a piece goes on the monitor: x, y, width, height.
@@ -300,8 +347,10 @@ impl X11 {
 
     fn create_window(&mut self, spec: &Spec) -> Window {
         let (x, y, width, height) = self.geometry(spec);
-        let window = self.new_window(self.root, (x, y, width, height));
-        if let Some(window) = &window {
+        let mut window = self.new_window(self.root, (x, y, width, height));
+        if let Some(window) = &mut window {
+            self.tops.borrow_mut().push(window.id);
+            window.tops = Some(Rc::clone(&self.tops));
             let conn = &self.conn;
             let types: Vec<u32> = self.window_types.to_vec();
             log_error(conn.change_property32(
@@ -382,6 +431,7 @@ impl X11 {
             depth: self.depth,
             size: (width, height),
             pixels: Vec::new(),
+            tops: None,
         })
     }
 }
@@ -471,6 +521,8 @@ pub(super) struct Window {
     depth: u8,
     size: (u32, u32),
     pixels: Vec<u8>,
+    /// The list of top-level windows it is in, if it is one.
+    tops: Option<Rc<RefCell<Vec<xproto::Window>>>>,
 }
 
 impl Window {
@@ -535,6 +587,9 @@ impl Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
+        if let Some(tops) = &self.tops {
+            tops.borrow_mut().retain(|&window| window != self.id);
+        }
         if let Some(conn) = &self.conn {
             log_error(conn.free_gc(self.gc));
             log_error(conn.destroy_window(self.id));
@@ -569,6 +624,14 @@ impl Piece {
             }
             (Kind::Window(window), SurfaceId::X11(id)) => window.id == *id,
             _ => false,
+        }
+    }
+
+    /// Its X11 window, on X11.
+    pub const fn x11_window(&self) -> Option<xproto::Window> {
+        match &self.kind {
+            Kind::Window(window) => Some(window.id),
+            Kind::Layer { .. } => None,
         }
     }
 

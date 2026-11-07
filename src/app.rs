@@ -209,6 +209,9 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
         keyboard: false,
         fade: true,
     });
+    if let Some(window) = dim.x11_window() {
+        grab_keyboard(&handle, window)?;
+    }
     let mut state = State {
         display,
         focused: false,
@@ -304,6 +307,34 @@ fn watch_controllers(handle: &LoopHandle<'static, State>, pads: &[Pad]) -> Resul
                 TimeoutAction::Drop
             },
         )
+        .map_err(|err| anyhow!("cannot start a timer: {}", err.error))?;
+    Ok(())
+}
+
+/// How often, and how many times, the X11 keyboard grab is tried again while
+/// another client holds the keyboard (a window manager shortcut being held).
+const GRAB_RETRY: Duration = Duration::from_millis(50);
+const GRAB_TRIES: u32 = 40;
+
+/// Grab the keyboard on X11, trying again for a while if it is taken.
+fn grab_keyboard(handle: &LoopHandle<'static, State>, window: xproto::Window) -> Result<()> {
+    let mut tries = 0;
+    handle
+        .insert_source(Timer::immediate(), move |_, &mut (), state| {
+            let Some(x11) = state.display.x11() else {
+                return TimeoutAction::Drop;
+            };
+            if x11.grab_keyboard(window) {
+                log::debug!("keyboard grabbed");
+                return TimeoutAction::Drop;
+            }
+            tries += 1;
+            if tries >= GRAB_TRIES {
+                log::warn!("cannot grab the keyboard: keys follow the focus");
+                return TimeoutAction::Drop;
+            }
+            TimeoutAction::ToDuration(GRAB_RETRY)
+        })
         .map_err(|err| anyhow!("cannot start a timer: {}", err.error))?;
     Ok(())
 }
@@ -903,8 +934,23 @@ impl State {
             {
                 self.focus_out();
             }
+            // the window manager restacking or mapping another window (a
+            // fullscreen game raised again as it gets the focus back)
+            XEvent::ConfigureNotify(event) => self.x11_restacked(event.window),
+            XEvent::MapNotify(event) => self.x11_restacked(event.window),
             XEvent::Error(err) => log::warn!("X11 error: {err:?}"),
             _ => {}
+        }
+    }
+
+    /// Another top-level window moved in the stack or showed up: put the
+    /// overlay back on top of it.
+    fn x11_restacked(&mut self, window: xproto::Window) {
+        if let Some(x11) = self.display.x11()
+            && !x11.is_top(window)
+        {
+            log::debug!("window {window:#x} restacked: raising the overlay");
+            x11.raise();
         }
     }
 
