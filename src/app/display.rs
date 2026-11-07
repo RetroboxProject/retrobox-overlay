@@ -128,6 +128,7 @@ pub(super) struct X11 {
     visual: xproto::Visualid,
     colormap: xproto::Colormap,
     opacity: xproto::Atom,
+    bypass_compositor: xproto::Atom,
     window_type: xproto::Atom,
     window_types: [xproto::Atom; 2],
     /// Sizes to tell, as a Wayland compositor's configures would.
@@ -268,6 +269,7 @@ impl X11 {
             Ok(conn.intern_atom(false, name.as_bytes())?.reply()?.atom)
         };
         let opacity = atom("_NET_WM_WINDOW_OPACITY")?;
+        let bypass_compositor = atom("_NET_WM_BYPASS_COMPOSITOR")?;
         let window_type = atom("_NET_WM_WINDOW_TYPE")?;
         let window_types = [
             atom("_KDE_NET_WM_WINDOW_TYPE_ON_SCREEN_DISPLAY")?,
@@ -299,6 +301,7 @@ impl X11 {
             visual,
             colormap,
             opacity,
+            bypass_compositor,
             window_type,
             window_types,
             configures: Vec::new(),
@@ -359,6 +362,17 @@ impl X11 {
                 self.window_type,
                 AtomEnum::ATOM,
                 &types,
+            ));
+            // 2: never shown around the compositor. xfwm4 does that to an
+            // opaque fullscreen override-redirect window ("display fullscreen
+            // overlay windows directly"), which the dim is without a 32-bit
+            // visual, and then nothing composited shows above it.
+            log_error(conn.change_property32(
+                PropMode::REPLACE,
+                window.id,
+                self.bypass_compositor,
+                AtomEnum::CARDINAL,
+                &[2],
             ));
             log_error(conn.change_property8(
                 PropMode::REPLACE,

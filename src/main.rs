@@ -58,7 +58,7 @@ Log: stderr from a terminal, else ~/.local/state/retrobox/logs/overlay.log; RUST
 
 fn main() -> ExitCode {
     let launched = std::time::Instant::now();
-    init_log();
+    let log = init_log();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
@@ -71,7 +71,7 @@ fn main() -> ExitCode {
     }
     let demo = args.iter().any(|arg| arg == "--demo");
 
-    match run(demo, launched) {
+    match run(demo, launched, log.as_ref()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             log::error!("{err:#}");
@@ -80,10 +80,17 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
+fn run(demo: bool, launched: std::time::Instant, log: Option<&std::fs::File>) -> Result<()> {
     let runtime_dir = paths::runtime_dir();
     let _lock = match instance::acquire(&runtime_dir)? {
-        Instance::First(lock) => lock,
+        Instance::First(lock) => {
+            // the log is this run's from here: a second start (which only
+            // closes this one) leaves it alone
+            if let Some(log) = log {
+                log.set_len(0).ok();
+            }
+            lock
+        }
         Instance::Running(pid) => {
             instance::close_running(pid);
             return Ok(());
@@ -186,8 +193,9 @@ fn run(demo: bool, launched: std::time::Instant) -> Result<()> {
     Ok(())
 }
 
-/// Log to stderr from a terminal, else to the log file (replaced on every run).
-fn init_log() {
+/// Log to stderr from a terminal, else to the log file (emptied once this
+/// run is the overlay, see `run`); the file, if it is the log.
+fn init_log() -> Option<std::fs::File> {
     let mut builder =
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
     if std::io::stderr().is_terminal() {
@@ -197,14 +205,24 @@ fn init_log() {
         let file = path
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::File::create(&path));
-        if let Ok(file) = file {
+            .and_then(|()| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+            });
+        if let Ok(file) = file
+            && let Ok(target) = file.try_clone()
+        {
             builder
                 .format_timestamp_millis()
-                .target(env_logger::Target::Pipe(Box::new(file)));
+                .target(env_logger::Target::Pipe(Box::new(target)));
+            builder.init();
+            return Some(file);
         }
     }
     builder.init();
+    None
 }
 
 /// The running game's emulator and, when its states go by slot, the pages.
