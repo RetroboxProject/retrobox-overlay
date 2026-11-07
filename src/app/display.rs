@@ -16,7 +16,9 @@
 //!   again whenever the window manager restacks another window (xfwm4 puts
 //!   a fullscreen game back on top when it gets the focus back), and the
 //!   overlay grabs the keyboard, so that a window manager handing the focus
-//!   back to the game does not take the menu's keys away. Pixels go to the
+//!   back to the game does not take the menu's keys away. Closing gives the
+//!   focus back to the window that had it (xfwm4 leaves it nowhere, and the
+//!   game then gets no input and drops below the panel). Pixels go to the
 //!   server with `PutImage`.
 
 use std::cell::RefCell;
@@ -135,6 +137,9 @@ pub(super) struct X11 {
     pub configures: Vec<(xproto::Window, (u32, u32))>,
     /// The overlay's top-level windows, bottom to top.
     tops: Rc<RefCell<Vec<xproto::Window>>>,
+    /// The window with the keyboard focus before the overlay (the game's).
+    previous_focus: Option<xproto::Window>,
+    active_window: xproto::Atom,
 }
 
 pub(super) enum Display {
@@ -270,6 +275,8 @@ impl X11 {
         };
         let opacity = atom("_NET_WM_WINDOW_OPACITY")?;
         let bypass_compositor = atom("_NET_WM_BYPASS_COMPOSITOR")?;
+        let active_window = atom("_NET_ACTIVE_WINDOW")?;
+        let previous_focus = focused_window(&conn, root, active_window);
         let window_type = atom("_NET_WM_WINDOW_TYPE")?;
         let window_types = [
             atom("_KDE_NET_WM_WINDOW_TYPE_ON_SCREEN_DISPLAY")?,
@@ -306,7 +313,36 @@ impl X11 {
             window_types,
             configures: Vec::new(),
             tops: Rc::default(),
+            previous_focus,
+            active_window,
         })
+    }
+
+    /// Give the keyboard focus back to the window that had it, once the
+    /// overlay's windows are gone: directly, and through the window manager
+    /// (`_NET_ACTIVE_WINDOW`, as a pager asks, which focus stealing
+    /// prevention lets through) so that it raises it again too.
+    pub fn restore_focus(&self) {
+        let Some(window) = self.previous_focus else {
+            return;
+        };
+        log::debug!("focus back to {window:#x}");
+        log_error(
+            self.conn
+                .set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME),
+        );
+        let event = xproto::ClientMessageEvent::new(
+            32,
+            window,
+            self.active_window,
+            [2, x11rb::CURRENT_TIME, 0, 0, 0],
+        );
+        log_error(self.conn.send_event(
+            false,
+            self.root,
+            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+            event,
+        ));
     }
 
     /// Whether a window is one of the overlay's top-level ones.
@@ -502,6 +538,27 @@ fn primary_monitor(conn: &RustConnection, root: xproto::Window) -> Option<(i16, 
 }
 
 /// Whether a compositing manager runs (it owns `_NET_WM_CM_Sn`).
+/// The window with the keyboard focus: the focused one, else the window
+/// manager's active one (when the focus is on the root or nowhere).
+fn focused_window(
+    conn: &RustConnection,
+    root: xproto::Window,
+    active_window: xproto::Atom,
+) -> Option<xproto::Window> {
+    let focus = conn.get_input_focus().ok()?.reply().ok()?.focus;
+    // 0 is None, 1 PointerRoot
+    if focus > 1 && focus != root {
+        return Some(focus);
+    }
+    conn.get_property(false, root, active_window, AtomEnum::WINDOW, 0, 1)
+        .ok()?
+        .reply()
+        .ok()?
+        .value32()?
+        .next()
+        .filter(|&window| window != 0)
+}
+
 fn compositing(conn: &RustConnection, screen: usize) -> bool {
     let name = format!("_NET_WM_CM_S{screen}");
     conn.intern_atom(false, name.as_bytes())

@@ -243,6 +243,9 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
     let mut pads = std::mem::take(&mut state.content.pads);
     let emulator = std::mem::replace(&mut state.content.emulator, Emulator::none());
     let State { display, .. } = state;
+    if let Display::X11(x11) = &display {
+        x11.restore_focus();
+    }
     display.flush();
     drop(display);
     input::wait_released(&mut pads);

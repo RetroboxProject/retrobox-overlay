@@ -60,7 +60,8 @@ while it is shown: nothing stays resident during the game.
 * **X11.** The same menu, in override-redirect windows with a 32-bit visual on the primary
   monitor (RandR). The overlay grabs the keyboard, so a window manager handing the focus back to
   the game (xfwm4 does) cannot take the menu's keys away, and it raises itself again whenever
-  another window is restacked above it. The manual's page is cropped and scaled by the overlay (no `wp_viewporter`).
+  another window is restacked above it. Closing gives the keyboard focus back to the game,
+  through the window manager too (xfwm4 would leave it nowhere). The manual's page is cropped and scaled by the overlay (no `wp_viewporter`).
 * **The desktop stays usable.** On Wayland the menu takes the keyboard on demand, not
   exclusively: when the compositor gives it to another window (Alt+Tab, a click elsewhere), the overlay closes.
 * **Save states** (RetroArch). *Load state* and *Save state* open a page of ten slots (it
