@@ -62,33 +62,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with: { tool: "cargo-deb,cargo-generate-rpm" }
-      - name: Version from input
-        if: inputs.version != ''
+      # The packaging lives in scripts/package.sh, so it can be run by hand too.
+      # An empty version (push, pull request) keeps the version of Cargo.toml.
+      - name: Build the .deb and the .rpm
         env:
           VERSION_INPUT: ${{ inputs.version }}
-        # Cargo.lock records the crate's own version too: refresh only that
-        # entry (--workspace leaves every dependency where the lock has it).
-        # A version such as v0.1 is completed to 0.1.0: Cargo wants full semver.
-        run: |
-          version="${VERSION_INPUT#v}"
-          case "$version" in
-            *.*.*) ;;
-            *.*) version="$version.0" ;;
-            *) version="$version.0.0" ;;
-          esac
-          if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
-            echo "::error::version $VERSION_INPUT is not valid (vMAJOR.MINOR[.PATCH])"
-            exit 1
-          fi
-          sed -i "0,/^version = .*/s//version = \"$version\"/" Cargo.toml
-          cargo update --workspace
-      - run: cargo build --release --locked
-      - run: cargo deb --no-build
-      - run: cargo generate-rpm
-      - run: |
-          mkdir -p dist
-          cp target/debian/*.deb target/generate-rpm/*.rpm dist/
-          ls -l dist
+        run: bash scripts/package.sh --version "${VERSION_INPUT}" --outdir dist
       - uses: actions/upload-artifact@v4
         with: { name: "packages-${{ matrix.arch }}", path: dist/* }
 
