@@ -177,6 +177,8 @@ struct State {
     overlay: Option<Child>,
     last_trigger: Option<Instant>,
     stop: bool,
+    /// Where events are read into.
+    events: Vec<evdev::InputEvent>,
 }
 
 /// Run until stopped (SIGTERM, SIGINT): open the overlay on its triggers.
@@ -242,6 +244,7 @@ pub fn run(runtime_dir: &Path, hold: Duration) -> Result<()> {
         overlay: None,
         last_trigger: None,
         stop: false,
+        events: Vec::new(),
     };
     state.scan();
     log::info!(
@@ -380,17 +383,21 @@ impl State {
         let Some(input) = self.inputs.get_mut(path) else {
             return;
         };
-        let events: Option<Vec<_>> = match input.device.fetch_events() {
-            Ok(events) => Some(events.collect()),
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return,
-            Err(_) => None,
+        // one buffer for every read: sticks send hundreds of events a second
+        let mut events = std::mem::take(&mut self.events);
+        events.clear();
+        let gone = match input.device.fetch_events() {
+            Ok(fetched) => {
+                events.extend(fetched);
+                false
+            }
+            Err(err) => err.kind() != std::io::ErrorKind::WouldBlock,
         };
-        let Some(events) = events else {
+        if gone {
             // unplugged
             self.forget(path);
-            return;
-        };
-        for event in events {
+        }
+        for event in &events {
             // looked up again: a trigger may have changed things
             let Some(input) = self.inputs.get_mut(path) else {
                 return;
@@ -409,14 +416,16 @@ impl State {
                 {
                     self.pad_button(path, code, value == 1);
                 }
+                // a stick only matters while a chord is held
                 (Watched::Pad(hold), EventSummary::AbsoluteAxis(_, axis, value))
-                    if hold.pushed(axis, value) =>
+                    if hold.armed.is_some() && hold.pushed(axis, value) =>
                 {
                     self.cancel(path);
                 }
                 _ => {}
             }
         }
+        self.events = events;
     }
 
     /// A gamepad button going down or up.

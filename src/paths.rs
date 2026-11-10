@@ -38,18 +38,28 @@ pub fn config_dirs() -> Vec<PathBuf> {
     vec![system, user]
 }
 
+/// Retrobox's state directory: `$RETROBOX_STATEDIR`, else
+/// `~/.local/state/retrobox`.
+pub fn state_dir() -> PathBuf {
+    env_path("RETROBOX_STATEDIR").unwrap_or_else(|| {
+        env_path("XDG_STATE_HOME")
+            .or_else(|| env_path("HOME").map(|home| home.join(".local").join("state")))
+            .unwrap_or_else(env::temp_dir)
+            .join("retrobox")
+    })
+}
+
 /// A log of the overlay when it is not run from a terminal (no one reads
 /// its output): `<state dir>/logs/<name>` (`overlay.log`, `overlay-daemon.log`).
 pub fn log_file(name: &str) -> PathBuf {
-    env_path("RETROBOX_STATEDIR")
-        .unwrap_or_else(|| {
-            env_path("XDG_STATE_HOME")
-                .or_else(|| env_path("HOME").map(|home| home.join(".local").join("state")))
-                .unwrap_or_else(env::temp_dir)
-                .join("retrobox")
-        })
-        .join("logs")
-        .join(name)
+    state_dir().join("logs").join(name)
+}
+
+/// The last menu theme EmulationStation exported, kept across sessions:
+/// the runtime directory is emptied on each boot, and an EmulationStation
+/// without patch 0008 exports it only when a game starts.
+pub fn kept_menu_theme() -> PathBuf {
+    state_dir().join("overlay-menu-theme.json")
 }
 
 /// A Retrobox command: from the install's `bin/` when known, else from `$PATH`.

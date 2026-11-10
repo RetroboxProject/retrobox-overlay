@@ -1,8 +1,13 @@
-//! The menu style EmulationStation draws with, as it exports it on every game
-//! launch (`es-menu-theme.json`, retrobox-emulationstation patch 0006).
+//! The menu style EmulationStation draws with, as it exports it
+//! (`es-menu-theme.json`, retrobox-emulationstation patches 0006 and 0008:
+//! when it starts, when its themes are reloaded or its settings saved, and
+//! before each game).
 //!
-//! Every value has EmulationStation's own default (`ThemeData.h`), so the
-//! overlay still looks like ES's default menus when the file is missing.
+//! The last one is kept in the state directory, for when the runtime
+//! directory has none yet (each boot empties it; an EmulationStation without
+//! patch 0008 only exports on a game launch). Every value has
+//! EmulationStation's own default (`ThemeData.h`), so the overlay still looks
+//! like ES's default menus when there is no file at all.
 
 use std::collections::HashMap;
 use std::fs;
@@ -227,21 +232,49 @@ impl Default for MenuTheme {
 }
 
 impl MenuTheme {
-    /// The exported theme, or ES's defaults when it is missing or unreadable.
-    pub fn load(path: Option<&Path>) -> Self {
-        let Some(path) = path else {
-            return Self::default();
-        };
+    /// EmulationStation's menu theme, from `path`; kept in `kept` for the
+    /// next time `path` is missing (and read from there then).
+    pub fn load_or_kept(path: &Path, kept: &Path) -> Self {
         match fs::read_to_string(path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|err| {
-                log::warn!("cannot read the menu theme {}: {err}", path.display());
-                Self::default()
-            }),
-            Err(err) => {
-                log::info!("no menu theme at {} ({err}): ES defaults", path.display());
-                Self::default()
+            Ok(text) => {
+                // written only when it changed
+                if fs::read_to_string(kept).ok().as_deref() != Some(text.as_str()) {
+                    let written = kept
+                        .parent()
+                        .map_or(Ok(()), fs::create_dir_all)
+                        .and_then(|()| fs::write(kept, &text));
+                    if let Err(err) = written {
+                        log::debug!("cannot keep the menu theme in {}: {err}", kept.display());
+                    }
+                }
+                log::info!("menu theme: {}", path.display());
+                Self::parse(&text, path)
+            }
+            Err(_) => {
+                if let Ok(text) = fs::read_to_string(kept) {
+                    log::info!(
+                        "no menu theme at {} yet: the last one ({})",
+                        path.display(),
+                        kept.display()
+                    );
+                    Self::parse(&text, kept)
+                } else {
+                    log::warn!(
+                        "no menu theme at {} (is retrobox-emulationstation up to date?): \
+                         EmulationStation's defaults",
+                        path.display()
+                    );
+                    Self::default()
+                }
             }
         }
+    }
+
+    fn parse(text: &str, path: &Path) -> Self {
+        serde_json::from_str(text).unwrap_or_else(|err| {
+            log::warn!("cannot read the menu theme {}: {err}", path.display());
+            Self::default()
+        })
     }
 }
 

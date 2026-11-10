@@ -188,6 +188,9 @@ struct State {
     setters: Vec<Setter>,
     /// Sliders found before the panel was there.
     found: Vec<(SliderKind, f32)>,
+    /// What the menu's help prompts were drawn for (a page open, a slider
+    /// selected).
+    menu_help_shown: Option<(bool, bool)>,
     /// The button (or finger) held on the panel, and what it turned into.
     press: Option<Press>,
     /// The finger touching the screen (one at a time).
@@ -312,6 +315,7 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         found: Vec::new(),
         press: None,
         finger: None,
+        menu_help_shown: None,
         brightness: Brightness::Waiting,
         controls: None,
         touched: Vec::new(),
@@ -617,6 +621,12 @@ impl State {
         ) else {
             return;
         };
+        // the same prompts as shown: nothing to draw again
+        let shown = (panel.page_open(), panel.slider_selected());
+        if self.menu_help_shown == Some(shown) {
+            return;
+        }
+        self.menu_help_shown = Some(shown);
         let texts = &self.content.translator;
         let prompt = |icon: &str, key: &str| Prompt {
             icon: icon.to_owned(),
@@ -1803,4 +1813,8 @@ wayland_client::delegate_noop!(State: WpAlphaModifierV1);
 wayland_client::delegate_noop!(State: WpAlphaModifierSurfaceV1);
 wayland_client::delegate_noop!(State: WpViewporter);
 wayland_client::delegate_noop!(State: WpViewport);
+wayland_client::delegate_noop!(
+    State: wayland_protocols::wp::single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1
+);
+wayland_client::delegate_noop!(State: ignore wayland_client::protocol::wl_buffer::WlBuffer);
 smithay_client_toolkit::delegate_dispatch2!(State);

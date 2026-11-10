@@ -59,6 +59,15 @@ only while it is shown.
   dimmed otherwise). These are done with the menu open, which shows the result.
   The launcher keeps track of the disc (starting from the one RetroArch restores) because every
   disc change goes through its control channel, the disc hotkeys too (`retrobox-control`).
+* **Light on the game underneath.** The game keeps running, so the overlay costs the compositor
+  as little as it can: the dim is a single pixel the compositor stretches over the screen
+  (`wp_single_pixel_buffer` and `wp_viewporter`, which KWin 6 and wlroots have), a redraw only
+  hands over the rows that changed (a slider's row, the clock's digits) and nothing when none
+  did, the help prompts are drawn again only when they change, and a slider's changes reach
+  the system at most every 50 ms. The daemon reads the controllers into one reused buffer and
+  only looks at the sticks while a hold is under way. Some cost stays: while any surface is
+  over a fullscreen game, the compositor cannot hand the game's frames straight to the screen
+  and composites them, as with Steam's overlay.
 * **No pause.** Like Steam's overlay, the overlay does not pause the game: most console games
   have a pause of their own, and RetroArch's menu (*Emulator menu*) pauses the rest.
 * **No window animations on top.** Under KDE Plasma the surfaces use the `on-screen-display`
@@ -153,7 +162,10 @@ only while it is shown.
   group).
 * The menu's look comes from EmulationStation (retrobox-emulationstation exports its resolved
   menu theme when it starts, when its themes are reloaded or its settings saved, and before
-  each game), so the overlay is themed in EmulationStation too, not only in games.
+  each game, from patch 0008 on), so the overlay is themed in EmulationStation too, not only in
+  games. The last theme is kept in `~/.local/state/retrobox/overlay-menu-theme.json` for when
+  there is none yet (each boot empties the runtime directory; an older EmulationStation only
+  exports it when a game starts).
 
 ## Settings
 

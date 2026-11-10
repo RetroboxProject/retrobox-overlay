@@ -169,7 +169,7 @@ fn run(
         .as_ref()
         .and_then(Session::menu_theme_path)
         .unwrap_or_else(|| runtime_dir.join("es-menu-theme.json"));
-    let theme = MenuTheme::load(Some(&theme_path));
+    let theme = MenuTheme::load_or_kept(&theme_path, &paths::kept_menu_theme());
     let config = Config::load(&paths::config_dirs());
     let language = i18n::preferred_language(&theme.language);
     let translator = Translator::new(&language);

@@ -20,6 +20,12 @@
 //!   focus back to the window that had it (xfwm4 leaves it nowhere, and the
 //!   game then gets no input and drops below the panel). Pixels go to the
 //!   server with `PutImage`.
+//!
+//! Every buffer costs the compositor an upload, which a game running under
+//! the overlay pays for: the dim is one pixel the compositor stretches over
+//! the screen (`wp_single_pixel_buffer` with `wp_viewporter`, when the
+//! compositor has them: KWin 6, wlroots), and a redraw only tells the
+//! compositor about the rows that changed (nothing at all when none did).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -39,11 +45,13 @@ use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 use smithay_client_toolkit::subcompositor::SubcompositorState;
 use tiny_skia::Pixmap;
 use wayland_client::globals::GlobalList;
+use wayland_client::protocol::wl_buffer::WlBuffer;
 use wayland_client::protocol::wl_subsurface::WlSubsurface;
 use wayland_client::protocol::{wl_keyboard, wl_shm, wl_surface::WlSurface};
 use wayland_client::{Connection, QueueHandle};
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1;
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1;
+use wayland_protocols::wp::single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1;
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use x11rb::connection::{Connection as _, RequestConnection as _};
@@ -114,6 +122,9 @@ pub(super) struct Wl {
     pub alpha: Option<WpAlphaModifierV1>,
     pub subcompositor: Option<SubcompositorState>,
     pub viewporter: Option<WpViewporter>,
+    /// The compositor's scaling, whatever the manual's setting (the dim).
+    pub scaler: Option<WpViewporter>,
+    pub single_pixel: Option<WpSinglePixelBufferManagerV1>,
     pub pool: SlotPool,
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
     pub pointer: Option<ThemedPointer>,
@@ -223,6 +234,8 @@ impl Display {
                     layer,
                     buffer: None,
                     fade,
+                    rows: Rows::default(),
+                    pixel: None,
                 }
             }
             Self::X11(x11) => Kind::Window(x11.create_window(&spec)),
@@ -674,6 +687,9 @@ enum Kind {
         layer: LayerSurface,
         buffer: Option<Buffer>,
         fade: Option<WpAlphaModifierSurfaceV1>,
+        rows: Rows,
+        /// One pixel stretched over the surface (the dim).
+        pixel: Option<(WlBuffer, Option<WpViewport>)>,
     },
     Window(Window),
 }
@@ -765,9 +781,48 @@ impl Piece {
         self.show(display, width, height, |canvas| to_argb8888(pixmap, canvas));
     }
 
-    /// Fill it with one ARGB8888 pixel (B, G, R, A in memory), at its size.
+    /// Fill it with one ARGB8888 pixel (B, G, R, A in memory), at its size:
+    /// on Wayland one pixel the compositor stretches, when it can.
     pub fn fill(&mut self, display: &mut Display, pixel: [u8; 4]) {
         let (width, height) = (self.size.0.max(1), self.size.1.max(1));
+        if let (
+            Kind::Layer {
+                layer, pixel: one, ..
+            },
+            Display::Wayland(wl),
+        ) = (&mut self.kind, &mut *display)
+            && let Some(scaler) = &wl.scaler
+            && let Some(manager) = &wl.single_pixel
+        {
+            let surface = layer.wl_surface();
+            let [b, g, r, a] = pixel;
+            let wide = |byte: u8| (u64::from(byte) * u64::from(u32::MAX) / 255) as u32;
+            let buffer = Some(manager.create_u32_rgba_buffer(
+                wide(r),
+                wide(g),
+                wide(b),
+                wide(a),
+                &wl.qh,
+                (),
+            ));
+            if let Some(buffer) = buffer {
+                let viewport = match one.take() {
+                    Some((old, viewport)) => {
+                        old.destroy();
+                        viewport
+                    }
+                    None => None,
+                }
+                .unwrap_or_else(|| scaler.get_viewport(surface, &wl.qh, ()));
+                viewport.set_destination(width as i32, height as i32);
+                surface.attach(Some(&buffer), 0, 0);
+                surface.damage_buffer(0, 0, 1, 1);
+                layer.commit();
+                *one = Some((buffer, Some(viewport)));
+                self.shown = true;
+                return;
+            }
+        }
         self.show(display, width, height, |canvas| {
             for target in canvas.as_chunks_mut::<4>().0 {
                 *target = pixel;
@@ -783,15 +838,28 @@ impl Piece {
         fill: impl FnOnce(&mut [u8]),
     ) {
         match (&mut self.kind, display) {
-            (Kind::Layer { layer, buffer, .. }, Display::Wayland(wl)) => {
-                if let Some(attached) =
-                    attach(&mut wl.pool, layer.wl_surface(), width, height, fill)
-                {
+            (
+                Kind::Layer {
+                    layer,
+                    buffer,
+                    rows,
+                    ..
+                },
+                Display::Wayland(wl),
+            ) => match attach(
+                &mut wl.pool,
+                layer.wl_surface(),
+                (width, height),
+                rows,
+                fill,
+            ) {
+                Attached::New(attached) => {
                     layer.commit();
                     *buffer = Some(attached);
                     self.shown = true;
                 }
-            }
+                Attached::Same | Attached::Failed => {}
+            },
             (Kind::Window(window), Display::X11(_)) => {
                 window.show(width, height, fill);
                 self.shown = true;
@@ -812,27 +880,101 @@ impl Piece {
     }
 }
 
-/// A buffer of this size, filled and attached to a surface.
+/// What a surface last showed, a hash per row: what a redraw changes.
+#[derive(Debug, Default)]
+struct Rows {
+    width: u32,
+    hashes: Vec<u64>,
+}
+
+impl Rows {
+    /// The rows that differ from what was shown (first, end), and remember
+    /// these; None when nothing changed.
+    fn changed(&mut self, canvas: &[u8], width: u32, height: u32) -> Option<(usize, usize)> {
+        let stride = width as usize * 4;
+        let hashes: Vec<u64> = canvas
+            .chunks_exact(stride.max(1))
+            .take(height as usize)
+            .map(row_hash)
+            .collect();
+        let band = if self.width == width && self.hashes.len() == hashes.len() {
+            let first = hashes
+                .iter()
+                .zip(&self.hashes)
+                .position(|(new, old)| new != old)?;
+            let last = hashes
+                .iter()
+                .zip(&self.hashes)
+                .rposition(|(new, old)| new != old)
+                .unwrap_or(first);
+            (first, last + 1)
+        } else {
+            (0, hashes.len())
+        };
+        self.width = width;
+        self.hashes = hashes;
+        Some(band)
+    }
+
+    fn forget(&mut self) {
+        self.hashes.clear();
+    }
+}
+
+/// A fast hash of a row of pixels (only compared with itself).
+fn row_hash(row: &[u8]) -> u64 {
+    let (words, rest) = row.as_chunks::<8>();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for word in words {
+        hash = (hash ^ u64::from_le_bytes(*word))
+            .wrapping_mul(0x0100_0000_01b3)
+            .rotate_left(29);
+    }
+    for byte in rest {
+        hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+enum Attached {
+    /// A new buffer, attached, its changed rows damaged.
+    New(Buffer),
+    /// The same as what is shown: nothing attached.
+    Same,
+    Failed,
+}
+
+/// A buffer of this size, filled and attached to a surface, if it differs
+/// from what the surface shows; only the rows that changed are damaged.
 fn attach(
     pool: &mut SlotPool,
     surface: &WlSurface,
-    width: u32,
-    height: u32,
+    (width, height): (u32, u32),
+    rows: &mut Rows,
     fill: impl FnOnce(&mut [u8]),
-) -> Option<Buffer> {
-    let (width, height) = (width as i32, height as i32);
-    let Ok((buffer, canvas)) =
-        pool.create_buffer(width, height, width * 4, wl_shm::Format::Argb8888)
-    else {
+) -> Attached {
+    let Ok((buffer, canvas)) = pool.create_buffer(
+        width as i32,
+        height as i32,
+        width as i32 * 4,
+        wl_shm::Format::Argb8888,
+    ) else {
         log::warn!("cannot allocate a {width}x{height} buffer");
-        return None;
+        return Attached::Failed;
     };
     fill(canvas);
-    buffer.attach_to(surface).ok()?;
-    surface.damage_buffer(0, 0, width, height);
-    Some(buffer)
+    let Some((first, end)) = rows.changed(canvas, width, height) else {
+        return Attached::Same;
+    };
+    if buffer.attach_to(surface).is_err() {
+        rows.forget();
+        return Attached::Failed;
+    }
+    surface.damage_buffer(0, first as i32, width as i32, (end - first) as i32);
+    Attached::New(buffer)
 }
 
+#[allow(clippy::large_enum_variant, reason = "two or three subs, made once")]
 enum SubKind {
     Wayland {
         subsurface: WlSubsurface,
@@ -840,6 +982,7 @@ enum SubKind {
         viewport: Option<WpViewport>,
         fade: Option<WpAlphaModifierSurfaceV1>,
         buffer: Option<Buffer>,
+        rows: Rows,
     },
     X11 {
         window: Window,
@@ -877,6 +1020,7 @@ impl Sub {
                     viewport,
                     fade,
                     buffer: None,
+                    rows: Rows::default(),
                 }
             }
             (Display::X11(x11), Kind::Window(window)) => SubKind::X11 {
@@ -948,11 +1092,16 @@ impl Sub {
         match (&mut self.kind, display) {
             (
                 SubKind::Wayland {
-                    surface, buffer, ..
+                    surface,
+                    buffer,
+                    rows,
+                    ..
                 },
                 Display::Wayland(wl),
             ) => {
-                if let Some(attached) = attach(&mut wl.pool, surface, width, height, fill) {
+                if let Attached::New(attached) =
+                    attach(&mut wl.pool, surface, (width, height), rows, fill)
+                {
                     *buffer = Some(attached);
                 }
             }
@@ -970,10 +1119,14 @@ impl Sub {
     pub fn hide(&mut self) {
         match &mut self.kind {
             SubKind::Wayland {
-                surface, buffer, ..
+                surface,
+                buffer,
+                rows,
+                ..
             } => {
                 surface.attach(None, 0, 0);
                 *buffer = None;
+                rows.forget();
             }
             SubKind::X11 { window, mapped } => {
                 if let Some(conn) = &window.conn {
@@ -1045,10 +1198,13 @@ pub(super) fn bind_wayland(
         .and_then(|global| global.get().ok().cloned());
     let subcompositor =
         SubcompositorState::bind(compositor.wl_compositor().clone(), globals, &qh).ok();
-    let viewporter = SimpleGlobal::<WpViewporter, 1>::bind(globals, &qh)
+    let scaler = SimpleGlobal::<WpViewporter, 1>::bind(globals, &qh)
         .ok()
-        .and_then(|global| global.get().ok().cloned())
-        .filter(|_| compositor_scaling);
+        .and_then(|global| global.get().ok().cloned());
+    let viewporter = scaler.clone().filter(|_| compositor_scaling);
+    let single_pixel = SimpleGlobal::<WpSinglePixelBufferManagerV1, 1>::bind(globals, &qh)
+        .ok()
+        .and_then(|global| global.get().ok().cloned());
     if viewporter.is_none() {
         log::info!("the manual is scaled by the overlay (no wp_viewporter, or the setting)");
     }
@@ -1063,6 +1219,8 @@ pub(super) fn bind_wayland(
         alpha,
         subcompositor,
         viewporter,
+        scaler,
+        single_pixel,
         pool,
         keyboard: None,
         pointer: None,
@@ -1073,6 +1231,21 @@ pub(super) fn bind_wayland(
 
 #[cfg(test)]
 mod tests {
+    use super::Rows;
+
+    #[test]
+    fn damages_only_what_changed() {
+        let mut rows = Rows::default();
+        let mut canvas = vec![0u8; 4 * 3 * 5];
+        assert_eq!(rows.changed(&canvas, 3, 5), Some((0, 5)));
+        assert_eq!(rows.changed(&canvas, 3, 5), None);
+        canvas[4 * 3 * 2] = 1;
+        canvas[4 * 3 * 3 + 5] = 9;
+        assert_eq!(rows.changed(&canvas, 3, 5), Some((2, 4)));
+        // another size: everything
+        assert_eq!(rows.changed(&canvas[..4 * 2 * 5], 2, 5), Some((0, 5)));
+    }
+
     use super::*;
 
     fn x11_geometry(spec: &Spec) -> (i32, i32, u32, u32) {

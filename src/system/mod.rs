@@ -30,6 +30,9 @@ pub enum SliderKind {
 
 /// How much Left/Right move a slider.
 pub const STEP: f32 = 0.05;
+/// How often a slider's changes reach the system, at most: each one runs a
+/// program, and the backlight or the sound server do some work.
+const APPLY_EVERY: Duration = Duration::from_millis(50);
 /// How long closing waits for the last change to be applied.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -157,8 +160,9 @@ impl Setter {
             .name(format!("{kind:?}"))
             .spawn(move || {
                 let (lock, changed) = &*worker;
+                let mut last: Option<Instant> = None;
                 loop {
-                    let value = {
+                    let mut value = {
                         let mut pending = lock.lock().unwrap_or_else(PoisonError::into_inner);
                         loop {
                             if let Some(value) = pending.value.take() {
@@ -173,7 +177,22 @@ impl Setter {
                                 .unwrap_or_else(PoisonError::into_inner);
                         }
                     };
+                    // at most one change every APPLY_EVERY (a drag asks for
+                    // dozens a second): the latest one, after waiting
+                    let wait = last.map_or(Duration::ZERO, |last| {
+                        APPLY_EVERY.saturating_sub(last.elapsed())
+                    });
+                    if !wait.is_zero() {
+                        std::thread::sleep(wait);
+                        let newer = lock
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .value
+                            .take();
+                        value = newer.unwrap_or(value);
+                    }
                     control.set(value);
+                    last = Some(Instant::now());
                     let mut pending = lock.lock().unwrap_or_else(PoisonError::into_inner);
                     pending.busy = false;
                     changed.notify_all();
