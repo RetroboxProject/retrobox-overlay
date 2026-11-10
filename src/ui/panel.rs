@@ -12,7 +12,8 @@
 //! clock is the small one), the network and the battery. Sliders (the
 //! brightness, the volume) are rows like ES's option rows: the label on the
 //! left, the slider and its value on the right. The entries scroll when they
-//! do not all fit.
+//! do not all fit (and can be dragged). For touch screens, the rows can be
+//! taller than ES's (`row_scale`), the text staying as it is.
 
 use cosmic_text::Align;
 use tiny_skia::{
@@ -193,6 +194,8 @@ pub struct Panel {
     first_item: usize,
     /// The status line above the header.
     status_bar: StatusBar,
+    /// How much taller than a line of text the main entries are.
+    row_scale: f32,
     /// Whether the main entries show their icons.
     icons: bool,
     /// A line about the game's state under the header (the disc in the
@@ -240,6 +243,7 @@ impl Panel {
             first_slot: 0,
             first_item: 0,
             status_bar: StatusBar::default(),
+            row_scale: 1.0,
             icons: true,
             status: None,
             background: theme.background.center_color,
@@ -439,9 +443,63 @@ impl Panel {
         }
     }
 
+    /// Taller rows, for fingers: 1 is ES's.
+    pub fn set_row_scale(&mut self, scale: f32) {
+        self.row_scale = scale.max(1.0);
+    }
+
+    /// The height of a main entry, without its separator.
+    fn row_height(&self) -> f32 {
+        (self.text.font.line_height * self.row_scale).round()
+    }
+
     /// The height of a main entry, with its separator.
     fn item_pitch(&self) -> f32 {
-        self.text.font.line_height + self.line()
+        self.row_height() + self.line()
+    }
+
+    /// The height of a row of the current page (what a drag scrolls by).
+    pub fn row_pitch(&self) -> f32 {
+        if self.page.is_some() {
+            self.slot_height()
+        } else {
+            self.item_pitch()
+        }
+    }
+
+    /// Whether an entry of the main page is a slider.
+    pub fn is_slider(&self, index: usize) -> bool {
+        self.page.is_none()
+            && self
+                .items
+                .get(index)
+                .is_some_and(|item| item.value.is_some() && item.enabled)
+    }
+
+    /// Scroll the current page by `rows` (down when positive), keeping the
+    /// selection among the rows shown; true when it moved.
+    pub fn scroll(&mut self, rows: i32) -> bool {
+        let count = self.count();
+        let (first, visible) = if self.page.is_some() {
+            (self.first_slot, self.visible_slots())
+        } else {
+            (self.first_item, self.visible_items())
+        };
+        let last = count.saturating_sub(visible);
+        let moved = first.saturating_add_signed(rows as isize).min(last);
+        if moved == first {
+            return false;
+        }
+        if self.page.is_some() {
+            self.first_slot = moved;
+        } else {
+            self.first_item = moved;
+        }
+        self.selected = self.selected.clamp(
+            moved,
+            (moved + visible).min(count).saturating_sub(1).max(moved),
+        );
+        true
     }
 
     /// How many main entries fit under the header.
@@ -767,7 +825,7 @@ impl Panel {
         let width = self.width as f32;
         let inner = width - 2.0 * padding;
         let line = self.line();
-        let row_height = self.text.font.line_height;
+        let row_height = self.row_height();
         let style = &self.text.style;
         // icons as tall as capital letters plus a bit, then a gap
         let icon_size = (self.text.letter_height * ICON_SCALE).round().max(1.0);

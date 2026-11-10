@@ -24,6 +24,7 @@
 //! from.
 
 use std::os::fd::AsFd;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -31,7 +32,7 @@ use anyhow::{Context as _, Result, anyhow};
 use chrono::{Local, Timelike};
 use smithay_client_toolkit::compositor::CompositorHandler;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
-use smithay_client_toolkit::reexports::calloop::channel::{self, Channel};
+use smithay_client_toolkit::reexports::calloop::channel::{self, Channel, Sender};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::signals::{Signal, Signals};
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
@@ -46,6 +47,7 @@ use smithay_client_toolkit::seat::keyboard::{
 use smithay_client_toolkit::seat::pointer::{
     CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec,
 };
+use smithay_client_toolkit::seat::touch::TouchHandler;
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
@@ -54,7 +56,7 @@ use smithay_client_toolkit::shell::wlr_layer::{
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface};
+use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface, wl_touch};
 use wayland_client::{Connection, QueueHandle};
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1;
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1;
@@ -70,8 +72,10 @@ use crate::i18n::Translator;
 use crate::input::{self, Input, Nav, Pad};
 use crate::manual::Manual;
 use crate::savestates::StateMode;
+use crate::system;
+use crate::system::brightness::Screens;
 use crate::system::status::Status;
-use crate::system::{Found, STEP, Setter, SliderKind};
+use crate::system::{Control, Found, Msg, STEP, Setter, SliderKind};
 use crate::theme::MenuTheme;
 use crate::ui::clock::Clock;
 use crate::ui::help::{Help, Prompt};
@@ -92,6 +96,17 @@ const REPEAT_DELAY: Duration = Duration::from_millis(400);
 const REPEAT_INTERVAL: Duration = Duration::from_millis(70);
 /// Space between the clock and the screen edge when it is at the top or bottom.
 const CLOCK_MARGIN: f32 = crate::ui::clock::MARGIN;
+/// How long the panel waits, at most, for the volume before it shows.
+const CONTROLS_WAIT: Duration = Duration::from_millis(60);
+/// How long the brightness slider waits for Wayland to tell the output.
+const OUTPUT_WAIT: Duration = Duration::from_millis(300);
+
+/// Whether a program is installed (in `PATH`).
+fn shutil_has(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+}
+
 /// How often the status line (time, network, battery) is read again.
 const STATUS_EVERY: Duration = Duration::from_secs(1);
 
@@ -141,8 +156,13 @@ pub struct Content {
     pub small_clock: Option<String>,
     /// Whether the battery's percentage shows in the status line.
     pub battery_percent: bool,
-    /// The sliders' controls, as they are found and read (in a thread).
-    pub controls: Option<Channel<Found>>,
+    /// What the threads that read find (the volume, X11's primary output,
+    /// a monitor's brightness), and how more threads send it.
+    pub controls: Option<Channel<Msg>>,
+    pub sender: Sender<Msg>,
+    /// The screens, for the brightness slider.
+    pub screens: Screens,
+    pub runtime_dir: PathBuf,
 }
 
 struct State {
@@ -168,9 +188,53 @@ struct State {
     setters: Vec<Setter>,
     /// Sliders found before the panel was there.
     found: Vec<(SliderKind, f32)>,
-    /// The slider being dragged with the mouse.
-    dragging: Option<usize>,
+    /// The button (or finger) held on the panel, and what it turned into.
+    press: Option<Press>,
+    /// The finger touching the screen (one at a time).
+    finger: Option<(i32, SurfaceId, (f64, f64))>,
+    /// Whether the brightness slider's screen is settled.
+    brightness: Brightness,
+    /// The threads' findings, until the panel is there (then a source of
+    /// the event loop).
+    controls: Option<Channel<Msg>>,
+    /// The sliders moved here: a value read again later does not move them back.
+    touched: Vec<SliderKind>,
 }
+
+/// Where the brightness slider stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Brightness {
+    /// Waiting to know the primary screen.
+    Waiting,
+    /// Looking for monitors that answer DDC/CI (once).
+    Detecting,
+    /// Settled (with or without a slider).
+    Done,
+}
+
+/// The button held on the panel (or a finger on it).
+#[derive(Debug, Clone, Copy)]
+struct Press {
+    start: (f64, f64),
+    /// The entry it went down on.
+    item: Option<usize>,
+    gesture: Gesture,
+}
+
+/// What a press turned into, once it moved.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Gesture {
+    /// Not moved (yet): a tap on release.
+    Tap,
+    /// Dragged up or down: the entries scroll, a row at a time (the pixels
+    /// not scrolled yet).
+    Scroll(f32),
+    /// Dragged along a slider: it follows.
+    Slide(usize),
+}
+
+/// How far a press moves before it is a drag, in rows.
+const DRAG_THRESHOLD: f32 = 0.3;
 
 /// A pointer event, whichever the display.
 pub(crate) struct PointerInput {
@@ -194,7 +258,7 @@ enum PointerKind {
 /// Show the overlay until the user leaves it: on Wayland with layer-shell,
 /// else on X11 (an X11 session, or `XWayland` where the compositor has no
 /// layer-shell).
-pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
+pub fn run(content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
     let mut event_loop: EventLoop<'static, State> =
         EventLoop::try_new().context("cannot create the event loop")?;
     let handle = event_loop.handle();
@@ -218,15 +282,6 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         .map_err(|err| anyhow!("cannot watch signals: {}", err.error))?;
 
     watch_controllers(&handle, &content.pads)?;
-    if let Some(controls) = content.controls.take() {
-        handle
-            .insert_source(controls, |event, &mut (), state| {
-                if let channel::Event::Msg(found) = event {
-                    state.slider_found(found);
-                }
-            })
-            .map_err(|err| anyhow!("cannot watch the sliders: {}", err.error))?;
-    }
 
     // the dim comes first: its size is the screen's, which the rest is sized from
     let dim = display.create_piece(Spec {
@@ -255,8 +310,13 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         outcome: None,
         setters: Vec::new(),
         found: Vec::new(),
-        dragging: None,
+        press: None,
+        finger: None,
+        brightness: Brightness::Waiting,
+        controls: None,
+        touched: Vec::new(),
     };
+    state.controls = state.content.controls.take();
 
     while state.outcome.is_none() {
         state.x11_configures();
@@ -412,10 +472,8 @@ impl State {
             std::mem::take(&mut self.content.items),
         );
         panel.set_icons(config.icons);
+        panel.set_row_scale(config.row_scale);
         panel.set_status_bar(self.status_bar());
-        for (kind, value) in std::mem::take(&mut self.found) {
-            panel.set_slider(kind, &slider_label(&self.content.translator, kind), value);
-        }
         let (edge, other) = match config.side {
             Side::Right => (Anchor::RIGHT, Anchor::LEFT),
             Side::Left => (Anchor::LEFT, Anchor::RIGHT),
@@ -465,6 +523,7 @@ impl State {
 
         self.help = Some(Help::new(&self.content.theme, (width, height)));
         self.menu_help = Sub::new(&mut self.display, &self.dim, false, true);
+        self.gather_controls();
         self.draw_menu_help();
         self.schedule_status();
 
@@ -678,6 +737,124 @@ impl State {
             .ok();
     }
 
+    /// The sliders, before the panel shows for the first time: what the
+    /// threads found by now (waiting a little for the volume, which takes
+    /// a few milliseconds), the brightness when the primary screen is known;
+    /// what comes later is added as it comes.
+    fn gather_controls(&mut self) {
+        let Some(controls) = self.controls.take() else {
+            return;
+        };
+        let deadline = Instant::now() + CONTROLS_WAIT;
+        let x11 = self.display.x11().is_some();
+        let mut volume = false;
+        let mut primary = !x11;
+        while Instant::now() < deadline && !(volume && primary) {
+            match controls.try_recv() {
+                Ok(msg) => {
+                    volume |= matches!(&msg, Msg::Found(found) if found.kind == SliderKind::Volume);
+                    primary |= matches!(msg, Msg::Primary(_));
+                    self.message(msg);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            }
+        }
+        // one screen on, or no way to tell: settle it now
+        if !self.content.screens.ambiguous() || x11 {
+            self.settle_brightness(None);
+        }
+        self.handle
+            .insert_source(controls, |event, &mut (), state| {
+                if let channel::Event::Msg(msg) = event {
+                    state.message(msg);
+                }
+            })
+            .ok();
+        // Wayland tells which output the overlay is on (surface_enter); if it
+        // never does, the best guess
+        self.handle
+            .insert_source(Timer::from_duration(OUTPUT_WAIT), |_, &mut (), state| {
+                state.settle_brightness(None);
+                TimeoutAction::Drop
+            })
+            .ok();
+    }
+
+    /// What a thread found.
+    fn message(&mut self, msg: Msg) {
+        match msg {
+            Msg::Found(found) => self.slider_found(found),
+            Msg::Value(kind, value) => {
+                if self.touched.contains(&kind) {
+                    return;
+                }
+                let label = slider_label(&self.content.translator, kind);
+                match self.panel.as_mut() {
+                    Some((panel, _)) => {
+                        panel.set_slider(kind, &label, value);
+                        self.draw_panel();
+                    }
+                    None => self.found.push((kind, value)),
+                }
+            }
+            Msg::Primary(primary) => {
+                if primary.is_some() {
+                    self.settle_brightness(primary.as_deref());
+                }
+            }
+            Msg::Ddc(monitors) => {
+                self.content.screens.set_ddc(monitors);
+                self.brightness = Brightness::Waiting;
+                self.settle_brightness(None);
+            }
+        }
+    }
+
+    /// The overlay is on an output: its screen is the primary one.
+    fn entered(&mut self, output: &wl_output::WlOutput) {
+        let name = self
+            .display
+            .wl()
+            .output_state
+            .info(output)
+            .and_then(|info| info.name);
+        if name.is_some() {
+            self.settle_brightness(name.as_deref());
+        }
+    }
+
+    /// Add the brightness slider for the primary screen (`primary`: its
+    /// output, when known), once.
+    fn settle_brightness(&mut self, primary: Option<&str>) {
+        if self.brightness != Brightness::Waiting {
+            return;
+        }
+        let screens = &self.content.screens;
+        if screens.needs_detection(primary) && shutil_has("ddcutil") {
+            // not in the daemon's cache: look, once (slow)
+            self.brightness = Brightness::Detecting;
+            system::detect_ddc(
+                self.content.runtime_dir.clone(),
+                self.content.sender.clone(),
+            );
+            return;
+        }
+        self.brightness = Brightness::Done;
+        let Some(screen) = screens.resolve(primary) else {
+            return;
+        };
+        if screen.is_ddc() {
+            // the cache's value now, the monitor's own soon
+            system::read_again(screen.clone(), self.content.sender.clone());
+        }
+        if let Some(found) = Found::new(Control::Brightness(screen)) {
+            self.slider_found(found);
+        }
+    }
+
     /// A slider's control was found and read: add it to the menu.
     fn slider_found(&mut self, found: Found) {
         let Found {
@@ -685,6 +862,8 @@ impl State {
             value,
             setter,
         } = found;
+        // found again (a monitor detected later): the newer one
+        self.setters.retain(|known| known.kind() != kind);
         self.setters.push(setter);
         match self.panel.as_mut() {
             Some((panel, _)) => {
@@ -701,6 +880,9 @@ impl State {
         let Some((kind, value)) = change else {
             return;
         };
+        if !self.touched.contains(&kind) {
+            self.touched.push(kind);
+        }
         self.draw_panel();
         if let Some(setter) = self.setters.iter().find(|setter| setter.kind() == kind) {
             setter.set(value);
@@ -942,59 +1124,118 @@ impl State {
         } else {
             None
         };
-        let x = event.position.0 as f32;
-        if let Some(index) = self.dragging {
-            match event.kind {
-                PointerKind::Motion if on_panel => {
-                    let change = self
-                        .panel
-                        .as_mut()
-                        .and_then(|(panel, _)| panel.slide_to(index, x, true));
-                    self.slid(change);
-                    return;
-                }
-                PointerKind::Release(BTN_LEFT) | PointerKind::Leave => {
-                    self.dragging = None;
-                    return;
-                }
-                _ => {}
-            }
-        }
+        let (x, y) = (event.position.0 as f32, event.position.1 as f32);
         match event.kind {
+            PointerKind::Enter | PointerKind::Motion if self.press.is_some() => {
+                self.drag(on_panel, (x, y));
+            }
             PointerKind::Enter | PointerKind::Motion => self.hover(item),
-            PointerKind::Leave => self.hover(None),
-            PointerKind::Press(button) => match (button, item) {
-                // on a slider's track: it follows the pointer while held
-                (BTN_LEFT, Some(index))
-                    if self.panel.as_ref().is_some_and(|(panel, _)| {
-                        panel
-                            .action(index)
-                            .is_some_and(|action| matches!(action, MenuAction::Slider(_)))
-                    }) =>
-                {
-                    let change = self
-                        .panel
-                        .as_mut()
-                        .and_then(|(panel, _)| panel.slide_to(index, x, false));
-                    if change.is_some() {
-                        self.dragging = Some(index);
-                        self.slid(change);
-                    } else if let Some((panel, _)) = self.panel.as_mut() {
-                        // on its label: selected
-                        panel.select(index);
-                        self.draw_panel();
-                    }
-                    self.draw_menu_help();
+            PointerKind::Leave => {
+                self.press = None;
+                self.hover(None);
+            }
+            PointerKind::Press(BTN_LEFT) => {
+                self.press = Some(Press {
+                    start: event.position,
+                    item,
+                    gesture: Gesture::Tap,
+                });
+                if !on_panel {
+                    // outside: closes on release, if it was not a drag
+                    self.press = self.press.map(|press| Press {
+                        item: None,
+                        ..press
+                    });
                 }
-                (BTN_LEFT, Some(index)) => self.choose(index),
-                (BTN_LEFT, None) if !on_panel => self.navigate(Nav::Back),
-                (BTN_RIGHT, _) => self.navigate(Nav::Back),
-                _ => {}
-            },
+            }
+            PointerKind::Release(BTN_LEFT) => {
+                if let Some(press) = self.press.take()
+                    && press.gesture == Gesture::Tap
+                {
+                    self.tap(press, on_panel, x);
+                }
+            }
+            PointerKind::Press(BTN_RIGHT) => self.navigate(Nav::Back),
             PointerKind::Wheel(steps) if on_panel && steps != 0 => {
                 self.navigate(if steps < 0 { Nav::Up } else { Nav::Down });
             }
             _ => {}
+        }
+    }
+
+    /// The button (or finger) held moved: a scroll, a slider following it,
+    /// or nothing yet.
+    fn drag(&mut self, on_panel: bool, (x, y): (f32, f32)) {
+        let Some(mut press) = self.press else {
+            return;
+        };
+        let Some((panel, _)) = self.panel.as_mut() else {
+            return;
+        };
+        let pitch = panel.row_pitch();
+        let (dx, dy) = (x - press.start.0 as f32, y - press.start.1 as f32);
+        if press.gesture == Gesture::Tap && on_panel {
+            let threshold = pitch * DRAG_THRESHOLD;
+            let on_slider = press.item.filter(|index| panel.is_slider(*index));
+            if let Some(index) = on_slider
+                && dx.abs() >= threshold
+                && dx.abs() > dy.abs()
+            {
+                press.gesture = Gesture::Slide(index);
+            } else if dy.abs() >= threshold {
+                press.gesture = Gesture::Scroll(0.0);
+                press.start.1 = f64::from(y);
+            }
+        }
+        match press.gesture {
+            Gesture::Slide(index) => {
+                let change = panel.slide_to(index, x, true);
+                self.press = Some(press);
+                self.slid(change);
+                self.draw_menu_help();
+                return;
+            }
+            Gesture::Scroll(_) => {
+                // dragging up shows what is below
+                let moved = -(y - press.start.1 as f32);
+                let rows = (moved / pitch).trunc();
+                if rows != 0.0 {
+                    press.start.1 += f64::from(rows * pitch);
+                    if panel.scroll(rows as i32) {
+                        self.draw_panel();
+                        self.draw_menu_help();
+                    }
+                }
+                press.gesture = Gesture::Scroll(moved - rows * pitch);
+            }
+            Gesture::Tap => {}
+        }
+        self.press = Some(press);
+    }
+
+    /// A press released where it went down: what a click does.
+    fn tap(&mut self, press: Press, on_panel: bool, x: f32) {
+        if !on_panel {
+            self.navigate(Nav::Back);
+            return;
+        }
+        let Some(index) = press.item else {
+            return;
+        };
+        let Some((panel, _)) = self.panel.as_mut() else {
+            return;
+        };
+        if panel.is_slider(index) {
+            // on the track: the value there; on the label: selected
+            let change = panel.slide_to(index, x, false);
+            if change.is_none() {
+                panel.select(index);
+                self.draw_panel();
+            }
+            self.slid(change);
+            self.draw_menu_help();
+        } else {
+            self.choose(index);
         }
     }
 }
@@ -1355,6 +1596,12 @@ impl SeatHandler for State {
                 Err(err) => log::warn!("no keyboard: {err}"),
             }
         }
+        if capability == Capability::Touch && wl.touch.is_none() {
+            match wl.seat_state.get_touch(qh, &seat) {
+                Ok(touch) => wl.touch = Some(touch),
+                Err(err) => log::warn!("no touch: {err}"),
+            }
+        }
         if capability == Capability::Pointer && wl.pointer.is_none() {
             let cursor_surface = wl.compositor.create_surface(qh);
             match wl.seat_state.get_pointer_with_theme::<Self, ()>(
@@ -1382,9 +1629,114 @@ impl SeatHandler for State {
         {
             keyboard.release();
         }
+        if capability == Capability::Touch
+            && let Some(touch) = self.display.wl().touch.take()
+        {
+            touch.release();
+        }
     }
 
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+}
+
+/// A finger is a left button: a tap clicks, a drag scrolls or slides. One
+/// finger at a time; the others are ignored.
+impl TouchHandler for State {
+    fn down(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_touch::WlTouch,
+        _: u32,
+        _: u32,
+        surface: wl_surface::WlSurface,
+        id: i32,
+        position: (f64, f64),
+    ) {
+        if self.finger.is_some() {
+            return;
+        }
+        let surface = SurfaceId::Wayland(surface);
+        self.finger = Some((id, surface.clone(), position));
+        self.pointer(&PointerInput {
+            surface,
+            position,
+            kind: PointerKind::Press(BTN_LEFT),
+        });
+    }
+
+    fn up(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_touch::WlTouch,
+        _: u32,
+        _: u32,
+        id: i32,
+    ) {
+        let Some((finger, surface, position)) = self.finger.take() else {
+            return;
+        };
+        if finger == id {
+            self.pointer(&PointerInput {
+                surface,
+                position,
+                kind: PointerKind::Release(BTN_LEFT),
+            });
+        } else {
+            self.finger = Some((finger, surface, position));
+        }
+    }
+
+    fn motion(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_touch::WlTouch,
+        _: u32,
+        id: i32,
+        position: (f64, f64),
+    ) {
+        let Some((finger, surface, _)) = self.finger.clone() else {
+            return;
+        };
+        if finger != id {
+            return;
+        }
+        self.finger = Some((finger, surface.clone(), position));
+        self.pointer(&PointerInput {
+            surface,
+            position,
+            kind: PointerKind::Motion,
+        });
+    }
+
+    fn shape(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_touch::WlTouch,
+        _: i32,
+        _: f64,
+        _: f64,
+    ) {
+    }
+
+    fn orientation(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_touch::WlTouch,
+        _: i32,
+        _: f64,
+    ) {
+    }
+
+    /// The compositor took the touch (a gesture of its own): nothing happens.
+    fn cancel(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_touch::WlTouch) {
+        self.finger = None;
+        self.press = None;
+    }
 }
 
 impl CompositorHandler for State {
@@ -1410,8 +1762,9 @@ impl CompositorHandler for State {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
+        output: &wl_output::WlOutput,
     ) {
+        self.entered(output);
     }
     fn surface_leave(
         &mut self,

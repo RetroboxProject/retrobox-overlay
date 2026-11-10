@@ -153,8 +153,11 @@ fn run(
         }
     };
 
-    // the sliders' controls take a while to find (ddcutil): from now on
-    let controls = read_controls_in_background();
+    // what takes a program to read is read from now on, while the rest loads
+    let (sender, controls) = calloop::channel::channel();
+    system::read_volume(sender.clone());
+    system::read_x11_primary(sender.clone());
+    let screens = system::brightness::Screens::scan(&runtime_dir);
 
     let session = Session::load(&runtime_dir);
     if session.as_ref().is_some_and(|session| !session.overlay) && !demo {
@@ -227,6 +230,9 @@ fn run(
         small_clock,
         battery_percent,
         controls: Some(controls),
+        sender,
+        screens,
+        runtime_dir: runtime_dir.clone(),
     })?;
     // The overlay is gone and the controllers are the game's again; the
     // keyboard focus is on its way back to the game. Another overlay may
@@ -279,26 +285,6 @@ fn clock_formats(
             .unwrap_or_else(|| translator.text(small_key))
     });
     (big, small)
-}
-
-/// Find and read the sliders' controls in a thread; they reach the menu as
-/// they are ready.
-fn read_controls_in_background() -> calloop::channel::Channel<system::Found> {
-    let (sender, channel) = calloop::channel::channel();
-    let spawned = std::thread::Builder::new()
-        .name("controls".into())
-        .spawn(move || {
-            let primary = system::brightness::primary_output();
-            for found in system::read_controls(primary.as_deref()) {
-                if sender.send(found).is_err() {
-                    break; // the overlay is gone
-                }
-            }
-        });
-    if let Err(err) = spawned {
-        log::warn!("no sliders: {err}");
-    }
-    channel
 }
 
 /// Outside games: sleep (when allowed); the sliders come as they are found.

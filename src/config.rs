@@ -20,6 +20,10 @@
 //! [status]
 //! battery_percent = true  ; the battery's percentage next to its icon
 //!
+//! [touch]
+//! row_scale = 1.0         ; taller rows for fingers: 1.5 to 1.66 on small
+//!                         ; touch screens (1 to 2)
+//!
 //! [system]
 //! standby = true          ; offer to sleep, outside games
 //!
@@ -41,6 +45,9 @@ pub const FILE_NAME: &str = "overlay.ini";
 const DEFAULT_HOLD_MS: u64 = 750;
 const MIN_HOLD_MS: u64 = 300;
 const MAX_HOLD_MS: u64 = 3000;
+/// The rows' height, in lines of text (more for fingers).
+const MIN_ROW_SCALE: f32 = 1.0;
+const MAX_ROW_SCALE: f32 = 2.0;
 
 /// Which edge of the screen the menu slides from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +93,8 @@ pub struct Config {
     /// scaled buffers wrong.
     pub compositor_scaling: bool,
     pub system: SystemConfig,
+    /// How much taller than a line of text the menu's rows are (fingers).
+    pub row_scale: f32,
 }
 
 /// The system's part of the menu.
@@ -119,6 +128,7 @@ impl Default for Config {
                 battery_percent: true,
                 standby: true,
             },
+            row_scale: 1.0,
         }
     }
 }
@@ -220,6 +230,13 @@ impl Config {
         {
             self.system.battery_percent = !is_off(percent);
         }
+        if let Some(scale) = ini
+            .section(Some("touch"))
+            .and_then(|section| section.get("row_scale"))
+            .and_then(|v| v.trim().parse::<f32>().ok())
+        {
+            self.row_scale = scale.clamp(MIN_ROW_SCALE, MAX_ROW_SCALE);
+        }
         if let Some(standby) = ini
             .section(Some("system"))
             .and_then(|section| section.get("standby"))
@@ -253,7 +270,7 @@ mod tests {
         std::fs::write(
             user.join(FILE_NAME),
             "[overlay]\ndim=2\nhold_ms=50\n[clock]\nposition=top\nsize=small\n\
-             [status]\nbattery_percent=no\n",
+             [status]\nbattery_percent=no\n[touch]\nrow_scale=1.66\n",
         )
         .unwrap();
 
@@ -263,6 +280,7 @@ mod tests {
         assert_eq!(config.clock.position, VerticalPosition::Top);
         assert_eq!(config.hold, Duration::from_millis(MIN_HOLD_MS));
         assert!(!config.clock.big && !config.system.battery_percent && config.system.standby);
+        assert!((config.row_scale - 1.66).abs() < f32::EPSILON);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

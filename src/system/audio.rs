@@ -6,9 +6,17 @@ use super::{output, run};
 
 /// The sound server's command line tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mixer {
+pub enum Tool {
     Wpctl,
     Pactl,
+}
+
+/// The default output, through its tool; whether it is muted is kept so a
+/// change runs one program, not two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mixer {
+    tool: Tool,
+    muted: Option<bool>,
 }
 
 const WPCTL_SINK: &str = "@DEFAULT_AUDIO_SINK@";
@@ -17,8 +25,9 @@ const PACTL_SINK: &str = "@DEFAULT_SINK@";
 impl Mixer {
     /// The first tool that can read the default output's volume.
     pub fn detect() -> Option<Self> {
-        let mixer = [Self::Wpctl, Self::Pactl]
+        let mixer = [Tool::Wpctl, Tool::Pactl]
             .into_iter()
+            .map(|tool| Self { tool, muted: None })
             .find(|mixer| mixer.get().is_some());
         if mixer.is_none() {
             log::info!("no PipeWire or PulseAudio output found: no volume slider");
@@ -28,9 +37,9 @@ impl Mixer {
 
     /// The default output's volume, 0 to 1 (0 when muted).
     pub fn get(self) -> Option<f32> {
-        match self {
-            Self::Wpctl => parse_wpctl(&output("wpctl", &["get-volume", WPCTL_SINK])?),
-            Self::Pactl => {
+        match self.tool {
+            Tool::Wpctl => parse_wpctl(&output("wpctl", &["get-volume", WPCTL_SINK])?),
+            Tool::Pactl => {
                 let volume = parse_pactl(&output("pactl", &["get-sink-volume", PACTL_SINK])?)?;
                 let muted = output("pactl", &["get-sink-mute", PACTL_SINK])
                     .is_some_and(|mute| mute.contains("yes"));
@@ -39,21 +48,32 @@ impl Mixer {
         }
     }
 
-    /// Set the default output's volume (unmuted, unless it is 0).
-    pub fn set(self, value: f32) {
+    /// Set the default output's volume (unmuted, unless it is 0; the mute
+    /// only changes when it has to).
+    pub fn set(&mut self, value: f32) {
         let percent = (value.clamp(0.0, 1.0) * 100.0).round() as u32;
-        let mute = if percent == 0 { "1" } else { "0" };
-        match self {
-            Self::Wpctl => {
-                let volume = format!("{percent}%");
-                run("wpctl", &["set-volume", "-l", "1.0", WPCTL_SINK, &volume]);
-                run("wpctl", &["set-mute", WPCTL_SINK, mute]);
-            }
-            Self::Pactl => {
-                let volume = format!("{percent}%");
-                run("pactl", &["set-sink-volume", PACTL_SINK, &volume]);
-                run("pactl", &["set-sink-mute", PACTL_SINK, mute]);
-            }
+        let volume = format!("{percent}%");
+        let muted = percent == 0;
+        let mute = if muted { "1" } else { "0" };
+        let (tool, set_volume, set_mute): (&str, Vec<&str>, Vec<&str>) = match self.tool {
+            Tool::Wpctl => (
+                "wpctl",
+                vec!["set-volume", "-l", "1.0", WPCTL_SINK, &volume],
+                vec!["set-mute", WPCTL_SINK, mute],
+            ),
+            Tool::Pactl => (
+                "pactl",
+                vec!["set-sink-volume", PACTL_SINK, &volume],
+                vec!["set-sink-mute", PACTL_SINK, mute],
+            ),
+        };
+        // muting first, unmuting after: never a burst at the old volume
+        if muted && self.muted != Some(true) && run(tool, &set_mute) {
+            self.muted = Some(true);
+        }
+        run(tool, &set_volume);
+        if !muted && self.muted != Some(false) && run(tool, &set_mute) {
+            self.muted = Some(false);
         }
     }
 }

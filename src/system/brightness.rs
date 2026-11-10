@@ -1,20 +1,28 @@
 //! The brightness of the primary screen, on Wayland and on X11.
 //!
-//! Which screen is the primary one: X11's (`RandR`'s primary output, which
-//! KWin also sets for `XWayland`), else KDE's (`kscreen-doctor`, the output
-//! with priority 1), else the first enabled output of a wlroots compositor
-//! (`wlr-randr`). Its brightness is then
+//! Finding it starts no program, so the slider is there as the menu shows:
 //!
-//! * a laptop's built-in panel (eDP, LVDS, DSI): the kernel's backlight,
-//!   read from sysfs and set through logind (`SetBrightness`, allowed to the
-//!   active session without root), else `brightnessctl`;
-//! * an external monitor: DDC/CI through `ddcutil` (VCP feature 0x10), when
-//!   it is installed and the monitor answers.
+//! * the screens: the connectors that are on (`/sys/class/drm`), the
+//!   kernel's backlight (`/sys/class/backlight`) and the monitors that
+//!   answer DDC/CI, as the daemon found them when it started
+//!   (`overlay-ddc.json` in the runtime directory: `ddcutil detect` takes a
+//!   second or more);
+//! * the primary one: the only screen that is on; else the output the
+//!   overlay shows on (Wayland: where the compositor put it, that is the
+//!   screen in use), or X11's primary output (`RandR`).
 //!
-//! Without knowing the primary screen, a built-in panel that is on wins.
+//! A built-in panel (eDP, LVDS, DSI) uses the backlight: written in sysfs
+//! when allowed, else through logind (`SetBrightness`, allowed to the active
+//! session), else `brightnessctl`; whichever works first is kept. An external
+//! monitor uses `ddcutil` on its I2C bus (`--bus`: no detection on each
+//! change, which is what made it slow), and its last value is kept in the
+//! cache, so the slider shows at once and is read again behind it.
 
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 use super::{output, run};
 
@@ -23,17 +31,11 @@ use super::{output, run};
 const MIN_BACKLIGHT: f32 = 0.05;
 const BACKLIGHT_DIR: &str = "/sys/class/backlight";
 const DRM_DIR: &str = "/sys/class/drm";
+/// The monitors that answer DDC/CI, in the runtime directory.
+pub const DDC_CACHE: &str = "overlay-ddc.json";
 
-/// The screen whose brightness the slider changes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Screen {
-    /// A kernel backlight (`/sys/class/backlight/<name>`).
-    Backlight { name: String, max: u32 },
-    /// A monitor reached by `ddcutil` (its display number, when several).
-    Ddc { display: Option<u32>, max: u32 },
-}
-
-/// A built-in panel's connector name (DRM's or X11's: `eDP-1`, `eDP1`, `LVDS-1`, `DSI-1`).
+/// A built-in panel's connector name (DRM's or X11's: `eDP-1`, `eDP1`,
+/// `LVDS-1`, `DSI-1`).
 fn is_internal(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     ["edp", "lvds", "dsi"]
@@ -41,84 +43,292 @@ fn is_internal(name: &str) -> bool {
         .any(|prefix| name.starts_with(prefix))
 }
 
-impl Screen {
-    /// The primary screen's brightness control, if it has one that can be
-    /// reached.
-    pub fn detect(primary: Option<&str>) -> Option<Self> {
-        let internal = primary.map_or_else(internal_panel_on, is_internal);
-        log::debug!("primary output: {primary:?} (built-in: {internal})");
-        let screen = if internal { backlight() } else { ddc(primary) };
-        if screen.is_none() {
-            log::info!("no brightness control for the primary screen ({primary:?})");
+/// `card1-HDMI-A-1` and `HDMI-A-1` (Wayland) or `HDMI-1` (X11's
+/// modesetting): the same connector.
+fn same_connector(drm: &str, output: &str) -> bool {
+    let connector = strip_card(drm);
+    let simple = |name: &str| name.replace("-A-", "-").to_ascii_lowercase();
+    connector.eq_ignore_ascii_case(output) || simple(connector) == simple(output)
+}
+
+/// `card1-HDMI-A-1` -> `HDMI-A-1` (an output's name stays as it is).
+fn strip_card(name: &str) -> &str {
+    match name.split_once('-') {
+        Some((card, connector)) if card.starts_with("card") => connector,
+        _ => name,
+    }
+}
+
+/// A connector's kind: `card1-HDMI-A-1` -> `hdmi`.
+fn kind_of(name: &str) -> String {
+    strip_card(name)
+        .split(|c: char| c == '-' || c.is_ascii_digit())
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+/// A monitor that answers DDC/CI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DdcMonitor {
+    /// `card1-HDMI-A-1`
+    pub connector: String,
+    /// `/dev/i2c-<bus>`
+    pub bus: u32,
+    pub max: u32,
+    /// The brightness last read or set.
+    pub value: u32,
+}
+
+/// How a backlight is set: the first way that works is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    Unknown,
+    Sysfs,
+    Logind,
+    Brightnessctl,
+}
+
+/// The screen whose brightness the slider changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Screen {
+    /// A kernel backlight (`/sys/class/backlight/<name>`).
+    Backlight {
+        name: String,
+        max: u32,
+        method: Method,
+    },
+    /// A monitor reached by `ddcutil`.
+    Ddc { monitor: DdcMonitor, cache: PathBuf },
+}
+
+/// What is known of the screens, without running anything.
+#[derive(Debug, Default)]
+pub struct Screens {
+    /// The connectors that are on (`card1-eDP-1`).
+    on: Vec<String>,
+    backlight: Option<(String, u32)>,
+    ddc: Vec<DdcMonitor>,
+    cache: PathBuf,
+}
+
+impl Screens {
+    pub fn scan(runtime_dir: &Path) -> Self {
+        let cache = runtime_dir.join(DDC_CACHE);
+        Self {
+            on: connectors_on(),
+            backlight: backlight(),
+            ddc: load_cache(&cache),
+            cache,
         }
-        screen
     }
 
-    /// The brightness, 0 to 1 (of the slider: a backlight's lowest step is
-    /// its 0).
+    /// Whether the primary screen has to be told (more than one is on).
+    pub fn ambiguous(&self) -> bool {
+        self.on.len() > 1
+    }
+
+    /// Whether DDC/CI could reach the primary screen but the cache does not
+    /// know it (the daemon did not run, or the monitor came later).
+    pub fn needs_detection(&self, primary: Option<&str>) -> bool {
+        self.connector(primary).is_some_and(|connector| {
+            !is_internal(&kind_of(&connector)) && self.monitor(&connector).is_none()
+        })
+    }
+
+    /// The monitors found again (`detect_ddc`).
+    pub fn set_ddc(&mut self, monitors: Vec<DdcMonitor>) {
+        self.ddc = monitors;
+    }
+
+    /// The primary screen's connector (DRM's name when one matches).
+    fn connector(&self, primary: Option<&str>) -> Option<String> {
+        if let Some(primary) = primary.filter(|name| !name.starts_with("XWAYLAND")) {
+            // a connector that is on, else one of the same kind (X11
+            // numbers them its own way)
+            let kind = kind_of(primary);
+            let found = self
+                .on
+                .iter()
+                .find(|on| same_connector(on, primary))
+                .or_else(|| self.on.iter().find(|on| kind_of(on) == kind));
+            return Some(found.map_or_else(|| primary.to_owned(), Clone::clone));
+        }
+        match self.on.as_slice() {
+            [] => None,
+            [only] => Some(only.clone()),
+            // unknown: a built-in panel that is on wins
+            several => several
+                .iter()
+                .find(|on| is_internal(&kind_of(on)))
+                .or_else(|| several.first())
+                .cloned(),
+        }
+    }
+
+    fn monitor(&self, connector: &str) -> Option<&DdcMonitor> {
+        if connector.is_empty() {
+            // which screen is unknown: the only monitor that answers
+            return match self.ddc.as_slice() {
+                [only] => Some(only),
+                _ => None,
+            };
+        }
+        self.ddc.iter().find(|monitor| {
+            monitor.connector == connector
+                || same_connector(&monitor.connector, strip_card(connector))
+        })
+    }
+
+    /// The primary screen's brightness control (`primary`: its output's name,
+    /// when known), if it has one.
+    pub fn resolve(&self, primary: Option<&str>) -> Option<Screen> {
+        let connector = self.connector(primary);
+        // nothing known (no DRM in sysfs): a backlight is a laptop's panel
+        let internal = connector
+            .as_deref()
+            .map_or(self.backlight.is_some(), |c| is_internal(&kind_of(c)));
+        log::info!("brightness: primary screen {connector:?} (output {primary:?})");
+        if internal {
+            let (name, max) = self.backlight.clone()?;
+            log::info!("brightness: backlight {name}");
+            return Some(Screen::Backlight {
+                name,
+                max,
+                method: Method::Unknown,
+            });
+        }
+        let monitor = self
+            .monitor(connector.as_deref().unwrap_or_default())?
+            .clone();
+        log::info!("brightness: DDC/CI on /dev/i2c-{}", monitor.bus);
+        Some(Screen::Ddc {
+            monitor,
+            cache: self.cache.clone(),
+        })
+    }
+}
+
+impl Screen {
+    /// The brightness, 0 to 1: a backlight's from sysfs, a monitor's from the
+    /// cache (see `read_again`).
     pub fn get(&self) -> Option<f32> {
         match self {
-            Self::Backlight { name, max } => {
+            Self::Backlight { name, max, .. } => {
                 let dir = Path::new(BACKLIGHT_DIR).join(name);
-                let raw = read_number(&dir.join("actual_brightness"))
-                    .or_else(|| read_number(&dir.join("brightness")))?;
+                let raw = read_number(&dir.join("brightness"))
+                    .or_else(|| read_number(&dir.join("actual_brightness")))?;
                 let fraction = raw as f32 / *max as f32;
                 Some(((fraction - MIN_BACKLIGHT) / (1.0 - MIN_BACKLIGHT)).clamp(0.0, 1.0))
             }
-            Self::Ddc { display, max } => {
-                let answer = ddcutil(*display, &["getvcp", "10", "--brief"])?;
-                let (current, _) = parse_vcp(&answer)?;
-                Some((current as f32 / *max as f32).clamp(0.0, 1.0))
-            }
+            Self::Ddc { monitor, .. } => Some(fraction(monitor.value, monitor.max)),
         }
     }
 
-    pub fn set(&self, value: f32) {
+    /// A monitor's brightness as it is now (slow: DDC/CI), when it answers.
+    pub fn read_again(&self) -> Option<f32> {
+        let Self::Ddc { monitor, .. } = self else {
+            return self.get();
+        };
+        let (current, max) = parse_vcp(&ddcutil(monitor.bus, &["getvcp", "10", "--brief"])?)?;
+        Some(fraction(current, max))
+    }
+
+    pub const fn is_ddc(&self) -> bool {
+        matches!(self, Self::Ddc { .. })
+    }
+
+    pub fn set(&mut self, value: f32) {
         let value = value.clamp(0.0, 1.0);
         match self {
-            Self::Backlight { name, max } => {
+            Self::Backlight { name, max, method } => {
                 let fraction = MIN_BACKLIGHT + value * (1.0 - MIN_BACKLIGHT);
                 let raw = ((fraction * *max as f32).round() as u32).clamp(1, *max);
-                let raw_text = raw.to_string();
-                let through_logind = run(
-                    "busctl",
-                    &[
-                        "call",
-                        "org.freedesktop.login1",
-                        "/org/freedesktop/login1/session/auto",
-                        "org.freedesktop.login1.Session",
-                        "SetBrightness",
-                        "ssu",
-                        "backlight",
-                        name,
-                        &raw_text,
-                    ],
-                );
-                if !through_logind {
-                    run("brightnessctl", &["--quiet", "-d", name, "set", &raw_text]);
-                }
+                set_backlight(name, raw, method);
             }
-            Self::Ddc { display, max } => {
-                let raw = ((value * *max as f32).round() as u32).to_string();
-                ddcutil(*display, &["setvcp", "10", &raw, "--noverify"]);
+            Self::Ddc { monitor, cache } => {
+                let raw = (value * monitor.max as f32).round() as u32;
+                let raw_text = raw.to_string();
+                if ddcutil(monitor.bus, &["setvcp", "10", &raw_text, "--noverify"]).is_some() {
+                    monitor.value = raw;
+                    remember(cache, monitor);
+                } else {
+                    log::warn!(
+                        "DDC/CI: cannot set the brightness on /dev/i2c-{}",
+                        monitor.bus
+                    );
+                }
             }
         }
     }
 }
 
-/// Whether a built-in panel is connected and on (when the primary screen is unknown).
-fn internal_panel_on() -> bool {
-    let Ok(entries) = fs::read_dir(DRM_DIR) else {
-        return false;
+fn fraction(value: u32, max: u32) -> f32 {
+    (value as f32 / max.max(1) as f32).clamp(0.0, 1.0)
+}
+
+/// Set a backlight the first way that works, and keep it.
+fn set_backlight(name: &str, raw: u32, method: &mut Method) {
+    let raw_text = raw.to_string();
+    let sysfs = || {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(Path::new(BACKLIGHT_DIR).join(name).join("brightness"))
+            .and_then(|mut file| file.write_all(raw_text.as_bytes()))
+            .is_ok()
     };
-    entries.flatten().any(|entry| {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        // card1-eDP-1
-        let connector = name.split_once('-').map_or("", |(_, connector)| connector);
-        is_internal(connector)
-            && fs::read_to_string(entry.path().join("enabled"))
+    let logind = || {
+        run(
+            "busctl",
+            &[
+                "call",
+                "org.freedesktop.login1",
+                "/org/freedesktop/login1/session/auto",
+                "org.freedesktop.login1.Session",
+                "SetBrightness",
+                "ssu",
+                "backlight",
+                name,
+                &raw_text,
+            ],
+        )
+    };
+    let brightnessctl = || run("brightnessctl", &["--quiet", "-d", name, "set", &raw_text]);
+    let ways: [(Method, &dyn Fn() -> bool); 3] = [
+        (Method::Sysfs, &sysfs),
+        (Method::Logind, &logind),
+        (Method::Brightnessctl, &brightnessctl),
+    ];
+    if let Some((_, works)) = ways.iter().find(|(way, _)| way == method)
+        && works()
+    {
+        return;
+    }
+    for (way, works) in ways {
+        if way != *method && works() {
+            log::info!("backlight {name}: set through {way:?}");
+            *method = way;
+            return;
+        }
+    }
+    log::warn!("backlight {name}: cannot be set");
+}
+
+/// The connectors that are on: `card1-eDP-1`.
+fn connectors_on() -> Vec<String> {
+    let Ok(entries) = fs::read_dir(DRM_DIR) else {
+        return Vec::new();
+    };
+    let mut on: Vec<String> = entries
+        .flatten()
+        .filter(|entry| {
+            fs::read_to_string(entry.path().join("enabled"))
                 .is_ok_and(|enabled| enabled.trim() == "enabled")
-    })
+        })
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    on.sort();
+    on
 }
 
 fn read_number(path: &Path) -> Option<u32> {
@@ -127,7 +337,7 @@ fn read_number(path: &Path) -> Option<u32> {
 
 /// The kernel's backlight: the firmware's first, then the platform's, then
 /// the GPU's (raw), as the kernel's documentation recommends.
-fn backlight() -> Option<Screen> {
+fn backlight() -> Option<(String, u32)> {
     let mut found: Vec<(u8, String, u32)> = fs::read_dir(BACKLIGHT_DIR)
         .ok()?
         .flatten()
@@ -144,68 +354,88 @@ fn backlight() -> Option<Screen> {
         })
         .collect();
     found.sort();
-    let (_, name, max) = found.into_iter().next()?;
-    log::info!("brightness: backlight {name}");
-    Some(Screen::Backlight { name, max })
+    found.into_iter().next().map(|(_, name, max)| (name, max))
 }
 
-/// An external monitor through `ddcutil`: the one on the primary output's
-/// connector, or the only one.
-fn ddc(primary: Option<&str>) -> Option<Screen> {
-    let detected = output("ddcutil", &["detect", "--brief"])?;
-    let displays = parse_detect(&detected);
-    let display = match (primary, displays.as_slice()) {
-        (_, []) => return None,
-        (_, [(number, _)]) | (None, [(number, _), ..]) => *number,
-        (Some(primary), several) => several
-            .iter()
-            .find(|(_, connector)| same_connector(connector, primary))
-            .map(|(number, _)| *number)?,
+fn load_cache(path: &Path) -> Vec<DdcMonitor> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn save_cache(path: &Path, monitors: &[DdcMonitor]) {
+    let Ok(text) = serde_json::to_string_pretty(monitors) else {
+        return;
     };
-    let display = (displays.len() > 1).then_some(display);
-    let (_, max) = parse_vcp(&ddcutil(display, &["getvcp", "10", "--brief"])?)?;
-    log::info!("brightness: DDC/CI, display {display:?}");
-    Some(Screen::Ddc {
-        display,
-        max: max.max(1),
-    })
+    // whole or nothing: readers never see half a file
+    let tmp = path.with_extension("json.tmp");
+    if fs::write(&tmp, text)
+        .and_then(|()| fs::rename(&tmp, path))
+        .is_err()
+    {
+        log::debug!("cannot write {}", path.display());
+    }
 }
 
-fn ddcutil(display: Option<u32>, args: &[&str]) -> Option<String> {
-    let number = display.map(|number| number.to_string());
-    let mut full: Vec<&str> = Vec::new();
-    if let Some(number) = &number {
-        full.extend(["--display", number.as_str()]);
+/// Keep a monitor's last value in the cache.
+fn remember(cache: &Path, monitor: &DdcMonitor) {
+    let mut monitors = load_cache(cache);
+    match monitors.iter_mut().find(|known| known.bus == monitor.bus) {
+        Some(known) => known.clone_from(monitor),
+        None => monitors.push(monitor.clone()),
     }
+    save_cache(cache, &monitors);
+}
+
+/// Find the monitors that answer DDC/CI and write the cache (slow: the
+/// daemon does it once when it starts, the overlay only when the cache does
+/// not know the primary screen). Nothing without `ddcutil`.
+pub fn detect_ddc(runtime_dir: &Path) -> Vec<DdcMonitor> {
+    let Some(detected) = output("ddcutil", &["detect", "--brief"]) else {
+        return Vec::new();
+    };
+    let monitors: Vec<DdcMonitor> = parse_detect(&detected)
+        .into_iter()
+        .filter_map(|(bus, connector)| {
+            let (value, max) = parse_vcp(&ddcutil(bus, &["getvcp", "10", "--brief"])?)?;
+            Some(DdcMonitor {
+                connector,
+                bus,
+                max: max.max(1),
+                value,
+            })
+        })
+        .collect();
+    log::info!("DDC/CI: {} monitor(s) with a brightness", monitors.len());
+    save_cache(&runtime_dir.join(DDC_CACHE), &monitors);
+    monitors
+}
+
+fn ddcutil(bus: u32, args: &[&str]) -> Option<String> {
+    let bus = bus.to_string();
+    let mut full = vec!["--bus", bus.as_str()];
     full.extend_from_slice(args);
-    let answer = output("ddcutil", &full);
-    if answer.is_none() && args.first() == Some(&"setvcp") {
-        log::warn!("ddcutil could not set the brightness");
-    }
-    answer
+    output("ddcutil", &full)
 }
 
-/// `ddcutil detect --brief`: each display's number and DRM connector.
+/// `ddcutil detect --brief`: each display's I2C bus and DRM connector.
 fn parse_detect(text: &str) -> Vec<(u32, String)> {
     let mut displays = Vec::new();
-    let mut number = None;
+    let mut bus = None;
     for line in text.lines().map(str::trim) {
-        if let Some(rest) = line.strip_prefix("Display ") {
-            number = rest.trim().parse().ok();
+        if let Some(rest) = line.strip_prefix("I2C bus:") {
+            bus = rest
+                .trim()
+                .strip_prefix("/dev/i2c-")
+                .and_then(|n| n.parse().ok());
         } else if let Some(connector) = line.strip_prefix("DRM connector:")
-            && let Some(number) = number.take()
+            && let Some(bus) = bus.take()
         {
-            displays.push((number, connector.trim().to_owned()));
+            displays.push((bus, connector.trim().to_owned()));
         }
     }
     displays
-}
-
-/// `card1-HDMI-A-1` and `HDMI-A-1` (Wayland) or `HDMI-1` (X11's modesetting).
-fn same_connector(drm: &str, output: &str) -> bool {
-    let connector = drm.split_once('-').map_or(drm, |(_, connector)| connector);
-    let simple = |name: &str| name.replace("-A-", "-").to_ascii_lowercase();
-    connector.eq_ignore_ascii_case(output) || simple(connector) == simple(output)
 }
 
 /// `VCP 10 C 50 100`: the current value and the maximum.
@@ -217,17 +447,15 @@ fn parse_vcp(text: &str) -> Option<(u32, u32)> {
     }
 }
 
-/// The primary output's name, as the display server knows it.
-pub fn primary_output() -> Option<String> {
-    x11_primary()
-        .or_else(kscreen_primary)
-        .or_else(wlr_randr_first)
-}
-
-fn x11_primary() -> Option<String> {
+/// X11's primary output (not under Wayland: `XWayland`'s outputs have
+/// names of their own).
+pub fn x11_primary() -> Option<String> {
     use x11rb::connection::Connection as _;
     use x11rb::protocol::randr::ConnectionExt as _;
 
+    if std::env::var_os("WAYLAND_DISPLAY").is_some_and(|display| !display.is_empty()) {
+        return None;
+    }
     std::env::var_os("DISPLAY").filter(|display| !display.is_empty())?;
     let (conn, screen) = x11rb::connect(None).ok()?;
     let root = conn.setup().roots.get(screen)?.root;
@@ -244,35 +472,77 @@ fn x11_primary() -> Option<String> {
     Some(String::from_utf8_lossy(&info.name).into_owned())
 }
 
-fn kscreen_primary() -> Option<String> {
-    let json: serde_json::Value = serde_json::from_str(&output("kscreen-doctor", &["-j"])?).ok()?;
-    json.get("outputs")?
-        .as_array()?
-        .iter()
-        .filter(|output| output.get("enabled").and_then(serde_json::Value::as_bool) == Some(true))
-        .find(|output| {
-            output.get("priority").and_then(serde_json::Value::as_u64) == Some(1)
-                || output.get("primary").and_then(serde_json::Value::as_bool) == Some(true)
-        })
-        .and_then(|output| output.get("name")?.as_str().map(str::to_owned))
-}
-
-fn wlr_randr_first() -> Option<String> {
-    let json: serde_json::Value = serde_json::from_str(&output("wlr-randr", &["--json"])?).ok()?;
-    json.as_array()?
-        .iter()
-        .find(|output| output.get("enabled").and_then(serde_json::Value::as_bool) == Some(true))
-        .and_then(|output| output.get("name")?.as_str().map(str::to_owned))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn screens(on: &[&str], backlight: bool, ddc: &[(&str, u32)]) -> Screens {
+        Screens {
+            on: on.iter().map(|name| (*name).to_owned()).collect(),
+            backlight: backlight.then(|| ("amdgpu_bl1".to_owned(), 255)),
+            ddc: ddc
+                .iter()
+                .map(|(connector, bus)| DdcMonitor {
+                    connector: (*connector).to_owned(),
+                    bus: *bus,
+                    max: 100,
+                    value: 50,
+                })
+                .collect(),
+            cache: PathBuf::from("/nonexistent/overlay-ddc.json"),
+        }
+    }
 
     #[test]
     fn built_in_panels() {
         assert!(is_internal("eDP-1") && is_internal("eDP1") && is_internal("LVDS-1"));
         assert!(is_internal("DSI-1") && !is_internal("HDMI-A-1") && !is_internal("DP-2"));
+        assert_eq!(kind_of("card1-eDP-1"), "edp");
+        assert_eq!(kind_of("eDP1"), "edp");
+        assert_eq!(kind_of("HDMI-A-0"), "hdmi");
+    }
+
+    #[test]
+    fn picks_the_primary_screen() {
+        // a laptop alone, whatever XWayland calls its output
+        let laptop = screens(&["card1-eDP-1"], true, &[]);
+        assert!(!laptop.ambiguous());
+        assert!(matches!(
+            laptop.resolve(None),
+            Some(Screen::Backlight { .. })
+        ));
+        assert!(matches!(
+            laptop.resolve(Some("XWAYLAND0")),
+            Some(Screen::Backlight { .. })
+        ));
+        // a laptop and a TV: whichever the overlay is on
+        let both = screens(
+            &["card1-HDMI-A-1", "card1-eDP-1"],
+            true,
+            &[("card1-HDMI-A-1", 5)],
+        );
+        assert!(both.ambiguous());
+        assert!(matches!(
+            both.resolve(Some("eDP-1")),
+            Some(Screen::Backlight { .. })
+        ));
+        assert!(matches!(
+            both.resolve(Some("HDMI-A-1")),
+            Some(Screen::Ddc {
+                monitor: DdcMonitor { bus: 5, .. },
+                ..
+            })
+        ));
+        // X11's amdgpu counts from 0
+        assert!(matches!(
+            both.resolve(Some("HDMI-A-0")),
+            Some(Screen::Ddc { .. })
+        ));
+        // a desktop whose monitor is not in the cache
+        let desktop = screens(&["card0-DP-1"], false, &[]);
+        assert!(desktop.resolve(None).is_none());
+        assert!(desktop.needs_detection(None));
+        assert!(!laptop.needs_detection(None));
     }
 
     #[test]
@@ -282,8 +552,8 @@ mod tests {
         assert_eq!(
             parse_detect(detect),
             [
-                (1, "card1-HDMI-A-1".to_owned()),
-                (2, "card1-DP-2".to_owned())
+                (5, "card1-HDMI-A-1".to_owned()),
+                (7, "card1-DP-2".to_owned())
             ]
         );
         assert_eq!(parse_vcp("VCP 10 C 50 100\n"), Some((50, 100)));

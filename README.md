@@ -106,16 +106,29 @@ only while it is shown.
 * **Sliders.** Left/Right (d-pad, stick, arrow keys) move them by 5 %, holding repeats; the
   mouse moves them with a click or a drag on the track. Changes apply at once, from a thread
   that only applies the latest value (a held direction asks for many), and the last one is
-  applied before the overlay exits. A slider shows once its control has been found and read
-  (in a thread too: `ddcutil` takes a while), and not at all when there is none.
-  * **Brightness** of the primary screen: X11's primary output (RandR; KWin sets it for
-    XWayland too), else KDE's (`kscreen-doctor`, priority 1), else a wlroots compositor's
-    first enabled output (`wlr-randr`). A built-in panel (eDP, LVDS, DSI) uses the kernel's
-    backlight, set through logind (`busctl`, allowed to the active session without root; else
-    `brightnessctl`), never below 5 % so the screen does not go black; an external monitor uses
-    DDC/CI through `ddcutil`, when installed and the monitor answers.
+  applied before the overlay exits. The sliders are there when the menu shows: the volume is
+  read in a thread from the moment the overlay starts (the menu waits for it 60 ms at most),
+  and finding the brightness's screen starts no program at all. A slider is left out when
+  there is nothing to control.
+  * **Brightness** of the primary screen: the only screen that is on (`/sys/class/drm`), else
+    the output the overlay shows on (Wayland: the compositor puts it on the screen in use), or
+    X11's primary output (RandR, outside Wayland: XWayland's outputs have names of their own).
+    A built-in panel (eDP, LVDS, DSI) uses the kernel's backlight, written in sysfs when
+    allowed, else through logind (`busctl`, allowed to the active session without root), else
+    `brightnessctl`; the first way that works is kept, and it never goes below 5 % so the
+    screen does not go black. An external monitor uses DDC/CI through `ddcutil` on its I2C bus
+    (`--bus`, so a change does not detect the monitors again): the daemon looks for the
+    monitors that answer when it starts and leaves them in `overlay-ddc.json` in Retrobox's
+    runtime directory, with their last brightness, which the slider shows at once while the
+    monitor is read again behind it. DDC/CI stays slower than a backlight (tens of milliseconds
+    per change on most monitors): a held direction only ever sends the latest value.
   * **Volume** of the default output: PipeWire (`wpctl`), else PulseAudio (`pactl`, which also
     works with PipeWire's PulseAudio server). At 0 the output is muted; above, unmuted.
+* **Touch screens and dragging.** A finger is the left button: a tap opens an entry (or sets a
+  slider where it lands on its track), a drag up or down scrolls the entries, a drag along a
+  slider moves it; the mouse drags the same way. Entries open on release, so a drag never opens
+  one. `row_scale` in `[touch]` makes the rows taller than EmulationStation's (the text stays
+  the same size) so they are easier to hit: 1.5 to 1.66 suits small touch screens.
 * **Status line**, above the menu's header: the network (a cable wins over Wi-Fi, whose icon
   shows the signal), the battery (the computer's own: a controller's is left out) with its
   percentage (`battery_percent` in `[status]`), and the time when the clock is the small one
@@ -135,14 +148,19 @@ only while it is shown.
 * poppler's command line tools (`poppler-utils`, recommended by the packages) for the manuals;
   without them the menu has no manual entry.
 * For the sliders: `wpctl` (PipeWire) or `pactl` (PulseAudio); `busctl` (systemd) or
-  `brightnessctl` for a built-in panel's backlight; `ddcutil` for an external monitor's
-  brightness (optional; it needs access to `/dev/i2c-*`).
+  `brightnessctl` for a built-in panel's backlight (unless sysfs is writable); `ddcutil` for an
+  external monitor's brightness (optional; it needs access to `/dev/i2c-*`, usually the `i2c`
+  group).
+* The menu's look comes from EmulationStation (retrobox-emulationstation exports its resolved
+  menu theme when it starts, when its themes are reloaded or its settings saved, and before
+  each game), so the overlay is themed in EmulationStation too, not only in games.
 
 ## Settings
 
 `overlay.ini` in `/etc/retrobox` and `~/.config/retrobox` (the user's file wins, key by key).
 See [`data/overlay.ini`](data/overlay.ini) for every key: the menu's side, the dim opacity, the
-animation length, how long the hotkey is held, sleep, the battery's percentage, the clock (on/off,
+animation length, how long the hotkey is held, sleep, the battery's percentage, the rows' height
+for touch screens, the clock (on/off,
 big or small, position, colour, `strftime` formats) and who scales the manual. Day and month
 names follow the language, which is EmulationStation's when one is chosen there, else the
 system's (`LANGUAGE`, `LC_ALL`, `LC_MESSAGES`, `LANG`): English, Spanish,

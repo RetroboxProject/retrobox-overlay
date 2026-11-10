@@ -3,10 +3,11 @@
 //! volume (sliders), the network and the battery (the status line), and
 //! putting the computer to sleep (outside games).
 //!
-//! Nothing here may stall the menu: values are read in a thread when the
-//! overlay starts (`Controls::read`), and each change is applied by a thread
-//! of its own that only ever applies the latest value asked for (a slider
-//! held down asks for many).
+//! Nothing here may stall the menu: what takes a program to read (the
+//! volume, a monitor's brightness over DDC/CI) is read in a thread as soon
+//! as the overlay starts, and comes back as a `Msg`; each change is applied
+//! by a thread of its own that only ever applies the latest value asked for
+//! (a slider held down asks for many).
 
 pub mod audio;
 pub mod brightness;
@@ -18,7 +19,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use audio::Mixer;
-use brightness::Screen;
+use brightness::{DdcMonitor, Screen};
 
 /// What a slider controls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -54,7 +55,7 @@ impl Control {
         }
     }
 
-    fn set(&self, value: f32) {
+    fn set(&mut self, value: f32) {
         match self {
             Self::Brightness(screen) => screen.set(value),
             Self::Volume(mixer) => mixer.set(value),
@@ -62,32 +63,75 @@ impl Control {
     }
 }
 
-/// What a slider found when the overlay started.
+/// A slider's control, found and read.
 pub struct Found {
     pub kind: SliderKind,
     pub value: f32,
     pub setter: Setter,
 }
 
-/// Find and read the controls (run in a thread: `ddcutil` takes a while).
-pub fn read_controls(primary_output: Option<&str>) -> Vec<Found> {
-    let controls = [
-        Screen::detect(primary_output).map(Control::Brightness),
-        Mixer::detect().map(Control::Volume),
-    ];
-    controls
-        .into_iter()
-        .flatten()
-        .filter_map(|control| {
-            let value = control.get()?;
-            log::info!("{:?}: {:.0} %", control.kind(), value * 100.0);
-            Some(Found {
-                kind: control.kind(),
-                value,
-                setter: Setter::new(control),
-            })
+impl Found {
+    pub fn new(control: Control) -> Option<Self> {
+        let value = control.get()?;
+        log::info!("{:?}: {:.0} %", control.kind(), value * 100.0);
+        Some(Self {
+            kind: control.kind(),
+            value,
+            setter: Setter::new(control),
         })
-        .collect()
+    }
+}
+
+/// What the threads that read find.
+pub enum Msg {
+    /// A slider's control.
+    Found(Found),
+    /// A slider's value read again (a monitor over DDC/CI).
+    Value(SliderKind, f32),
+    /// X11's primary output (None: none set).
+    Primary(Option<String>),
+    /// The monitors that answer DDC/CI, found again.
+    Ddc(Vec<DdcMonitor>),
+}
+
+/// Read the volume in a thread (`wpctl` or `pactl`).
+pub fn read_volume(sender: calloop::channel::Sender<Msg>) {
+    spawn("volume", move || {
+        if let Some(found) = Mixer::detect().and_then(|mixer| Found::new(Control::Volume(mixer))) {
+            sender.send(Msg::Found(found)).ok();
+        }
+    });
+}
+
+/// Read X11's primary output in a thread (nothing under Wayland).
+pub fn read_x11_primary(sender: calloop::channel::Sender<Msg>) {
+    spawn("primary", move || {
+        sender.send(Msg::Primary(brightness::x11_primary())).ok();
+    });
+}
+
+/// Read a monitor's brightness again in a thread (DDC/CI: slow).
+pub fn read_again(screen: Screen, sender: calloop::channel::Sender<Msg>) {
+    spawn("ddc", move || {
+        if let Some(value) = screen.read_again() {
+            sender.send(Msg::Value(SliderKind::Brightness, value)).ok();
+        }
+    });
+}
+
+/// Find the monitors that answer DDC/CI in a thread (slow).
+pub fn detect_ddc(runtime_dir: std::path::PathBuf, sender: calloop::channel::Sender<Msg>) {
+    spawn("ddc", move || {
+        sender
+            .send(Msg::Ddc(brightness::detect_ddc(&runtime_dir)))
+            .ok();
+    });
+}
+
+fn spawn(name: &str, work: impl FnOnce() + Send + 'static) {
+    if let Err(err) = std::thread::Builder::new().name(name.into()).spawn(work) {
+        log::warn!("cannot start a thread: {err}");
+    }
 }
 
 /// Applies a control's values in a thread, the latest one only.
@@ -105,7 +149,7 @@ struct Pending {
 }
 
 impl Setter {
-    fn new(control: Control) -> Self {
+    fn new(mut control: Control) -> Self {
         let kind = control.kind();
         let shared = Arc::new((Mutex::new(Pending::default()), Condvar::new()));
         let worker = Arc::clone(&shared);

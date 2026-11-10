@@ -117,6 +117,7 @@ pub(super) struct Wl {
     pub pool: SlotPool,
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
     pub pointer: Option<ThemedPointer>,
+    pub touch: Option<wayland_client::protocol::wl_touch::WlTouch>,
     pub qh: QueueHandle<State>,
 }
 
@@ -1065,6 +1066,7 @@ pub(super) fn bind_wayland(
         pool,
         keyboard: None,
         pointer: None,
+        touch: None,
         qh,
     })
 }
