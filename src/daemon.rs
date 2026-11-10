@@ -534,6 +534,10 @@ impl State {
         let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("retrobox-overlay"));
         let mut command = Command::new(exe);
         command.arg("--show");
+        if from.is_some() {
+            // the controller opened it: the game may keep the keyboard
+            command.arg("--from-pad");
+        }
         for pad in pads {
             command.arg("--pad").arg(pad);
         }

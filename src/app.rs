@@ -156,6 +156,8 @@ pub struct Content {
     pub small_clock: Option<String>,
     /// Whether the battery's percentage shows in the status line.
     pub battery_percent: bool,
+    /// Whether the menu takes the keyboard (and the focus) from the game.
+    pub take_keyboard: bool,
     /// What the threads that read find (the volume, X11's primary output,
     /// a monitor's brightness), and how more threads send it.
     pub controls: Option<Channel<Msg>>,
@@ -294,7 +296,9 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         keyboard: false,
         fade: true,
     });
-    if let Some(window) = dim.x11_window() {
+    if let Some(window) = dim.x11_window()
+        && content.take_keyboard
+    {
         grab_keyboard(&handle, window)?;
     }
     let mut state = State {
@@ -488,7 +492,7 @@ impl State {
             anchor: Anchor::TOP | Anchor::BOTTOM | edge,
             size: (panel.width, 0),
             margin: edge_margin(config.side, -(panel.width as i32)),
-            keyboard: true,
+            keyboard: self.content.take_keyboard,
             fade: true,
         });
         self.panel = Some((panel, piece));

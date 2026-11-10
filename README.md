@@ -79,10 +79,13 @@ only while it is shown.
   the game (xfwm4 does) cannot take the menu's keys away, and it raises itself again whenever
   another window is restacked above it. Closing gives the keyboard focus back to the game,
   through the window manager too (xfwm4 would leave it nowhere). The manual's page is cropped and scaled by the overlay (no `wp_viewporter`).
-* **The desktop stays usable.** On Wayland the menu takes the keyboard on demand, not
-  exclusively: when the compositor gives it to another window (Alt+Tab, a click elsewhere,
-  the game's window losing the focus), the overlay goes away, like Steam's. On X11 the same
-  happens when the focus moves to another window.
+* **The game keeps the focus.** Opened from a controller, the overlay does not take the
+  keyboard (`take_keyboard = auto`): the game stays the focused window, because many games and
+  emulators slow down, or lower their frame rate, when they lose it. The controller is all the
+  menu needs; the mouse and touch work too. Opened from the keyboard (Shift+F7) it takes the
+  keyboard, on demand and not exclusively: when the compositor gives it to another window
+  (Alt+Tab, a click elsewhere), the overlay goes away, like Steam's (on X11, when the focus
+  moves to another window). `take_keyboard = yes` always takes it, `no` never does.
 * **Save states** (RetroArch). *Load state* and *Save state* open a page of ten slots (it
   scrolls when they do not all fit), each with the preview RetroArch saves with the state and
   its date. The slots are RetroArch's own `<saves>/<system>/<game>.state1`…`state10` files,

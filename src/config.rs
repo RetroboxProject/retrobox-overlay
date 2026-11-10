@@ -7,6 +7,7 @@
 //! dim = 0.6               ; opacity of the black layer over the game
 //! animation_ms = 150
 //! hold_ms = 750           ; how long the hotkey is held to open it
+//! take_keyboard = auto    ; auto (not when opened from a controller) | yes | no
 //!
 //! [clock]
 //! enabled = true
@@ -83,6 +84,7 @@ pub struct ClockConfig {
 pub struct Config {
     pub side: Side,
     pub dim: f32,
+    pub take_keyboard: TakeKeyboard,
     pub icons: bool,
     pub animation_ms: u64,
     /// How long the hotkey (or Select+A) is held to open the overlay.
@@ -95,6 +97,38 @@ pub struct Config {
     pub system: SystemConfig,
     /// How much taller than a line of text the menu's rows are (fingers).
     pub row_scale: f32,
+}
+
+/// Whether the overlay takes the keyboard (and with it the focus) from the
+/// game. A game that loses the focus may slow down (many engines lower
+/// their frame rate in the background), so opened from a controller it does
+/// not by default: the controller is all it needs. Without the keyboard it
+/// cannot tell another window taking the focus, so it stays until closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TakeKeyboard {
+    /// Only when opened from the keyboard (Shift+F7, or by hand).
+    Auto,
+    Always,
+    Never,
+}
+
+impl TakeKeyboard {
+    fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Self::Auto,
+            other if is_off(other) => Self::Never,
+            _ => Self::Always,
+        }
+    }
+
+    /// Whether to take it, opened from a controller or not.
+    pub const fn take(self, from_pad: bool) -> bool {
+        match self {
+            Self::Auto => !from_pad,
+            Self::Always => true,
+            Self::Never => false,
+        }
+    }
 }
 
 /// The system's part of the menu.
@@ -111,6 +145,7 @@ impl Default for Config {
         Self {
             side: Side::Right,
             dim: 0.6,
+            take_keyboard: TakeKeyboard::Auto,
             icons: true,
             animation_ms: 150,
             hold: Duration::from_millis(DEFAULT_HOLD_MS),
@@ -175,6 +210,9 @@ impl Config {
             }
             if section.get("pause_game").is_some() {
                 log::info!("overlay.ini: pause_game is gone (the game is never paused): ignored");
+            }
+            if let Some(take) = section.get("take_keyboard") {
+                self.take_keyboard = TakeKeyboard::parse(take);
             }
             if let Some(icons) = section.get("icons") {
                 self.icons = !is_off(icons);

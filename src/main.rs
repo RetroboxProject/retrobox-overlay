@@ -61,6 +61,7 @@ directory) when no daemon runs; started again while open, it closes it.
   --show         show the overlay (the daemon runs this)
   --pad DEVICE   a controller (evdev device) the overlay reads, besides the
                  game's own; repeatable
+  --from-pad     opened from a controller (see take_keyboard in overlay.ini)
   --demo         show it even without a running game (to try a theme)
   --version      print the version
   --help         print this help
@@ -93,6 +94,7 @@ fn main() -> ExitCode {
     // (blocked) until the event loop reads it, instead of killing the process.
     block_usr1();
     let demo = args.iter().any(|arg| arg == "--demo");
+    let from_pad = args.iter().any(|arg| arg == "--from-pad");
     let pads: Vec<PathBuf> = args
         .windows(2)
         .filter(|pair| pair[0] == "--pad")
@@ -111,7 +113,7 @@ fn main() -> ExitCode {
         instance::close_running(Some(pid));
         Ok(())
     } else {
-        run(demo, &pads, launched, log.as_ref())
+        run(demo, from_pad, &pads, launched, log.as_ref())
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -133,6 +135,7 @@ fn block_usr1() {
 
 fn run(
     demo: bool,
+    from_pad: bool,
     extra_pads: &[PathBuf],
     launched: std::time::Instant,
     log: Option<&std::fs::File>,
@@ -202,13 +205,12 @@ fn run(
     };
 
     let (clock_formats, small_clock) = clock_formats(&config, &translator, theme.clock12h);
-    let battery_percent = config.system.battery_percent;
+    let (battery_percent, take_keyboard) = (
+        config.system.battery_percent,
+        config.take_keyboard.take(from_pad),
+    );
 
-    let theme_fonts: Vec<PathBuf> = [&theme.title, &theme.text, &theme.text_small]
-        .iter()
-        .map(|style| style.font.path.clone())
-        .collect();
-    let fonts = Fonts::new(theme_fonts.iter().map(PathBuf::as_path), &language);
+    let fonts = theme_fonts(&theme, &language);
 
     let pads = open_pads(session.as_ref(), extra_pads, theme.invert_buttons);
 
@@ -229,6 +231,7 @@ fn run(
         launched,
         small_clock,
         battery_percent,
+        take_keyboard,
         controls: Some(controls),
         sender,
         screens,
@@ -253,6 +256,15 @@ fn run(
     // the last slider change is applied before leaving
     drop(setters);
     Ok(())
+}
+
+/// The theme's menu fonts, then the fallbacks for the language.
+fn theme_fonts(theme: &MenuTheme, language: &str) -> Fonts {
+    let paths: Vec<PathBuf> = [&theme.title, &theme.text, &theme.text_small]
+        .iter()
+        .map(|style| style.font.path.clone())
+        .collect();
+    Fonts::new(paths.iter().map(PathBuf::as_path), language)
 }
 
 /// The big clock's formats (time, date) and the small one's, when the clock
