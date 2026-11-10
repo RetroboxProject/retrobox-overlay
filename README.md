@@ -1,19 +1,32 @@
 # retrobox-overlay
 
-The in-game menu of [Retrobox](https://github.com/RetroboxProject/retrobox-core). Press the
-controller's hotkey alone (Home/Guide), Hotkey+A, or Shift+F7 while playing: a side menu slides in
-over the dimmed game, drawn with the menu style of the active EmulationStation theme, with a
-clock and the date in the top corner of the other side.
+The in-game menu of [Retrobox](https://github.com/RetroboxProject/retrobox-core). Hold the
+controller's hotkey (Home/Guide; Select+A on controllers without one) for a moment, or press
+Shift+F7, while playing: a
+side menu slides in over the dimmed game, drawn with the menu style of the active
+EmulationStation theme, with a clock and the date in the top corner of the other side.
 
-It is a small Rust program (a few MB, ~35 ms from start to the menu on screen) that runs only
-while it is shown: nothing stays resident during the game.
+It is a small Rust program (a few MB, ~35 ms from start to the menu on screen). What stays
+resident is a small daemon that only reads the controllers and keyboards; the menu itself runs
+only while it is shown.
 
 ## How it fits in Retrobox
 
-* **Opening and closing.** gamepadly (Retrobox's pad-to-keyboard mapper) runs `retrobox-overlay`
-  on the standard hotkeys, which retrobox-core only binds when `retrobox-overlay` is installed.
-  Started again while it is open (the hotkey, Shift+F7), it closes the open one: a single
-  instance holds `overlay.lock` in Retrobox's runtime directory and gets `SIGUSR1`.
+* **Opening and closing.** Retrobox starts `retrobox-overlay --daemon` with EmulationStation.
+  It reads every controller and keyboard (evdev, without grabbing them: EmulationStation and
+  the games get every input as before) and opens the overlay (`retrobox-overlay --show`, a
+  process of its own) when a controller's dedicated hotkey (Home/Guide) is held alone for
+  `hold_ms` (750 ms), when Select and A (Nintendo's A: the right face button) are held
+  together as long on a controller without one (its hotkey is Select, as in
+  EmulationStation, and Select alone belongs to the game), or on Shift+F7. Any other button, the d-pad or a stick
+  pushed meanwhile cancels the hold until everything is released, so the hotkey's own
+  combinations never open it. A hold is used rather than a press because the hotkey is also
+  the modifier of every Hotkey+… combination: a press alone could not be told apart from the
+  start of one. `retrobox-overlay` started on its own asks the daemon to open or close the
+  overlay (`SIGUSR1`); without a daemon it shows the overlay itself, as before. Only one
+  overlay runs at a time (`overlay.lock` in Retrobox's runtime directory); a second start
+  closes it. The `overlay` setting of retrobox-core (global, per system or per game) turns it
+  off over a game.
 * **The game.** The launcher publishes the running game in `session.json` (runtime directory):
   its controllers, how the emulator performs each standard action, and the paths below. Without
   a running game the overlay does nothing (`--demo` shows it anyway, to try a theme).
@@ -46,13 +59,8 @@ while it is shown: nothing stays resident during the game.
   dimmed otherwise). These are done with the menu open, which shows the result.
   The launcher keeps track of the disc (starting from the one RetroArch restores) because every
   disc change goes through its control channel, the disc hotkeys too (`retrobox-control`).
-* **Pause.** The game is paused when the overlay opens (asked before it shows itself, while the
-  game still has the keyboard focus) and runs again only when you go back to it: *Continue*,
-  the shortcut that opened the overlay pressed again (Home, Hotkey, Shift+F7) or an action
-  (opening RetroArch's menu too: leaving it, the game runs). Closing the overlay any other way
-  (back, a click outside, another window taking the focus) leaves it paused. Pausing and resuming are absolute, not toggles: with
-  RetroArch the launcher asks it first (`GET_STATUS`), so *Continue* always resumes the game,
-  whoever paused it. Emulators without a pause, such as PC games, keep running.
+* **No pause.** Like Steam's overlay, the overlay does not pause the game: most console games
+  have a pause of their own, and RetroArch's menu (*Emulator menu*) pauses the rest.
 * **No window animations on top.** Under KDE Plasma the surfaces use the `on-screen-display`
   namespace, which KWin's open and close effects (Scale, Fade, Glide) leave alone, so only the
   overlay's own slide and fade play; elsewhere it is `retrobox-overlay`. On X11 the windows are
@@ -63,7 +71,9 @@ while it is shown: nothing stays resident during the game.
   another window is restacked above it. Closing gives the keyboard focus back to the game,
   through the window manager too (xfwm4 would leave it nowhere). The manual's page is cropped and scaled by the overlay (no `wp_viewporter`).
 * **The desktop stays usable.** On Wayland the menu takes the keyboard on demand, not
-  exclusively: when the compositor gives it to another window (Alt+Tab, a click elsewhere), the overlay closes.
+  exclusively: when the compositor gives it to another window (Alt+Tab, a click elsewhere,
+  the game's window losing the focus), the overlay goes away, like Steam's. On X11 the same
+  happens when the focus moves to another window.
 * **Save states** (RetroArch). *Load state* and *Save state* open a page of ten slots (it
   scrolls when they do not all fit), each with the preview RetroArch saves with the state and
   its date. The slots are RetroArch's own `<saves>/<system>/<game>.state1`…`state10` files,
@@ -108,7 +118,7 @@ while it is shown: nothing stays resident during the game.
 
 `overlay.ini` in `/etc/retrobox` and `~/.config/retrobox` (the user's file wins, key by key).
 See [`data/overlay.ini`](data/overlay.ini) for every key: the menu's side, the dim opacity, the
-animation length, whether to pause the game, the clock (on/off, position, colour, `strftime`
+animation length, how long the hotkey is held, the clock (on/off, position, colour, `strftime`
 formats) and who scales the manual. Day and month
 names follow the language, which is EmulationStation's when one is chosen there, else the
 system's (`LANGUAGE`, `LC_ALL`, `LC_MESSAGES`, `LANG`): English, Spanish,
@@ -127,7 +137,10 @@ It needs `libxkbcommon` (development files to build). GitHub Actions build the `
 `.rpm` for amd64 and arm64 on every `v*` tag and publish them with a `SHA256SUMS` file, like the
 other Retrobox components.
 
-Run it by hand with `RUST_LOG=debug retrobox-overlay --demo` from a Wayland or X11 session.
+Run it by hand with `RUST_LOG=debug retrobox-overlay --demo` from a Wayland or X11 session, and
+the daemon with `RUST_LOG=debug retrobox-overlay --daemon` (its log, when not run from a
+terminal: `~/.local/state/retrobox/logs/overlay-daemon.log`). The daemon needs read access to
+`/dev/input/event*` (the `input` group), like gamepadly.
 
 ## License
 

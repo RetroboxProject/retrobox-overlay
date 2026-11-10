@@ -64,8 +64,9 @@ impl Input {
 /// Fraction of an axis' half-range past which the stick counts as pushed.
 const STICK_THRESHOLD: f32 = 0.6;
 
-/// How long opening waits for the buttons to be released before grabbing.
-pub const GRAB_WAIT: Duration = Duration::from_millis(500);
+/// How long opening waits for the buttons to be released before grabbing:
+/// the overlay opens while the hotkey that opened it is still held.
+pub const GRAB_WAIT: Duration = Duration::from_millis(1500);
 /// How long closing waits for the buttons to be released before ungrabbing.
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Polling interval while waiting for that release.

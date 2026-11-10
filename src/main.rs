@@ -1,12 +1,16 @@
 //! retrobox-overlay: Retrobox's in-game menu.
 //!
-//! Started by the hotkey (Home pressed alone, Hotkey+A) or Shift+F7 through
-//! gamepadly, it shows a side menu styled like EmulationStation's over the
-//! dimmed game, with a clock. Started again while open, it closes the open
-//! one. Without a running game it does nothing (unless `--demo`).
+//! `--daemon` runs for the whole Retrobox session and opens it when the
+//! hotkey (or Select+A) is held, or on Shift+F7 (see `daemon.rs`); `--show`
+//! is the overlay itself: a side menu styled like EmulationStation's over
+//! the dimmed game, with a clock. Without a mode, it asks the daemon to open
+//! or close the overlay, or shows it itself when no daemon runs; started
+//! again while open, it closes the open one. Without a running game it does
+//! nothing (unless `--demo`).
 
 mod app;
 mod config;
+mod daemon;
 mod emulator;
 mod i18n;
 mod input;
@@ -23,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result;
+use nix::sys::signal::{SigSet, Signal};
 
 use crate::app::{Content, Outcome};
 use crate::config::Config;
@@ -41,14 +46,22 @@ use crate::ui::text::Fonts;
 const HELP: &str = "\
 retrobox-overlay: Retrobox's in-game menu
 
-Usage: retrobox-overlay [--demo] [--version] [--help]
+Usage: retrobox-overlay [--daemon | --show [--pad DEVICE]... | --demo]
+                        [--version] [--help]
 
-Shows the overlay over the running game (see session.json in Retrobox's
-runtime directory), or closes it when it is already open.
+Without a mode, asks the daemon to open or close the overlay, or shows the
+overlay over the running game itself (see session.json in Retrobox's runtime
+directory) when no daemon runs; started again while open, it closes it.
 
-  --demo     show it even without a running game (to try a theme)
-  --version  print the version
-  --help     print this help
+  --daemon       open the overlay when a controller's hotkey (Select+A
+                 without one) is held, or on Shift+F7, until stopped
+                 (Retrobox runs it)
+  --show         show the overlay (the daemon runs this)
+  --pad DEVICE   a controller (evdev device) the overlay reads, besides the
+                 game's own; repeatable
+  --demo         show it even without a running game (to try a theme)
+  --version      print the version
+  --help         print this help
 
 The game's manual (a PDF scraped by EmulationStation) is shown with
 poppler's pdftoppm and pdfinfo.
@@ -58,9 +71,14 @@ Log: stderr from a terminal, else ~/.local/state/retrobox/logs/overlay.log; RUST
 
 fn main() -> ExitCode {
     let launched = std::time::Instant::now();
-    let log = init_log();
-
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let daemon = args.iter().any(|arg| arg == "--daemon");
+    let log = init_log(if daemon {
+        "overlay-daemon.log"
+    } else {
+        "overlay.log"
+    });
+
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("{HELP}");
         return ExitCode::SUCCESS;
@@ -69,9 +87,31 @@ fn main() -> ExitCode {
         println!("retrobox-overlay {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
+    // A second start may signal this one at any moment: SIGUSR1 waits
+    // (blocked) until the event loop reads it, instead of killing the process.
+    block_usr1();
     let demo = args.iter().any(|arg| arg == "--demo");
+    let pads: Vec<PathBuf> = args
+        .windows(2)
+        .filter(|pair| pair[0] == "--pad")
+        .map(|pair| PathBuf::from(&pair[1]))
+        .collect();
+    let runtime_dir = paths::runtime_dir();
 
-    match run(demo, launched, log.as_ref()) {
+    let result = if daemon {
+        let config = Config::load(&paths::config_dirs());
+        daemon::run(&runtime_dir, config.hold)
+    } else if !demo
+        && !args.iter().any(|arg| arg == "--show")
+        && let Some(pid) = instance::daemon_pid(&runtime_dir)
+    {
+        log::info!("asking the daemon ({pid}) to open or close the overlay");
+        instance::close_running(Some(pid));
+        Ok(())
+    } else {
+        run(demo, &pads, launched, log.as_ref())
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             log::error!("{err:#}");
@@ -80,9 +120,23 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(demo: bool, launched: std::time::Instant, log: Option<&std::fs::File>) -> Result<()> {
+/// Keep SIGUSR1 pending until an event loop reads it (see `main`).
+fn block_usr1() {
+    let mut mask = SigSet::empty();
+    mask.add(Signal::SIGUSR1);
+    if let Err(err) = mask.thread_set_mask() {
+        log::warn!("cannot block SIGUSR1: {err}");
+    }
+}
+
+fn run(
+    demo: bool,
+    extra_pads: &[PathBuf],
+    launched: std::time::Instant,
+    log: Option<&std::fs::File>,
+) -> Result<()> {
     let runtime_dir = paths::runtime_dir();
-    let _lock = match instance::acquire(&runtime_dir)? {
+    let lock = match instance::acquire(&runtime_dir)? {
         Instance::First(lock) => {
             // the log is this run's from here: a second start (which only
             // closes this one) leaves it alone
@@ -100,6 +154,10 @@ fn run(demo: bool, launched: std::time::Instant, log: Option<&std::fs::File>) ->
     let session = Session::load(&runtime_dir);
     if session.is_none() && !demo {
         log::info!("no game running: nothing to show");
+        return Ok(());
+    }
+    if session.as_ref().is_some_and(|session| !session.overlay) && !demo {
+        log::info!("the overlay is turned off for this game");
         return Ok(());
     }
 
@@ -125,7 +183,7 @@ fn run(demo: bool, launched: std::time::Instant, log: Option<&std::fs::File>) ->
         .collect::<Vec<_>>()
         .join(" · ");
 
-    let (emulator, states) = emulator_for(session.as_ref(), demo, &config, &translator);
+    let (emulator, states) = emulator_for(session.as_ref(), demo, &translator);
     let manual = manual_path(
         &info.manual,
         session.as_ref().map(|session| session.rom.as_str()),
@@ -157,14 +215,8 @@ fn run(demo: bool, launched: std::time::Instant, log: Option<&std::fs::File>) ->
         .collect();
     let fonts = Fonts::new(theme_fonts.iter().map(PathBuf::as_path), &language);
 
-    let pads: Vec<Pad> = session
-        .iter()
-        .flat_map(|session| &session.controllers)
-        .filter(|controller| !controller.device.is_empty())
-        .filter_map(|controller| Pad::open(Path::new(&controller.device), theme.invert_buttons))
-        .collect();
+    let pads = open_pads(session.as_ref(), extra_pads, theme.invert_buttons);
 
-    // app::run pauses the game once it knows it can show the overlay
     let (outcome, emulator) = app::run(Content {
         config,
         theme,
@@ -182,26 +234,43 @@ fn run(demo: bool, launched: std::time::Instant, log: Option<&std::fs::File>) ->
         launched,
     })?;
     // The overlay is gone and the controllers are the game's again; the
-    // keyboard focus is on its way back to the game.
+    // keyboard focus is on its way back to the game. Another overlay may
+    // open from now on: what is left only talks to the emulator.
+    block_usr1();
+    drop(lock);
     match outcome {
         Outcome::Quit if !demo => quit_game(),
-        Outcome::Quit => {}
-        Outcome::Dismiss => log::info!("closed without a choice: the game stays paused"),
-        Outcome::Continue => emulator.back_to_game(None),
-        Outcome::Request(request) => emulator.back_to_game(Some(request)),
+        Outcome::Quit | Outcome::Back => {}
+        Outcome::Request(request) => emulator.back_to_game(request),
     }
     Ok(())
 }
 
-/// Log to stderr from a terminal, else to the log file (emptied once this
-/// run is the overlay, see `run`); the file, if it is the log.
-fn init_log() -> Option<std::fs::File> {
+/// The game's controllers and the ones the daemon passed (outside a game,
+/// every controller), each once.
+fn open_pads(session: Option<&Session>, extra: &[PathBuf], swap_confirm: bool) -> Vec<Pad> {
+    let mut seen = std::collections::HashSet::new();
+    session
+        .iter()
+        .flat_map(|session| &session.controllers)
+        .filter(|controller| !controller.device.is_empty())
+        .map(|controller| PathBuf::from(&controller.device))
+        .chain(extra.iter().cloned())
+        .filter(|path| seen.insert(std::fs::canonicalize(path).unwrap_or_else(|_| path.clone())))
+        .filter_map(|path| Pad::open(&path, swap_confirm))
+        .collect()
+}
+
+/// Log to stderr from a terminal, else to the log file `name` (the
+/// overlay's is emptied once this run is the overlay, see `run`); the file,
+/// if it is the log.
+fn init_log(name: &str) -> Option<std::fs::File> {
     let mut builder =
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
     if std::io::stderr().is_terminal() {
         builder.format_timestamp(None);
     } else {
-        let path = paths::log_file();
+        let path = paths::log_file(name);
         let file = path
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
@@ -229,7 +298,6 @@ fn init_log() -> Option<std::fs::File> {
 fn emulator_for(
     session: Option<&Session>,
     demo: bool,
-    config: &Config,
     translator: &Translator,
 ) -> (Emulator, Option<StatesMenu>) {
     let Some(session) = session.filter(|_| !demo) else {
@@ -241,7 +309,7 @@ fn emulator_for(
         session.system,
         session.emulator
     );
-    let emulator = Emulator::new(session, config.pause_game);
+    let emulator = Emulator::new(session);
     let states = session
         .savestates
         .as_ref()

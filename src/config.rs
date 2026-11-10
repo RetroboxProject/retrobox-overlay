@@ -6,6 +6,7 @@
 //! side = right            ; right | left
 //! dim = 0.6               ; opacity of the black layer over the game
 //! animation_ms = 150
+//! hold_ms = 750           ; how long the hotkey is held to open it
 //!
 //! [clock]
 //! enabled = true
@@ -19,12 +20,19 @@
 //! ```
 
 use std::path::Path;
+use std::time::Duration;
 
 use ini::Ini;
 
 use crate::theme::Rgba;
 
 pub const FILE_NAME: &str = "overlay.ini";
+
+/// How long the hotkey is held to open the overlay, by default and at most:
+/// shorter would catch the hotkey's own combinations, longer feels broken.
+const DEFAULT_HOLD_MS: u64 = 750;
+const MIN_HOLD_MS: u64 = 300;
+const MAX_HOLD_MS: u64 = 3000;
 
 /// Which edge of the screen the menu slides from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,9 +63,10 @@ pub struct ClockConfig {
 pub struct Config {
     pub side: Side,
     pub dim: f32,
-    pub pause_game: bool,
     pub icons: bool,
     pub animation_ms: u64,
+    /// How long the hotkey (or Select+A) is held to open the overlay.
+    pub hold: Duration,
     pub clock: ClockConfig,
     /// Whether the compositor scales and crops the manual's page
     /// (`wp_viewporter`); off, the overlay does, for compositors that show
@@ -70,9 +79,9 @@ impl Default for Config {
         Self {
             side: Side::Right,
             dim: 0.6,
-            pause_game: true,
             icons: true,
             animation_ms: 150,
+            hold: Duration::from_millis(DEFAULT_HOLD_MS),
             clock: ClockConfig {
                 enabled: true,
                 time_format: None,
@@ -125,8 +134,8 @@ impl Config {
             {
                 self.dim = dim.clamp(0.0, 1.0);
             }
-            if let Some(pause) = section.get("pause_game") {
-                self.pause_game = !is_off(pause);
+            if section.get("pause_game").is_some() {
+                log::info!("overlay.ini: pause_game is gone (the game is never paused): ignored");
             }
             if let Some(icons) = section.get("icons") {
                 self.icons = !is_off(icons);
@@ -136,6 +145,12 @@ impl Config {
                 .and_then(|v| v.trim().parse().ok())
             {
                 self.animation_ms = ms;
+            }
+            if let Some(ms) = section
+                .get("hold_ms")
+                .and_then(|v| v.trim().parse::<u64>().ok())
+            {
+                self.hold = Duration::from_millis(ms.clamp(MIN_HOLD_MS, MAX_HOLD_MS));
             }
         }
         if let Some(section) = ini.section(Some("clock")) {
@@ -186,7 +201,7 @@ mod tests {
         std::fs::write(system.join(FILE_NAME), "[overlay]\nside=left\ndim=0.3\n").unwrap();
         std::fs::write(
             user.join(FILE_NAME),
-            "[overlay]\ndim=2\n[clock]\nposition=top\n",
+            "[overlay]\ndim=2\nhold_ms=50\n[clock]\nposition=top\n",
         )
         .unwrap();
 
@@ -194,6 +209,7 @@ mod tests {
         assert_eq!(config.side, Side::Left);
         assert!((config.dim - 1.0).abs() < f32::EPSILON);
         assert_eq!(config.clock.position, VerticalPosition::Top);
+        assert_eq!(config.hold, Duration::from_millis(MIN_HOLD_MS));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

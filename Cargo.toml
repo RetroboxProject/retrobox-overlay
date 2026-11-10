@@ -20,7 +20,7 @@ env_logger = { version = "0.11", default-features = false }
 evdev = "0.13"
 fluent-bundle = "0.16"
 log = "0.4"
-nix = { version = "0.31", features = ["signal", "fs", "process", "user"] }
+nix = { version = "0.31", features = ["signal", "fs", "process", "user", "inotify"] }
 resvg = { version = "0.49", default-features = false }
 roxmltree = "0.21"
 rust-ini = "0.21"
@@ -63,7 +63,7 @@ depends = "$auto, retrobox-core, retrobox-emulationstation"
 # pdftoppm and pdfinfo, for the games' manuals
 recommends = "poppler-utils"
 extended-description = """\
-Retrobox's in-game menu: opened with the controller's hotkey or Shift+F7, it
+Retrobox's in-game menu: opened by holding the controller's hotkey or Shift+F7, it
 shows a side menu over the dimmed game, drawn with the active EmulationStation
 theme's menu style, and a clock. Needs a Wayland compositor with layer-shell
 (KWin, labwc and other wlroots compositors)."""

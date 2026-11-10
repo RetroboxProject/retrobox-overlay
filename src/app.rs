@@ -3,9 +3,9 @@
 //!
 //! * the dim: one translucent black buffer over the whole output;
 //! * the panel: the side menu, slid in from its edge by animating its margin
-//!   (its buffer is drawn once, not on every frame); it takes the keyboard,
-//!   once the game is paused (the pause key has to reach the game first, see
-//!   emulator.rs);
+//!   (its buffer is drawn once, not on every frame); it takes the keyboard
+//!   while the overlay is open, and the overlay goes away as soon as another
+//!   window takes it (Alt+Tab, a click elsewhere), like Steam's;
 //! * the clock, in a corner on the other side, redrawn once a second;
 //! * the manual, when opened: a page over the whole screen (see
 //!   `manual_view.rs`);
@@ -91,14 +91,11 @@ const CLOCK_MARGIN: f32 = crate::ui::clock::MARGIN;
 /// How the overlay was left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// "Continue", or the shortcut that opened the overlay pressed again
-    /// (Home, Shift+F7): back to the game, running.
-    Continue,
-    /// An emulator action, then back to the game, running.
+    /// Back to what was on screen: "Continue", back, the shortcut that opened
+    /// the overlay again, a click outside, another window taking the focus.
+    Back,
+    /// An emulator action, done once the overlay is gone.
     Request(Request),
-    /// Closed without a choice (back, a click outside, another window taking
-    /// the focus): the game stays as it is, paused.
-    Dismiss,
     Quit,
 }
 
@@ -182,24 +179,15 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
     };
 
     // SIGUSR1: the overlay started again (the hotkey, Shift+F7) closes this
-    // one, back to the game like Continue; being stopped leaves it paused
+    // one, as being stopped does
     let signals = Signals::new(&[Signal::SIGUSR1, Signal::SIGTERM, Signal::SIGINT])?;
     handle
-        .insert_source(signals, |event, &mut (), state| {
-            state.outcome = Some(if event.signal() == Signal::SIGUSR1 {
-                Outcome::Continue
-            } else {
-                Outcome::Dismiss
-            });
+        .insert_source(signals, |_, &mut (), state| {
+            state.outcome = Some(Outcome::Back);
         })
         .map_err(|err| anyhow!("cannot watch signals: {}", err.error))?;
 
     watch_controllers(&handle, &content.pads)?;
-
-    // Everything the overlay needs is there: pause the game now, before the
-    // overlay shows itself (the game still has the keyboard focus). Failing
-    // any sooner (no display it can show on) leaves the game running.
-    content.emulator.pause();
 
     // the dim comes first: its size is the screen's, which the rest is sized from
     let dim = display.create_piece(Spec {
@@ -231,13 +219,11 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
     while state.outcome.is_none() {
         state.x11_configures();
         state.display.flush();
-        if let Err(err) = event_loop.dispatch(None, &mut state) {
-            // the overlay is gone: do not leave the game paused behind it
-            state.content.emulator.back_to_game(None);
-            return Err(err).context("event loop error");
-        }
+        event_loop
+            .dispatch(None, &mut state)
+            .context("event loop error")?;
     }
-    let outcome = state.outcome.unwrap_or(Outcome::Dismiss);
+    let outcome = state.outcome.unwrap_or(Outcome::Back);
     // Hide the overlay first, then hand the controllers back once the button
     // that closed it is up (see input.rs).
     let mut pads = std::mem::take(&mut state.content.pads);
@@ -624,7 +610,7 @@ impl State {
                 self.open_manual();
                 return;
             }
-            Some(MenuAction::Continue) => Some(Outcome::Continue),
+            Some(MenuAction::Continue) => Some(Outcome::Back),
             Some(MenuAction::Quit) => Some(Outcome::Quit),
             // disc changes are done with the menu open, which shows the result
             Some(MenuAction::Emulator(action)) if self.content.emulator.in_place(action) => {
@@ -667,7 +653,7 @@ impl State {
             self.draw_panel();
             self.draw_menu_help();
         } else {
-            self.outcome = Some(Outcome::Dismiss);
+            self.outcome = Some(Outcome::Back);
         }
     }
 
@@ -731,7 +717,7 @@ impl State {
             }
             Nav::Back => self.back(),
             // the shortcut that opened the overlay, again: back to the game
-            Nav::Close => self.outcome = Some(Outcome::Continue),
+            Nav::Close => self.outcome = Some(Outcome::Back),
             Nav::Left | Nav::Right | Nav::ZoomIn | Nav::ZoomOut | Nav::PrevPage | Nav::NextPage => {
             }
         }
@@ -782,7 +768,7 @@ impl State {
     fn focus_out(&mut self) {
         if self.focused && self.outcome.is_none() {
             log::info!("keyboard focus lost: closing");
-            self.outcome = Some(Outcome::Dismiss);
+            self.outcome = Some(Outcome::Back);
         }
         self.focused = false;
     }
@@ -868,7 +854,7 @@ impl State {
                 Ok(None) => break,
                 Err(err) => {
                     log::error!("X11 connection lost: {err}");
-                    self.outcome = Some(Outcome::Dismiss);
+                    self.outcome = Some(Outcome::Back);
                     break;
                 }
             }
@@ -1005,7 +991,7 @@ fn x11_key_nav(keycode: u8) -> Option<Nav> {
 
 impl LayerShellHandler for State {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
-        self.outcome = Some(Outcome::Dismiss);
+        self.outcome = Some(Outcome::Back);
     }
 
     fn configure(

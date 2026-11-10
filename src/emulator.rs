@@ -5,15 +5,13 @@
 //! its command pipe (RetroArch), a key chord on a virtual keyboard of its
 //! own, or a command line. The overlay only asks, one line per request.
 //!
-//! The game is paused when the overlay opens and runs again only when the
-//! player chooses to go back to it ("Continue", or an action): closing the
-//! overlay any other way leaves it paused. `resume` always leaves it running,
-//! whoever paused it.
+//! The game is not paused: like Steam's overlay, the overlay leaves that to
+//! the game (most console games have a pause of their own) or to the
+//! emulator's menu.
 //!
 //! Key chords only reach an emulator that has the keyboard focus. When the
-//! channel says it may press keys (`focus`), the overlay asks for the pause
-//! before it shows itself, and for everything else after it is gone and the
-//! focus is back with the game.
+//! channel says it may press keys (`focus`), the overlay asks after it is
+//! gone and the focus is back with the game.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -150,7 +148,6 @@ fn is_playlist(rom: &str) -> bool {
 pub struct Emulator {
     control: Option<ControlInfo>,
     actions: Vec<EmuAction>,
-    pause_game: bool,
 }
 
 impl Emulator {
@@ -159,11 +156,10 @@ impl Emulator {
         Self {
             control: None,
             actions: Vec::new(),
-            pause_game: false,
         }
     }
 
-    pub fn new(session: &Session, pause_game: bool) -> Self {
+    pub fn new(session: &Session) -> Self {
         let Some(control) = session.control.clone() else {
             log::warn!("no control channel in session.json: the menu can only leave the game");
             return Self::none();
@@ -179,7 +175,6 @@ impl Emulator {
             })
             .collect();
         Self {
-            pause_game: pause_game && control.pause,
             control: Some(control),
             actions,
         }
@@ -195,26 +190,13 @@ impl Emulator {
         self.control.as_ref().is_some_and(|control| control.slots)
     }
 
-    /// Pause the game; called before the overlay shows itself, while the
-    /// game still has the keyboard focus.
-    pub fn pause(&self) {
-        if self.pause_game {
-            self.ask("pause");
-        }
-    }
-
-    /// Once the overlay is gone: the game runs again, after doing what the
-    /// menu asked.
-    pub fn back_to_game(&self, request: Option<Request>) {
+    /// Once the overlay is gone: do what the menu asked (once the game has
+    /// the keyboard focus back, if it takes keys).
+    pub fn back_to_game(&self, request: Request) {
         if self.control.as_ref().is_some_and(|control| control.focus) {
             sleep(FOCUS_RETURN);
         }
-        if self.pause_game {
-            self.ask("resume");
-        }
-        if let Some(request) = request {
-            self.ask(&request.line());
-        }
+        self.ask(&request.line());
     }
 
     /// The disc in the drive and the tray, for a game of several discs.
@@ -300,13 +282,13 @@ mod tests {
         .unwrap()
     }
 
-    const RETROARCH: &str = r#"{"socket": "/run/x/control.sock", "pause": true, "slots": true,
+    const RETROARCH: &str = r#"{"socket": "/run/x/control.sock", "slots": true,
         "focus": false, "actions": ["save_state", "load_state", "reset", "disk_eject",
         "disk_next", "disk_prev", "screenshot"]}"#;
 
     #[test]
     fn menu_keeps_what_applies() {
-        let emulator = Emulator::new(&session("/roms/psx/ff7.m3u", RETROARCH), true);
+        let emulator = Emulator::new(&session("/roms/psx/ff7.m3u", RETROARCH));
         assert_eq!(
             emulator.actions(),
             [
@@ -317,23 +299,21 @@ mod tests {
                 EmuAction::Screenshot
             ]
         );
-        assert!(emulator.has_slots() && emulator.pause_game);
+        assert!(emulator.has_slots());
 
-        let single = Emulator::new(&session("/roms/psx/game.chd", RETROARCH), false);
+        let single = Emulator::new(&session("/roms/psx/game.chd", RETROARCH));
         assert!(!single.actions().contains(&EmuAction::NextDisc));
-        assert!(!single.pause_game);
     }
 
     #[test]
     fn plain_states_without_slots() {
-        let control = r#"{"socket": "s", "pause": false, "slots": false, "focus": true,
+        let control = r#"{"socket": "s", "slots": false, "focus": true,
             "actions": ["save_state", "load_state"]}"#;
-        let emulator = Emulator::new(&session("/roms/gc/game.rvz", control), true);
+        let emulator = Emulator::new(&session("/roms/gc/game.rvz", control));
         assert_eq!(
             emulator.actions(),
             [EmuAction::SaveState, EmuAction::LoadState]
         );
-        assert!(!emulator.pause_game);
     }
 
     #[test]

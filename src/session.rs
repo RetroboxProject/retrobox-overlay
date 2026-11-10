@@ -26,9 +26,6 @@ pub struct SessionController {
 )]
 pub struct ControlInfo {
     pub socket: String,
-    /// Whether the game can be paused.
-    #[serde(default)]
-    pub pause: bool,
     /// The hotkey actions the emulator can do.
     #[serde(default)]
     pub actions: Vec<String>,
@@ -71,6 +68,14 @@ pub struct Session {
     pub menu_theme: String,
     #[serde(default)]
     pub savestates: Option<SaveStatesInfo>,
+    /// Whether the overlay may open over this game (the `overlay` setting,
+    /// global, per system or per game).
+    #[serde(default = "enabled")]
+    pub overlay: bool,
+}
+
+const fn enabled() -> bool {
+    true
 }
 
 impl Session {
@@ -149,14 +154,14 @@ mod tests {
     #[test]
     fn parses_session_control() {
         let session: Session = serde_json::from_str(
-            r#"{"pid": 1, "control": {"socket": "/run/x/control.sock", "pause": true,
+            r#"{"pid": 1, "control": {"socket": "/run/x/control.sock",
                 "actions": ["reset"], "slots": true, "focus": false},
                 "savestates": {"dir": "/saves/psx", "name": "Game", "slot": 0},
                 "unknown": 3}"#,
         )
         .unwrap();
         let control = session.control.unwrap();
-        assert!(control.pause && control.slots && !control.focus);
+        assert!(control.slots && !control.focus);
         assert_eq!(control.actions, ["reset"]);
         assert_eq!(session.savestates.unwrap().name, "Game");
     }
