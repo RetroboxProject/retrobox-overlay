@@ -204,8 +204,6 @@ struct State {
     /// The threads' findings, until the panel is there (then a source of
     /// the event loop).
     controls: Option<Channel<Msg>>,
-    /// The sliders moved here: a value read again later does not move them back.
-    touched: Vec<SliderKind>,
 }
 
 /// Where the brightness slider stands.
@@ -327,7 +325,6 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         brightness: Brightness::Waiting,
         primary_output: None,
         controls: None,
-        touched: Vec::new(),
     };
     state.controls = state.content.controls.take();
 
@@ -806,19 +803,6 @@ impl State {
     fn message(&mut self, msg: Msg) {
         match msg {
             Msg::Found(found) => self.slider_found(found),
-            Msg::Value(kind, value) => {
-                if self.touched.contains(&kind) {
-                    return;
-                }
-                let label = slider_label(&self.content.translator, kind);
-                match self.panel.as_mut() {
-                    Some((panel, _)) => {
-                        panel.set_slider(kind, &label, value);
-                        self.draw_panel();
-                    }
-                    None => self.found.push((kind, value)),
-                }
-            }
             Msg::Primary(primary) => {
                 if primary.is_some() {
                     self.settle_brightness(primary.as_deref());
@@ -872,10 +856,6 @@ impl State {
         let Some(screen) = screens.resolve(primary) else {
             return;
         };
-        if screen.is_ddc() {
-            // the cache's value now, the monitor's own soon
-            system::read_again(screen.clone(), self.content.sender.clone());
-        }
         if let Some(found) = Found::new(Control::Brightness(screen)) {
             self.slider_found(found);
         }
@@ -906,9 +886,6 @@ impl State {
         let Some((kind, value)) = change else {
             return;
         };
-        if !self.touched.contains(&kind) {
-            self.touched.push(kind);
-        }
         self.draw_panel();
         if let Some(setter) = self.setters.iter().find(|setter| setter.kind() == kind) {
             setter.set(value);

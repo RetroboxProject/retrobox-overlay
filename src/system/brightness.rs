@@ -18,10 +18,12 @@
 //! it is still fading to the last one, `EPROTO`): retried, never another way.
 //! Each change costs the driver some work (NVIDIA's stalls the display a
 //! little), so the same value is never written twice and changes are spaced
-//! (`Control::spacing`). An external
-//! monitor uses `ddcutil` on its I2C bus (`--bus`: no detection on each
-//! change, which is what made it slow), and its last value is kept in the
-//! cache, so the slider shows at once and is read again behind it.
+//! (`Control::spacing`). An external monitor uses `ddcutil` on its I2C bus
+//! (`--bus`: no detection on each change, which is what made it slow). Every
+//! DDC/CI exchange goes through the GPU's driver, and NVIDIA's stalls the
+//! display meanwhile: the monitor is never read when the overlay opens (the
+//! slider shows the value last read or set, kept in the cache), and it is
+//! written once per slide, like a backlight.
 
 use std::fs;
 use std::io::Write as _;
@@ -219,7 +221,7 @@ impl Screens {
 
 impl Screen {
     /// The brightness, 0 to 1: a backlight's from sysfs, a monitor's from the
-    /// cache (see `read_again`).
+    /// cache (never read over DDC/CI when the overlay opens: see the module).
     pub fn get(&self) -> Option<f32> {
         match self {
             Self::Backlight { name, max, .. } => {
@@ -231,19 +233,6 @@ impl Screen {
             }
             Self::Ddc { monitor, .. } => Some(fraction(monitor.value, monitor.max)),
         }
-    }
-
-    /// A monitor's brightness as it is now (slow: DDC/CI), when it answers.
-    pub fn read_again(&self) -> Option<f32> {
-        let Self::Ddc { monitor, .. } = self else {
-            return self.get();
-        };
-        let (current, max) = parse_vcp(&ddcutil(monitor.bus, &["getvcp", "10", "--brief"])?)?;
-        Some(fraction(current, max))
-    }
-
-    pub const fn is_ddc(&self) -> bool {
-        matches!(self, Self::Ddc { .. })
     }
 
     /// Set the brightness; false when the driver or the monitor refused

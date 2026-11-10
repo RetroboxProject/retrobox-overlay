@@ -136,9 +136,11 @@ only while it is shown.
     way. An external monitor uses DDC/CI through `ddcutil` on its I2C bus
     (`--bus`, so a change does not detect the monitors again): the daemon looks for the
     monitors that answer when it starts and leaves them in `overlay-ddc.json` in Retrobox's
-    runtime directory, with their last brightness, which the slider shows at once while the
-    monitor is read again behind it. DDC/CI stays slower than a backlight (tens of milliseconds
-    per change on most monitors): a held direction only ever sends the latest value.
+    runtime directory, with their brightness, which the slider shows at once. Each DDC/CI
+    exchange goes through the GPU's driver (NVIDIA's stalls the display a little meanwhile),
+    so the monitor is never read when the overlay opens (the cache keeps the value last read or
+    set; one changed with the monitor's own buttons shows from the next Retrobox start) and it
+    is written once per slide, like a backlight.
   * **Volume** of the default output: PipeWire (`wpctl`), else PulseAudio (`pactl`, which also
     works with PipeWire's PulseAudio server). At 0 the output is muted; above, unmuted.
 * **Touch screens and dragging.** A finger is the left button: a tap opens an entry (or sets a

@@ -4,8 +4,8 @@
 //! putting the computer to sleep (outside games).
 //!
 //! Nothing here may stall the menu: what takes a program to read (the
-//! volume, a monitor's brightness over DDC/CI) is read in a thread as soon
-//! as the overlay starts, and comes back as a `Msg`; each change is applied
+//! volume) is read in a thread as soon as the overlay starts, and comes
+//! back as a `Msg`; each change is applied
 //! by a thread of its own that only ever applies the latest value asked for
 //! (a slider held down asks for many).
 
@@ -34,12 +34,13 @@ pub const STEP: f32 = 0.05;
 /// program, and the backlight or the sound server do some work.
 const VOLUME_SPACING: Duration = Duration::from_millis(50);
 /// NVIDIA's backlight fades to each value it is given, and refuses another
-/// one meanwhile.
+/// one meanwhile; a monitor fades too, and DDC/CI is slow.
 const BACKLIGHT_SPACING: Duration = Duration::from_millis(300);
-/// A backlight changes once the slider has stopped this long, never while
-/// it moves: each change stalls NVIDIA's display a little, and changes on
-/// the way (each one fading on its own) made the screen go the other way
-/// when the slider went back and forth.
+/// The brightness changes once the slider has stopped this long, never
+/// while it moves: each change stalls NVIDIA's display a little (a backlight
+/// write, or a DDC/CI exchange over its I2C), and changes on the way (each
+/// one fading on its own) made the screen go the other way when the slider
+/// went back and forth.
 const BACKLIGHT_SETTLE: Duration = Duration::from_millis(250);
 /// A refused change is tried again this much later, this many times (unless
 /// a newer one comes).
@@ -81,12 +82,11 @@ impl Control {
         }
     }
 
-    /// How far apart its changes go, at least: a backlight's driver has
-    /// work to do on each one (and NVIDIA's refuses one too close to the
-    /// last); a monitor over DDC/CI is slow enough by itself.
+    /// How far apart its changes go, at least: the brightness's driver has
+    /// work to do on each one (and NVIDIA's backlight refuses one too close
+    /// to the last).
     fn spacing(&self) -> Duration {
         match self {
-            Self::Brightness(screen) if screen.is_ddc() => Duration::ZERO,
             Self::Brightness(_) => BACKLIGHT_SPACING,
             Self::Volume(_) => VOLUME_SPACING,
         }
@@ -96,8 +96,8 @@ impl Control {
     /// `BACKLIGHT_SETTLE`).
     fn settle(&self) -> Duration {
         match self {
-            Self::Brightness(screen) if !screen.is_ddc() => BACKLIGHT_SETTLE,
-            _ => Duration::ZERO,
+            Self::Brightness(_) => BACKLIGHT_SETTLE,
+            Self::Volume(_) => Duration::ZERO,
         }
     }
 }
@@ -125,8 +125,6 @@ impl Found {
 pub enum Msg {
     /// A slider's control.
     Found(Found),
-    /// A slider's value read again (a monitor over DDC/CI).
-    Value(SliderKind, f32),
     /// X11's primary output (None: none set).
     Primary(Option<String>),
     /// The monitors that answer DDC/CI, found again.
@@ -146,15 +144,6 @@ pub fn read_volume(sender: calloop::channel::Sender<Msg>) {
 pub fn read_x11_primary(sender: calloop::channel::Sender<Msg>) {
     spawn("primary", move || {
         sender.send(Msg::Primary(brightness::x11_primary())).ok();
-    });
-}
-
-/// Read a monitor's brightness again in a thread (DDC/CI: slow).
-pub fn read_again(screen: Screen, sender: calloop::channel::Sender<Msg>) {
-    spawn("ddc", move || {
-        if let Some(value) = screen.read_again() {
-            sender.send(Msg::Value(SliderKind::Brightness, value)).ok();
-        }
     });
 }
 
