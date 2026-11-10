@@ -33,11 +33,14 @@ pub const STEP: f32 = 0.05;
 /// How often a slider's changes reach the system, at most: each one runs a
 /// program, and the backlight or the sound server do some work.
 const VOLUME_SPACING: Duration = Duration::from_millis(50);
-const BACKLIGHT_SPACING: Duration = Duration::from_millis(400);
-/// A backlight waits for the slider to stop this long before it changes
-/// (each change stalls NVIDIA's display a little: a slide is one change,
-/// or one every `BACKLIGHT_SPACING` while it goes on).
-const BACKLIGHT_SETTLE: Duration = Duration::from_millis(120);
+/// NVIDIA's backlight fades to each value it is given, and refuses another
+/// one meanwhile.
+const BACKLIGHT_SPACING: Duration = Duration::from_millis(300);
+/// A backlight changes once the slider has stopped this long, never while
+/// it moves: each change stalls NVIDIA's display a little, and changes on
+/// the way (each one fading on its own) made the screen go the other way
+/// when the slider went back and forth.
+const BACKLIGHT_SETTLE: Duration = Duration::from_millis(250);
 /// A refused change is tried again this much later, this many times (unless
 /// a newer one comes).
 const RETRY_AFTER: Duration = Duration::from_millis(200);
@@ -90,7 +93,7 @@ impl Control {
     }
 
     /// How long the slider has to stay still before a change goes (see
-    /// `BACKLIGHT_SETTLE`), within `spacing`.
+    /// `BACKLIGHT_SETTLE`).
     fn settle(&self) -> Duration {
         match self {
             Self::Brightness(screen) if !screen.is_ddc() => BACKLIGHT_SETTLE,
@@ -226,18 +229,13 @@ impl Setter {
                         std::thread::sleep(wait);
                         value = newer().unwrap_or(value);
                     }
-                    // still moving: wait for it to stop, but not past the spacing
+                    // still moving: wait for it to stop
                     let settle = control.settle();
                     if !settle.is_zero() {
-                        let since = last.unwrap_or_else(Instant::now);
                         loop {
                             std::thread::sleep(settle);
                             match newer() {
-                                Some(moved) if since.elapsed() < spacing => value = moved,
-                                Some(moved) => {
-                                    value = moved;
-                                    break;
-                                }
+                                Some(moved) => value = moved,
                                 None => break,
                             }
                         }

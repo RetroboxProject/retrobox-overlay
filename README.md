@@ -130,9 +130,10 @@ only while it is shown.
     `brightnessctl`; the first way that works is kept, and it never goes below 5 % so the
     screen does not go black. Each change costs the driver some work (NVIDIA's `nvidia_0`
     stalls the display a little, and refuses a change while it is still fading to the last
-    one), so the backlight changes once the slider has stopped for 120 ms (and every 400 ms
-    while it keeps moving), the same value is never written twice, and a refused change is
-    tried again a moment later rather than another way. An external monitor uses DDC/CI through `ddcutil` on its I2C bus
+    one, fading to each value on its own), so the backlight changes once, when the slider has
+    stopped for 250 ms, never on the way; the same value is never written twice, and a
+    refused change is tried again a moment later (with the latest value) rather than another
+    way. An external monitor uses DDC/CI through `ddcutil` on its I2C bus
     (`--bus`, so a change does not detect the monitors again): the daemon looks for the
     monitors that answer when it starts and leaves them in `overlay-ddc.json` in Retrobox's
     runtime directory, with their last brightness, which the slider shows at once while the
