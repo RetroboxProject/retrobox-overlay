@@ -128,7 +128,10 @@ only while it is shown.
     A built-in panel (eDP, LVDS, DSI) uses the kernel's backlight, written in sysfs when
     allowed, else through logind (`busctl`, allowed to the active session without root), else
     `brightnessctl`; the first way that works is kept, and it never goes below 5 % so the
-    screen does not go black. An external monitor uses DDC/CI through `ddcutil` on its I2C bus
+    screen does not go black. Each change costs the driver some work (NVIDIA's `nvidia_0`
+    stalls the display a little, and refuses a change while it is still fading to the last
+    one), so changes go at least 150 ms apart, the same value is never written twice, and a
+    refused change is tried again a moment later rather than another way. An external monitor uses DDC/CI through `ddcutil` on its I2C bus
     (`--bus`, so a change does not detect the monitors again): the daemon looks for the
     monitors that answer when it starts and leaves them in `overlay-ddc.json` in Retrobox's
     runtime directory, with their last brightness, which the slider shows at once while the

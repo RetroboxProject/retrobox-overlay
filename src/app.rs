@@ -199,6 +199,8 @@ struct State {
     finger: Option<(i32, SurfaceId, (f64, f64))>,
     /// Whether the brightness slider's screen is settled.
     brightness: Brightness,
+    /// The primary screen's output, once known.
+    primary_output: Option<String>,
     /// The threads' findings, until the panel is there (then a source of
     /// the event loop).
     controls: Option<Channel<Msg>>,
@@ -213,6 +215,8 @@ enum Brightness {
     Waiting,
     /// Looking for monitors that answer DDC/CI (once).
     Detecting,
+    /// Looked for them: what was found is all there is.
+    Detected,
     /// Settled (with or without a slider).
     Done,
 }
@@ -321,6 +325,7 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         finger: None,
         menu_help_shown: None,
         brightness: Brightness::Waiting,
+        primary_output: None,
         controls: None,
         touched: Vec::new(),
     };
@@ -821,8 +826,9 @@ impl State {
             }
             Msg::Ddc(monitors) => {
                 self.content.screens.set_ddc(monitors);
-                self.brightness = Brightness::Waiting;
-                self.settle_brightness(None);
+                self.brightness = Brightness::Detected;
+                let primary = self.primary_output.clone();
+                self.settle_brightness(primary.as_deref());
             }
         }
     }
@@ -843,11 +849,17 @@ impl State {
     /// Add the brightness slider for the primary screen (`primary`: its
     /// output, when known), once.
     fn settle_brightness(&mut self, primary: Option<&str>) {
-        if self.brightness != Brightness::Waiting {
+        if !matches!(self.brightness, Brightness::Waiting | Brightness::Detected) {
             return;
         }
+        if primary.is_some() {
+            self.primary_output = primary.map(str::to_owned);
+        }
         let screens = &self.content.screens;
-        if screens.needs_detection(primary) && shutil_has("ddcutil") {
+        if self.brightness == Brightness::Waiting
+            && screens.needs_detection(primary)
+            && shutil_has("ddcutil")
+        {
             // not in the daemon's cache: look, once (slow)
             self.brightness = Brightness::Detecting;
             system::detect_ddc(

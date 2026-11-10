@@ -32,7 +32,12 @@ pub enum SliderKind {
 pub const STEP: f32 = 0.05;
 /// How often a slider's changes reach the system, at most: each one runs a
 /// program, and the backlight or the sound server do some work.
-const APPLY_EVERY: Duration = Duration::from_millis(50);
+const VOLUME_SPACING: Duration = Duration::from_millis(50);
+const BACKLIGHT_SPACING: Duration = Duration::from_millis(150);
+/// A refused change is tried again this much later, this many times (unless
+/// a newer one comes).
+const RETRY_AFTER: Duration = Duration::from_millis(200);
+const RETRIES: u32 = 3;
 /// How long closing waits for the last change to be applied.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -58,10 +63,25 @@ impl Control {
         }
     }
 
-    fn set(&mut self, value: f32) {
+    /// Apply a value; false when it was refused for now.
+    fn set(&mut self, value: f32) -> bool {
         match self {
             Self::Brightness(screen) => screen.set(value),
-            Self::Volume(mixer) => mixer.set(value),
+            Self::Volume(mixer) => {
+                mixer.set(value);
+                true
+            }
+        }
+    }
+
+    /// How far apart its changes go, at least: a backlight's driver has
+    /// work to do on each one (and NVIDIA's refuses one too close to the
+    /// last); a monitor over DDC/CI is slow enough by itself.
+    fn spacing(&self) -> Duration {
+        match self {
+            Self::Brightness(screen) if screen.is_ddc() => Duration::ZERO,
+            Self::Brightness(_) => BACKLIGHT_SPACING,
+            Self::Volume(_) => VOLUME_SPACING,
         }
     }
 }
@@ -177,21 +197,28 @@ impl Setter {
                                 .unwrap_or_else(PoisonError::into_inner);
                         }
                     };
-                    // at most one change every APPLY_EVERY (a drag asks for
-                    // dozens a second): the latest one, after waiting
-                    let wait = last.map_or(Duration::ZERO, |last| {
-                        APPLY_EVERY.saturating_sub(last.elapsed())
+                    // changes spaced (a drag asks for dozens a second): the
+                    // latest one, after waiting; a refused one again later
+                    let spacing = control.spacing();
+                    let newer = || {
+                        lock.lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .value
+                            .take()
+                    };
+                    let wait = last.map_or(Duration::ZERO, |last: Instant| {
+                        spacing.saturating_sub(last.elapsed())
                     });
                     if !wait.is_zero() {
                         std::thread::sleep(wait);
-                        let newer = lock
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .value
-                            .take();
-                        value = newer.unwrap_or(value);
+                        value = newer().unwrap_or(value);
                     }
-                    control.set(value);
+                    let mut tries = 0;
+                    while !control.set(value) && tries < RETRIES {
+                        tries += 1;
+                        std::thread::sleep(RETRY_AFTER);
+                        value = newer().unwrap_or(value);
+                    }
                     last = Some(Instant::now());
                     let mut pending = lock.lock().unwrap_or_else(PoisonError::into_inner);
                     pending.busy = false;

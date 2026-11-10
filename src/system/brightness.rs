@@ -13,7 +13,12 @@
 //!
 //! A built-in panel (eDP, LVDS, DSI) uses the backlight: written in sysfs
 //! when allowed, else through logind (`SetBrightness`, allowed to the active
-//! session), else `brightnessctl`; whichever works first is kept. An external
+//! session), else `brightnessctl`; whichever works first is kept, and a
+//! failure later is the driver's (NVIDIA's `nvidia_0` refuses a change while
+//! it is still fading to the last one, `EPROTO`): retried, never another way.
+//! Each change costs the driver some work (NVIDIA's stalls the display a
+//! little), so the same value is never written twice and changes are spaced
+//! (`Control::spacing`). An external
 //! monitor uses `ddcutil` on its I2C bus (`--bus`: no detection on each
 //! change, which is what made it slow), and its last value is kept in the
 //! cache, so the slider shows at once and is read again behind it.
@@ -97,6 +102,8 @@ pub enum Screen {
         name: String,
         max: u32,
         method: Method,
+        /// The value last written.
+        written: Option<u32>,
     },
     /// A monitor reached by `ddcutil`.
     Ddc { monitor: DdcMonitor, cache: PathBuf },
@@ -196,6 +203,7 @@ impl Screens {
                 name,
                 max,
                 method: Method::Unknown,
+                written: None,
             });
         }
         let monitor = self
@@ -238,26 +246,41 @@ impl Screen {
         matches!(self, Self::Ddc { .. })
     }
 
-    pub fn set(&mut self, value: f32) {
+    /// Set the brightness; false when the driver or the monitor refused
+    /// (worth trying again a moment later).
+    pub fn set(&mut self, value: f32) -> bool {
         let value = value.clamp(0.0, 1.0);
         match self {
-            Self::Backlight { name, max, method } => {
+            Self::Backlight {
+                name,
+                max,
+                method,
+                written,
+            } => {
                 let fraction = MIN_BACKLIGHT + value * (1.0 - MIN_BACKLIGHT);
                 let raw = ((fraction * *max as f32).round() as u32).clamp(1, *max);
-                set_backlight(name, raw, method);
+                if *written == Some(raw) {
+                    return true;
+                }
+                let done = set_backlight(name, raw, method);
+                if done {
+                    *written = Some(raw);
+                }
+                done
             }
             Self::Ddc { monitor, cache } => {
                 let raw = (value * monitor.max as f32).round() as u32;
+                if raw == monitor.value {
+                    return true;
+                }
                 let raw_text = raw.to_string();
-                if ddcutil(monitor.bus, &["setvcp", "10", &raw_text, "--noverify"]).is_some() {
+                let done =
+                    ddcutil(monitor.bus, &["setvcp", "10", &raw_text, "--noverify"]).is_some();
+                if done {
                     monitor.value = raw;
                     remember(cache, monitor);
-                } else {
-                    log::warn!(
-                        "DDC/CI: cannot set the brightness on /dev/i2c-{}",
-                        monitor.bus
-                    );
                 }
+                done
             }
         }
     }
@@ -268,7 +291,7 @@ fn fraction(value: u32, max: u32) -> f32 {
 }
 
 /// Set a backlight the first way that works, and keep it.
-fn set_backlight(name: &str, raw: u32, method: &mut Method) {
+fn set_backlight(name: &str, raw: u32, method: &mut Method) -> bool {
     let raw_text = raw.to_string();
     let sysfs = || {
         fs::OpenOptions::new()
@@ -299,19 +322,23 @@ fn set_backlight(name: &str, raw: u32, method: &mut Method) {
         (Method::Logind, &logind),
         (Method::Brightnessctl, &brightnessctl),
     ];
-    if let Some((_, works)) = ways.iter().find(|(way, _)| way == method)
-        && works()
-    {
-        return;
+    // a way that worked once is the way: a failure now is the driver's
+    if let Some((_, works)) = ways.iter().find(|(way, _)| way == method) {
+        let done = works();
+        if !done {
+            log::debug!("backlight {name}: {raw} refused (the driver is busy?)");
+        }
+        return done;
     }
     for (way, works) in ways {
-        if way != *method && works() {
+        if works() {
             log::info!("backlight {name}: set through {way:?}");
             *method = way;
-            return;
+            return true;
         }
     }
     log::warn!("backlight {name}: cannot be set");
+    false
 }
 
 /// The connectors that are on: `card1-eDP-1`.
