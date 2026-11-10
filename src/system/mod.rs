@@ -33,7 +33,11 @@ pub const STEP: f32 = 0.05;
 /// How often a slider's changes reach the system, at most: each one runs a
 /// program, and the backlight or the sound server do some work.
 const VOLUME_SPACING: Duration = Duration::from_millis(50);
-const BACKLIGHT_SPACING: Duration = Duration::from_millis(150);
+const BACKLIGHT_SPACING: Duration = Duration::from_millis(400);
+/// A backlight waits for the slider to stop this long before it changes
+/// (each change stalls NVIDIA's display a little: a slide is one change,
+/// or one every `BACKLIGHT_SPACING` while it goes on).
+const BACKLIGHT_SETTLE: Duration = Duration::from_millis(120);
 /// A refused change is tried again this much later, this many times (unless
 /// a newer one comes).
 const RETRY_AFTER: Duration = Duration::from_millis(200);
@@ -82,6 +86,15 @@ impl Control {
             Self::Brightness(screen) if screen.is_ddc() => Duration::ZERO,
             Self::Brightness(_) => BACKLIGHT_SPACING,
             Self::Volume(_) => VOLUME_SPACING,
+        }
+    }
+
+    /// How long the slider has to stay still before a change goes (see
+    /// `BACKLIGHT_SETTLE`), within `spacing`.
+    fn settle(&self) -> Duration {
+        match self {
+            Self::Brightness(screen) if !screen.is_ddc() => BACKLIGHT_SETTLE,
+            _ => Duration::ZERO,
         }
     }
 }
@@ -212,6 +225,22 @@ impl Setter {
                     if !wait.is_zero() {
                         std::thread::sleep(wait);
                         value = newer().unwrap_or(value);
+                    }
+                    // still moving: wait for it to stop, but not past the spacing
+                    let settle = control.settle();
+                    if !settle.is_zero() {
+                        let since = last.unwrap_or_else(Instant::now);
+                        loop {
+                            std::thread::sleep(settle);
+                            match newer() {
+                                Some(moved) if since.elapsed() < spacing => value = moved,
+                                Some(moved) => {
+                                    value = moved;
+                                    break;
+                                }
+                                None => break,
+                            }
+                        }
                     }
                     let mut tries = 0;
                     while !control.set(value) && tries < RETRIES {
