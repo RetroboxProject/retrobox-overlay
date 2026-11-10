@@ -12,6 +12,10 @@ menu-reset = Uruchom ponownie
 menu-emulator-menu = Menu emulatora
 menu-screenshot = Zrzut ekranu
 menu-quit = Wyjdź z gry
+# the system menu (sliders and sleep, in every context; sleep outside games)
+menu-standby = Tryb uśpienia
+menu-brightness = Jasność
+menu-volume = Głośność
 # save state slots; the date is a strftime format (chrono)
 slot-label = Slot { $number }
 slot-empty = Pusty
@@ -20,6 +24,9 @@ slot-date-format = %-d %b %Y · %H:%M
 clock-date-format = %A, %-d %B %Y
 clock-time-format = %H:%M:%S
 clock-time-format-12h = %I:%M:%S %p
+# the small clock, in the status line (clock size = small)
+clock-small-format = %H:%M
+clock-small-format-12h = %-I:%M %p
 # the disc line under the game's name (games of several discs)
 disc-status = Płyta { $current } z { $count }
 disc-tray-open = tacka otwarta
@@ -29,6 +36,7 @@ help-choose = PRZEJDŹ
 help-select = WYBIERZ
 help-back = WSTECZ
 help-close = ZAMKNIJ
+help-adjust = DOSTOSUJ
 help-zoom = ZOOM
 help-zoom-in = POWIĘKSZENIE
 help-zoom-out = POMNIEJSZENIE

@@ -6,7 +6,9 @@
 //!   (its buffer is drawn once, not on every frame); it takes the keyboard
 //!   while the overlay is open, and the overlay goes away as soon as another
 //!   window takes it (Alt+Tab, a click elsewhere), like Steam's;
-//! * the clock, in a corner on the other side, redrawn once a second;
+//! * the clock, in a corner on the other side, redrawn once a second (or
+//!   the small one, in the panel's status line, with the network and the
+//!   battery, read again once a second);
 //! * the manual, when opened: a page over the whole screen (see
 //!   `manual_view.rs`);
 //! * the help prompts, at the bottom like EmulationStation's, inside the dim.
@@ -29,6 +31,7 @@ use anyhow::{Context as _, Result, anyhow};
 use chrono::{Local, Timelike};
 use smithay_client_toolkit::compositor::CompositorHandler;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
+use smithay_client_toolkit::reexports::calloop::channel::{self, Channel};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::signals::{Signal, Signals};
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
@@ -67,10 +70,12 @@ use crate::i18n::Translator;
 use crate::input::{self, Input, Nav, Pad};
 use crate::manual::Manual;
 use crate::savestates::StateMode;
+use crate::system::status::Status;
+use crate::system::{Found, STEP, Setter, SliderKind};
 use crate::theme::MenuTheme;
 use crate::ui::clock::Clock;
 use crate::ui::help::{Help, Prompt};
-use crate::ui::panel::{MenuAction, MenuItem, Panel};
+use crate::ui::panel::{MenuAction, MenuItem, Panel, StatusBar};
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
 
@@ -87,6 +92,16 @@ const REPEAT_DELAY: Duration = Duration::from_millis(400);
 const REPEAT_INTERVAL: Duration = Duration::from_millis(70);
 /// Space between the clock and the screen edge when it is at the top or bottom.
 const CLOCK_MARGIN: f32 = crate::ui::clock::MARGIN;
+/// How often the status line (time, network, battery) is read again.
+const STATUS_EVERY: Duration = Duration::from_secs(1);
+
+/// A slider's label.
+fn slider_label(translator: &Translator, kind: SliderKind) -> String {
+    translator.text(match kind {
+        SliderKind::Brightness => "menu-brightness",
+        SliderKind::Volume => "menu-volume",
+    })
+}
 
 /// How the overlay was left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +112,8 @@ pub enum Outcome {
     /// An emulator action, done once the overlay is gone.
     Request(Request),
     Quit,
+    /// Put the computer to sleep, once the overlay is gone.
+    Standby,
 }
 
 /// Everything the overlay shows, prepared before it connects to the display.
@@ -119,6 +136,13 @@ pub struct Content {
     pub translator: Translator,
     /// When the process started, to log how long the menu took to show.
     pub launched: Instant,
+    /// The small clock's format, when the clock is the small one (in the
+    /// status line) rather than the big one.
+    pub small_clock: Option<String>,
+    /// Whether the battery's percentage shows in the status line.
+    pub battery_percent: bool,
+    /// The sliders' controls, as they are found and read (in a thread).
+    pub controls: Option<Channel<Found>>,
 }
 
 struct State {
@@ -140,6 +164,12 @@ struct State {
     repeat: Option<(Nav, RegistrationToken)>,
     started: Option<Instant>,
     outcome: Option<Outcome>,
+    /// What applies each slider's changes.
+    setters: Vec<Setter>,
+    /// Sliders found before the panel was there.
+    found: Vec<(SliderKind, f32)>,
+    /// The slider being dragged with the mouse.
+    dragging: Option<usize>,
 }
 
 /// A pointer event, whichever the display.
@@ -164,7 +194,7 @@ enum PointerKind {
 /// Show the overlay until the user leaves it: on Wayland with layer-shell,
 /// else on X11 (an X11 session, or `XWayland` where the compositor has no
 /// layer-shell).
-pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
+pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
     let mut event_loop: EventLoop<'static, State> =
         EventLoop::try_new().context("cannot create the event loop")?;
     let handle = event_loop.handle();
@@ -188,6 +218,15 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
         .map_err(|err| anyhow!("cannot watch signals: {}", err.error))?;
 
     watch_controllers(&handle, &content.pads)?;
+    if let Some(controls) = content.controls.take() {
+        handle
+            .insert_source(controls, |event, &mut (), state| {
+                if let channel::Event::Msg(found) = event {
+                    state.slider_found(found);
+                }
+            })
+            .map_err(|err| anyhow!("cannot watch the sliders: {}", err.error))?;
+    }
 
     // the dim comes first: its size is the screen's, which the rest is sized from
     let dim = display.create_piece(Spec {
@@ -214,6 +253,9 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
         repeat: None,
         started: None,
         outcome: None,
+        setters: Vec::new(),
+        found: Vec::new(),
+        dragging: None,
     };
 
     while state.outcome.is_none() {
@@ -228,7 +270,9 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
     // that closed it is up (see input.rs).
     let mut pads = std::mem::take(&mut state.content.pads);
     let emulator = std::mem::replace(&mut state.content.emulator, Emulator::none());
-    let State { display, .. } = state;
+    let State {
+        display, setters, ..
+    } = state;
     if let Display::X11(x11) = &display {
         x11.restore_focus();
     }
@@ -236,7 +280,7 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator)> {
     drop(display);
     input::wait_released(&mut pads);
     drop(pads);
-    Ok((outcome, emulator))
+    Ok((outcome, emulator, setters))
 }
 
 /// The Wayland compositor, if it has what the overlay needs.
@@ -368,6 +412,10 @@ impl State {
             std::mem::take(&mut self.content.items),
         );
         panel.set_icons(config.icons);
+        panel.set_status_bar(self.status_bar());
+        for (kind, value) in std::mem::take(&mut self.found) {
+            panel.set_slider(kind, &slider_label(&self.content.translator, kind), value);
+        }
         let (edge, other) = match config.side {
             Side::Right => (Anchor::RIGHT, Anchor::LEFT),
             Side::Left => (Anchor::LEFT, Anchor::RIGHT),
@@ -383,7 +431,7 @@ impl State {
         });
         self.panel = Some((panel, piece));
 
-        if config.clock.enabled {
+        if config.clock.enabled && self.content.small_clock.is_none() {
             let free =
                 width.saturating_sub(self.panel.as_ref().map_or(0, |(panel, _)| panel.width));
             let clock = Clock::new(
@@ -418,6 +466,7 @@ impl State {
         self.help = Some(Help::new(&self.content.theme, (width, height)));
         self.menu_help = Sub::new(&mut self.display, &self.dim, false, true);
         self.draw_menu_help();
+        self.schedule_status();
 
         self.started = Some(Instant::now());
         self.handle
@@ -519,11 +568,13 @@ impl State {
         } else {
             "help-close"
         };
-        let prompts = [
-            prompt("up/down", "help-choose"),
-            prompt(help.ok(), "help-select"),
-            prompt(help.back(), back),
-        ];
+        let mut prompts = vec![prompt("up/down", "help-choose")];
+        if panel.slider_selected() {
+            prompts.push(prompt("left/right", "help-adjust"));
+        } else {
+            prompts.push(prompt(help.ok(), "help-select"));
+        }
+        prompts.push(prompt(help.back(), back));
         let screen_width = self.dim.size.0 as f32;
         let free = screen_width - panel.width as f32 - help.left() * 2.0;
         match help.render(&mut self.content.fonts, &prompts, free, None) {
@@ -590,6 +641,72 @@ impl State {
         }
     }
 
+    /// The status line as it is now.
+    fn status_bar(&self) -> StatusBar {
+        let time = self
+            .content
+            .small_clock
+            .as_ref()
+            .filter(|_| self.content.config.clock.enabled)
+            .map(|format| {
+                Local::now()
+                    .format_localized(format, self.content.locale)
+                    .to_string()
+            });
+        StatusBar {
+            time,
+            status: Status::read(),
+            battery_percent: self.content.battery_percent,
+        }
+    }
+
+    /// Read the status line again every second (the time, the network, the
+    /// battery), drawing the panel when something changed.
+    fn schedule_status(&mut self) {
+        self.handle
+            .insert_source(Timer::from_duration(STATUS_EVERY), |_, &mut (), state| {
+                let bar = state.status_bar();
+                let changed = state
+                    .panel
+                    .as_mut()
+                    .is_some_and(|(panel, _)| panel.set_status_bar(bar));
+                if changed {
+                    state.draw_panel();
+                }
+                TimeoutAction::ToDuration(STATUS_EVERY)
+            })
+            .ok();
+    }
+
+    /// A slider's control was found and read: add it to the menu.
+    fn slider_found(&mut self, found: Found) {
+        let Found {
+            kind,
+            value,
+            setter,
+        } = found;
+        self.setters.push(setter);
+        match self.panel.as_mut() {
+            Some((panel, _)) => {
+                panel.set_slider(kind, &slider_label(&self.content.translator, kind), value);
+                self.draw_panel();
+                self.draw_menu_help();
+            }
+            None => self.found.push((kind, value)),
+        }
+    }
+
+    /// A slider moved: show it and apply it.
+    fn slid(&mut self, change: Option<(SliderKind, f32)>) {
+        let Some((kind, value)) = change else {
+            return;
+        };
+        self.draw_panel();
+        if let Some(setter) = self.setters.iter().find(|setter| setter.kind() == kind) {
+            setter.set(value);
+        }
+    }
+
     /// Do what an entry asks.
     fn choose(&mut self, index: usize) {
         let action = self
@@ -601,7 +718,8 @@ impl State {
 
     fn activate(&mut self, action: Option<MenuAction>) {
         self.outcome = match action {
-            None => return, // e.g. an empty slot to load
+            // e.g. an empty slot to load; Left/Right or the mouse change a slider
+            None | Some(MenuAction::Slider(_)) => return,
             Some(MenuAction::States(mode)) => {
                 self.open_states(mode);
                 return;
@@ -612,6 +730,7 @@ impl State {
             }
             Some(MenuAction::Continue) => Some(Outcome::Back),
             Some(MenuAction::Quit) => Some(Outcome::Quit),
+            Some(MenuAction::Standby) => Some(Outcome::Standby),
             // disc changes are done with the menu open, which shows the result
             Some(MenuAction::Emulator(action)) if self.content.emulator.in_place(action) => {
                 if self.content.emulator.perform_now(action) {
@@ -706,7 +825,16 @@ impl State {
                     .is_some_and(|(panel, _)| panel.move_selection(delta));
                 if moved {
                     self.draw_panel();
+                    self.draw_menu_help();
                 }
+            }
+            Nav::Left | Nav::Right => {
+                let delta = if nav == Nav::Left { -STEP } else { STEP };
+                let change = self
+                    .panel
+                    .as_mut()
+                    .and_then(|(panel, _)| panel.adjust(delta));
+                self.slid(change);
             }
             Nav::Confirm => {
                 let action = self
@@ -718,8 +846,7 @@ impl State {
             Nav::Back => self.back(),
             // the shortcut that opened the overlay, again: back to the game
             Nav::Close => self.outcome = Some(Outcome::Back),
-            Nav::Left | Nav::Right | Nav::ZoomIn | Nav::ZoomOut | Nav::PrevPage | Nav::NextPage => {
-            }
+            Nav::ZoomIn | Nav::ZoomOut | Nav::PrevPage | Nav::NextPage => {}
         }
     }
 }
@@ -780,7 +907,9 @@ impl State {
     /// Held keys repeat in the menu; the manual follows them being held.
     fn key_repeat(&mut self, nav: Nav) {
         match nav {
-            Nav::Up | Nav::Down if !self.manual_is_open() => self.navigate(nav),
+            Nav::Up | Nav::Down | Nav::Left | Nav::Right if !self.manual_is_open() => {
+                self.navigate(nav);
+            }
             // turning pages; a zoomed page follows the key being held instead
             Nav::Up | Nav::Down | Nav::Left | Nav::Right | Nav::PrevPage | Nav::NextPage
                 if self.manual_is_open() =>
@@ -813,10 +942,50 @@ impl State {
         } else {
             None
         };
+        let x = event.position.0 as f32;
+        if let Some(index) = self.dragging {
+            match event.kind {
+                PointerKind::Motion if on_panel => {
+                    let change = self
+                        .panel
+                        .as_mut()
+                        .and_then(|(panel, _)| panel.slide_to(index, x, true));
+                    self.slid(change);
+                    return;
+                }
+                PointerKind::Release(BTN_LEFT) | PointerKind::Leave => {
+                    self.dragging = None;
+                    return;
+                }
+                _ => {}
+            }
+        }
         match event.kind {
             PointerKind::Enter | PointerKind::Motion => self.hover(item),
             PointerKind::Leave => self.hover(None),
             PointerKind::Press(button) => match (button, item) {
+                // on a slider's track: it follows the pointer while held
+                (BTN_LEFT, Some(index))
+                    if self.panel.as_ref().is_some_and(|(panel, _)| {
+                        panel
+                            .action(index)
+                            .is_some_and(|action| matches!(action, MenuAction::Slider(_)))
+                    }) =>
+                {
+                    let change = self
+                        .panel
+                        .as_mut()
+                        .and_then(|(panel, _)| panel.slide_to(index, x, false));
+                    if change.is_some() {
+                        self.dragging = Some(index);
+                        self.slid(change);
+                    } else if let Some((panel, _)) = self.panel.as_mut() {
+                        // on its label: selected
+                        panel.select(index);
+                        self.draw_panel();
+                    }
+                    self.draw_menu_help();
+                }
                 (BTN_LEFT, Some(index)) => self.choose(index),
                 (BTN_LEFT, None) if !on_panel => self.navigate(Nav::Back),
                 (BTN_RIGHT, _) => self.navigate(Nav::Back),

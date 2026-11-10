@@ -12,6 +12,10 @@ menu-reset = Reiniciar
 menu-emulator-menu = Menú del emulador
 menu-screenshot = Captura de pantalla
 menu-quit = Salir del juego
+# the system menu (sliders and sleep, in every context; sleep outside games)
+menu-standby = Modo de espera
+menu-brightness = Brillo
+menu-volume = Volumen
 # save state slots; the date is a strftime format (chrono)
 slot-label = Ranura { $number }
 slot-empty = Vacía
@@ -20,6 +24,9 @@ slot-date-format = %-d %b %Y · %H:%M
 clock-date-format = %A, %-d de %B de %Y
 clock-time-format = %H:%M:%S
 clock-time-format-12h = %I:%M:%S %p
+# the small clock, in the status line (clock size = small)
+clock-small-format = %H:%M
+clock-small-format-12h = %-I:%M %p
 # the disc line under the game's name (games of several discs)
 disc-status = Disco { $current } de { $count }
 disc-tray-open = bandeja abierta
@@ -29,6 +36,7 @@ help-choose = ELEGIR
 help-select = SELECCIONAR
 help-back = VOLVER
 help-close = CERRAR
+help-adjust = AJUSTAR
 help-zoom = ZOOM
 help-zoom-in = ACERCAR
 help-zoom-out = ALEJAR

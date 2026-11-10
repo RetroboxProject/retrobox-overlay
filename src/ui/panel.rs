@@ -7,17 +7,25 @@
 //! padding (`TITLE_VERT_PADDING` and friends in `MenuComponent.h`); a row is
 //! one line of the menu font. Font sizes are the theme's, scaled from ES's
 //! screen to this one.
+//!
+//! Above the header, a status line like the Switch's: the time (when the
+//! clock is the small one), the network and the battery. Sliders (the
+//! brightness, the volume) are rows like ES's option rows: the label on the
+//! left, the slider and its value on the right. The entries scroll when they
+//! do not all fit.
 
 use cosmic_text::Align;
 use tiny_skia::{
-    Color, FilterQuality, GradientStop, LinearGradient, Paint, Pixmap, PixmapPaint, Point, Rect,
-    Shader, SpreadMode, Transform,
+    Color, FilterQuality, GradientStop, LinearGradient, Paint, PathBuilder, Pixmap, PixmapPaint,
+    Point, Rect, Shader, SpreadMode, Transform,
 };
 
 use super::icons::Icon;
 use super::text::{FontRef, Fonts, TextBox};
 use crate::emulator::EmuAction;
 use crate::savestates::{SLOTS, StateMode};
+use crate::system::SliderKind;
+use crate::system::status::Status;
 use crate::theme::{FontSpec, MenuTheme, Rgba, TextStyle};
 
 // MenuComponent.h / Font.h, as fractions of the screen height
@@ -44,6 +52,10 @@ pub enum MenuAction {
     /// Read the game's manual.
     Manual,
     Quit,
+    /// Put the computer to sleep.
+    Standby,
+    /// A slider: Left/Right (or the mouse) change it.
+    Slider(SliderKind),
 }
 
 /// One save state slot on its page.
@@ -79,7 +91,45 @@ pub struct MenuItem {
     pub action: MenuAction,
     /// Entries that can do nothing right now are shown dimmed.
     pub enabled: bool,
+    /// A slider's value, 0 to 1.
+    pub value: Option<f32>,
 }
+
+impl MenuItem {
+    pub const fn new(label: String, action: MenuAction) -> Self {
+        Self {
+            label,
+            action,
+            enabled: true,
+            value: None,
+        }
+    }
+}
+
+/// The status line above the header.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StatusBar {
+    /// The time, when the clock is the small one.
+    pub time: Option<String>,
+    pub status: Status,
+    /// Whether the battery's percentage shows next to its icon.
+    pub battery_percent: bool,
+}
+
+impl StatusBar {
+    fn is_empty(&self) -> bool {
+        self.time.is_none() && self.status.network.is_none() && self.status.battery.is_none()
+    }
+}
+
+/// Where a slider row's parts go, as fractions of the panel's inner width:
+/// the label before `TRACK_START`, the track up to `TRACK_END`, the value
+/// after `VALUE_START`.
+const TRACK_START: f32 = 0.46;
+const TRACK_END: f32 = 0.84;
+const VALUE_START: f32 = 0.87;
+/// Opacity of the part of a slider's track past its value.
+const TRACK_ALPHA: u8 = 0x50;
 
 /// A text element of the theme at this screen's size.
 #[derive(Debug, Clone)]
@@ -139,6 +189,10 @@ pub struct Panel {
     main_selected: usize,
     /// The first slot shown: the page scrolls when not all of them fit.
     first_slot: usize,
+    /// The first main entry shown: they scroll too.
+    first_item: usize,
+    /// The status line above the header.
+    status_bar: StatusBar,
     /// Whether the main entries show their icons.
     icons: bool,
     /// A line about the game's state under the header (the disc in the
@@ -184,6 +238,8 @@ impl Panel {
             page: None,
             main_selected: 0,
             first_slot: 0,
+            first_item: 0,
+            status_bar: StatusBar::default(),
             icons: true,
             status: None,
             background: theme.background.center_color,
@@ -196,6 +252,112 @@ impl Panel {
     /// The line under the header (None: none).
     pub fn set_status(&mut self, status: Option<String>) {
         self.status = status;
+    }
+
+    /// The status line above the header; true when it changed.
+    pub fn set_status_bar(&mut self, bar: StatusBar) -> bool {
+        let changed = bar != self.status_bar;
+        self.status_bar = bar;
+        changed
+    }
+
+    /// Set a slider, adding it (sliders go last, brightness first) when the
+    /// menu does not have it yet.
+    pub fn set_slider(&mut self, kind: SliderKind, label: &str, value: f32) {
+        let action = MenuAction::Slider(kind);
+        if let Some(item) = self.items.iter_mut().find(|item| item.action == action) {
+            item.value = Some(value.clamp(0.0, 1.0));
+            return;
+        }
+        let position = self
+            .items
+            .iter()
+            .position(|item| {
+                matches!(item.action, MenuAction::Slider(other) if slider_order(other) > slider_order(kind))
+            })
+            .unwrap_or(self.items.len());
+        let mut item = MenuItem::new(label.to_owned(), action);
+        item.value = Some(value.clamp(0.0, 1.0));
+        let had_items = !self.items.is_empty();
+        self.items.insert(position, item);
+        // the same entry stays selected
+        let selected = if self.page.is_some() {
+            &mut self.main_selected
+        } else {
+            &mut self.selected
+        };
+        if had_items && position <= *selected {
+            *selected += 1;
+        }
+        self.scroll_to_selection();
+    }
+
+    /// Move the selected slider by `delta`: what changed, if it is a slider.
+    pub fn adjust(&mut self, delta: f32) -> Option<(SliderKind, f32)> {
+        self.set_selected_value(|value| value + delta)
+    }
+
+    /// Set a slider from the pointer at `x` (surface coordinates): what
+    /// changed, if `index` is a slider and `x` is on its track (or `force`,
+    /// while dragging).
+    pub fn slide_to(&mut self, index: usize, x: f32, force: bool) -> Option<(SliderKind, f32)> {
+        let (start, end) = self.track();
+        let slack = (end - start) * 0.05;
+        if !force && (x < start - slack || x > end + slack) {
+            return None;
+        }
+        if self.page.is_some() || self.items.get(index)?.value.is_none() {
+            return None;
+        }
+        self.selected = index;
+        let value = (x - start) / (end - start);
+        self.set_selected_value(|_| value)
+    }
+
+    fn set_selected_value(&mut self, change: impl Fn(f32) -> f32) -> Option<(SliderKind, f32)> {
+        if self.page.is_some() {
+            return None;
+        }
+        let item = self.items.get_mut(self.selected)?;
+        let (MenuAction::Slider(kind), Some(value), true) = (item.action, item.value, item.enabled)
+        else {
+            return None;
+        };
+        // whole percents, as shown
+        let new = (change(value).clamp(0.0, 1.0) * 100.0).round() / 100.0;
+        if (new - value).abs() < f32::EPSILON {
+            return None;
+        }
+        item.value = Some(new);
+        Some((kind, new))
+    }
+
+    /// Select an entry of the current page.
+    pub fn select(&mut self, index: usize) {
+        if index < self.count() {
+            self.selected = index;
+            self.scroll_to_selection();
+        }
+    }
+
+    /// Whether the selected entry is a slider.
+    pub fn slider_selected(&self) -> bool {
+        self.page.is_none()
+            && self
+                .items
+                .get(self.selected)
+                .is_some_and(|item| item.value.is_some())
+    }
+
+    /// The horizontal span of the sliders' tracks.
+    fn track(&self) -> (f32, f32) {
+        let padding = self.padding();
+        let inner = self.width as f32 - 2.0 * padding;
+        (padding + inner * TRACK_START, padding + inner * TRACK_END)
+    }
+
+    fn padding(&self) -> f32 {
+        (self.width as f32 * 0.04).max(20.0)
     }
 
     /// Change the label of an entry and whether it can be chosen.
@@ -260,15 +422,32 @@ impl Panel {
 
     /// Scroll the slots so that the selected one is shown.
     fn scroll_to_selection(&mut self) {
-        if self.page.is_none() {
-            return;
+        let visible = if self.page.is_some() {
+            self.visible_slots()
+        } else {
+            self.visible_items()
+        };
+        let first = if self.page.is_some() {
+            &mut self.first_slot
+        } else {
+            &mut self.first_item
+        };
+        if self.selected < *first {
+            *first = self.selected;
+        } else if self.selected >= *first + visible {
+            *first = self.selected + 1 - visible;
         }
-        let visible = self.visible_slots();
-        if self.selected < self.first_slot {
-            self.first_slot = self.selected;
-        } else if self.selected >= self.first_slot + visible {
-            self.first_slot = self.selected + 1 - visible;
-        }
+    }
+
+    /// The height of a main entry, with its separator.
+    fn item_pitch(&self) -> f32 {
+        self.text.font.line_height + self.line()
+    }
+
+    /// How many main entries fit under the header.
+    fn visible_items(&self) -> usize {
+        let free = self.screen_height - self.header_height();
+        ((free / self.item_pitch()).floor() as usize).max(1)
     }
 
     /// Highlight the entry under the pointer (None: none); true when it changed.
@@ -302,20 +481,16 @@ impl Panel {
         if y < top {
             return None;
         }
-        let pitch = if self.page.is_some() {
-            self.slot_height()
+        let (pitch, visible, first) = if self.page.is_some() {
+            (self.slot_height(), self.visible_slots(), self.first_slot)
         } else {
-            self.text.font.line_height + self.line()
+            (self.item_pitch(), self.visible_items(), self.first_item)
         };
         let row = ((y - top) / pitch) as usize;
-        let index = if self.page.is_some() {
-            if row >= self.visible_slots() {
-                return None;
-            }
-            self.first_slot + row
-        } else {
-            row
-        };
+        if row >= visible {
+            return None;
+        }
+        let index = first + row;
         (index < self.count()).then_some(index)
     }
 
@@ -362,7 +537,21 @@ impl Panel {
         usize::from(!self.header_texts().1.is_empty()) + usize::from(self.status_line().is_some())
     }
 
+    /// The status line's height (0: nothing to show).
+    fn status_bar_height(&self) -> f32 {
+        if self.status_bar.is_empty() {
+            0.0
+        } else {
+            self.small.font.line_height + self.screen_height * SUBTITLE_VERT_PADDING
+        }
+    }
+
     fn header_height(&self) -> f32 {
+        self.status_bar_height() + self.title_height()
+    }
+
+    /// The header without the status line.
+    fn title_height(&self) -> f32 {
         let h = self.screen_height;
         match self.header_lines() {
             0 => self.title_element.letter_height + h * TITLE_VERT_PADDING,
@@ -381,9 +570,13 @@ impl Panel {
         let width = self.width as f32;
         pixmap.fill(self.background.to_color());
 
-        let padding = (width * 0.04).max(20.0);
+        let padding = self.padding();
         let header = self.header_height();
-        self.draw_header(&mut pixmap, fonts, padding, header);
+        let bar = self.status_bar_height();
+        if bar > 0.0 {
+            self.draw_status_bar(&mut pixmap, fonts, padding, bar);
+        }
+        self.draw_header(&mut pixmap, fonts, padding, (bar, header - bar));
         fill(
             &mut pixmap,
             0.0,
@@ -399,8 +592,70 @@ impl Panel {
         Some(pixmap)
     }
 
-    /// The header: its title, fitted to the width, and the smaller lines.
-    fn draw_header(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, padding: f32, header: f32) {
+    /// The status line: the time, then the network's and the battery's
+    /// icons (and the battery's percentage), aligned to the right.
+    fn draw_status_bar(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, padding: f32, height: f32) {
+        let color = self.small.style.color;
+        let font = &self.small.font;
+        let row = font.line_height;
+        let top = height - row;
+        let icon_size = (self.small.letter_height * ICON_SCALE).round().max(1.0);
+        let gap = icon_size * 0.6;
+        let bar = &self.status_bar;
+        // right to left
+        let mut right = self.width as f32 - padding;
+        let text = |pixmap: &mut Pixmap, fonts: &mut Fonts, right: &mut f32, text: &str| {
+            let width = fonts.measure(font, text) + 1.0;
+            *right -= width;
+            fonts.draw(
+                pixmap,
+                font,
+                text,
+                TextBox {
+                    x: *right,
+                    y: top,
+                    width,
+                    height: row,
+                    align: Align::Right,
+                },
+                color,
+            );
+        };
+        if let Some(battery) = bar.status.battery {
+            if bar.battery_percent {
+                text(pixmap, fonts, &mut right, &format!("{}%", battery.percent));
+                right -= icon_size * 0.25;
+            }
+            right -= icon_size;
+            draw_icon(
+                pixmap,
+                Icon::battery(battery),
+                icon_size,
+                (right, top + (row - icon_size) / 2.0),
+                color,
+            );
+            right -= gap;
+        }
+        if let Some(network) = bar.status.network {
+            right -= icon_size;
+            draw_icon(
+                pixmap,
+                Icon::network(network),
+                icon_size,
+                (right, top + (row - icon_size) / 2.0),
+                color,
+            );
+            right -= gap;
+        }
+        if let Some(time) = &bar.time {
+            text(pixmap, fonts, &mut right, time);
+        }
+    }
+
+    /// The header: its title, fitted to the width, and the smaller lines,
+    /// from `top`, `header` high.
+    fn draw_header(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, padding: f32, at: (f32, f32)) {
+        let (top, header) = at;
         let inner = self.width as f32 - 2.0 * padding;
         let (title, subtitle) = self.header_texts();
         let small_height = self.small.font.line_height;
@@ -417,14 +672,14 @@ impl Panel {
             &title,
             TextBox {
                 x: padding,
-                y: 0.0,
+                y: top,
                 width: inner,
                 height: title_box_height,
                 align: Align::Center,
             },
             self.title_element.style.color,
         );
-        let mut y = title_box_height;
+        let mut y = top + title_box_height;
         if !subtitle.is_empty() {
             let (font, subtitle) = fonts.fit(&self.small.font, subtitle, inner, 0.8);
             fonts.draw(
@@ -506,7 +761,8 @@ impl Panel {
         }
     }
 
-    /// The main entries, one line each.
+    /// The main entries, one line each (the ones that fit, from
+    /// `first_item`).
     fn draw_items(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, padding: f32, header: f32) {
         let width = self.width as f32;
         let inner = width - 2.0 * padding;
@@ -520,8 +776,15 @@ impl Panel {
         } else {
             padding
         };
+        let visible = self.visible_items();
         let mut y = header;
-        for (index, item) in self.items.iter().enumerate() {
+        let shown = self
+            .items
+            .iter()
+            .enumerate()
+            .skip(self.first_item)
+            .take(visible);
+        for (index, item) in shown {
             self.draw_row_background(pixmap, index, y, row_height);
             let color = if index == self.selected {
                 style.selected_color
@@ -533,37 +796,117 @@ impl Panel {
             } else {
                 color.with_alpha(DISABLED_ALPHA)
             };
+            let icon = match (item.action, item.value) {
+                (MenuAction::Slider(SliderKind::Volume), Some(value)) => Some(Icon::volume(value)),
+                (action, _) => Icon::for_action(action),
+            };
             if self.icons
-                && let Some(icon) = Icon::for_action(item.action)
-                && let Some(image) = icon.render(icon_size as u32, color)
+                && let Some(icon) = icon
             {
                 let top = y + (row_height - icon_size) / 2.0;
-                pixmap.draw_pixmap(
-                    padding.round() as i32,
-                    top.round() as i32,
-                    image.as_ref(),
-                    &PixmapPaint::default(),
-                    Transform::identity(),
-                    None,
-                );
+                draw_icon(pixmap, icon, icon_size, (padding, top), color);
             }
-            fonts.draw(
-                pixmap,
+            let label_width = match item.value {
+                Some(_) => padding + inner * TRACK_START - text_x - padding * ICON_GAP,
+                None => inner - (text_x - padding),
+            };
+            let (font, label) = fonts.fit(
                 &self.text.font,
                 &item.label.to_uppercase(),
+                label_width,
+                0.7,
+            );
+            fonts.draw(
+                pixmap,
+                &font,
+                &label,
                 TextBox {
                     x: text_x,
                     y,
-                    width: inner - (text_x - padding),
+                    width: label_width.max(1.0),
                     height: row_height,
                     align: Align::Left,
                 },
                 color,
             );
+            if let Some(value) = item.value {
+                self.draw_slider(pixmap, fonts, value, (y, row_height), color);
+            }
             y += row_height;
             fill(pixmap, 0.0, y, width, line, style.separator_color);
             y += line;
         }
+        // where the shown entries are among all of them
+        if self.items.len() > visible {
+            let track = self.screen_height - header;
+            let bar = (width * 0.006).max(3.0);
+            let count = self.items.len() as f32;
+            let length = track * visible as f32 / count;
+            let top = header + track * self.first_item as f32 / count;
+            fill(pixmap, width - bar, top, bar, length, style.selector_color);
+        }
+    }
+
+    /// A slider like ES's: a line, filled up to the value, with a knob, and
+    /// the value in percent after it.
+    fn draw_slider(
+        &self,
+        pixmap: &mut Pixmap,
+        fonts: &mut Fonts,
+        value: f32,
+        row: (f32, f32),
+        color: Rgba,
+    ) {
+        let (y, height) = row;
+        let (start, end) = self.track();
+        let middle = y + height / 2.0;
+        let thickness = (height * 0.08).max(2.0).round();
+        let knob = (height * 0.17).max(4.0);
+        let filled = start + (end - start) * value.clamp(0.0, 1.0);
+        fill(
+            pixmap,
+            filled,
+            middle - thickness / 2.0,
+            end - filled,
+            thickness,
+            color.with_alpha(TRACK_ALPHA.min((color.0 & 0xff) as u8)),
+        );
+        fill(
+            pixmap,
+            start,
+            middle - thickness / 2.0,
+            filled - start,
+            thickness,
+            color,
+        );
+        if let Some(path) = PathBuilder::from_circle(filled, middle, knob) {
+            let mut paint = Paint::default();
+            paint.set_color(color.to_color());
+            paint.anti_alias = true;
+            pixmap.fill_path(
+                &path,
+                &paint,
+                tiny_skia::FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
+        }
+        let padding = self.padding();
+        let inner = self.width as f32 - 2.0 * padding;
+        let value_x = padding + inner * VALUE_START;
+        fonts.draw(
+            pixmap,
+            &self.small.font,
+            &format!("{}%", (value * 100.0).round() as u32),
+            TextBox {
+                x: value_x,
+                y,
+                width: padding + inner - value_x,
+                height,
+                align: Align::Right,
+            },
+            color,
+        );
     }
 
     /// The save state slots: preview on the left, slot and date on the right.
@@ -666,6 +1009,28 @@ impl Panel {
             let top = header + track * self.first_slot as f32 / page.slots.len() as f32;
             fill(pixmap, width - bar, top, bar, length, style.selector_color);
         }
+    }
+}
+
+/// An icon, `size` pixels square, at `at` (its top left corner).
+fn draw_icon(pixmap: &mut Pixmap, icon: Icon, size: f32, at: (f32, f32), color: Rgba) {
+    if let Some(image) = icon.render(size as u32, color) {
+        pixmap.draw_pixmap(
+            at.0.round() as i32,
+            at.1.round() as i32,
+            image.as_ref(),
+            &PixmapPaint::default(),
+            Transform::identity(),
+            None,
+        );
+    }
+}
+
+/// The order of the sliders, when there are both.
+const fn slider_order(kind: SliderKind) -> u8 {
+    match kind {
+        SliderKind::Brightness => 0,
+        SliderKind::Volume => 1,
     }
 }
 

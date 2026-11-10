@@ -5,8 +5,9 @@
 //! is the overlay itself: a side menu styled like EmulationStation's over
 //! the dimmed game, with a clock. Without a mode, it asks the daemon to open
 //! or close the overlay, or shows it itself when no daemon runs; started
-//! again while open, it closes the open one. Without a running game it does
-//! nothing (unless `--demo`).
+//! again while open, it closes the open one. Without a running game (in
+//! EmulationStation) it shows the system's menu: sleep, the brightness and
+//! the volume, like the Switch's quick settings.
 
 mod app;
 mod config;
@@ -19,6 +20,7 @@ mod manual;
 mod paths;
 mod savestates;
 mod session;
+mod system;
 mod theme;
 mod ui;
 
@@ -151,11 +153,10 @@ fn run(
         }
     };
 
+    // the sliders' controls take a while to find (ddcutil): from now on
+    let controls = read_controls_in_background();
+
     let session = Session::load(&runtime_dir);
-    if session.is_none() && !demo {
-        log::info!("no game running: nothing to show");
-        return Ok(());
-    }
     if session.as_ref().is_some_and(|session| !session.overlay) && !demo {
         log::info!("the overlay is turned off for this game");
         return Ok(());
@@ -170,6 +171,7 @@ fn run(
     let language = i18n::preferred_language(&theme.language);
     let translator = Translator::new(&language);
 
+    let in_game = session.is_some() || demo;
     let info = session.as_ref().map_or_else(
         || GameInfo {
             name: "Retrobox".into(),
@@ -189,25 +191,15 @@ fn run(
         session.as_ref().map(|session| session.rom.as_str()),
     )
     .and_then(|path| Manual::open(&path));
-    let items = menu_items(&translator, &emulator, manual.is_some());
-
-    let time_key = if theme.clock12h {
-        "clock-time-format-12h"
+    let items = if in_game {
+        menu_items(&translator, &emulator, manual.is_some())
     } else {
-        "clock-time-format"
+        log::info!("no game running: the system's menu");
+        system_items(&translator, &config)
     };
-    let clock_formats = (
-        config
-            .clock
-            .time_format
-            .clone()
-            .unwrap_or_else(|| translator.text(time_key)),
-        config
-            .clock
-            .date_format
-            .clone()
-            .unwrap_or_else(|| translator.text("clock-date-format")),
-    );
+
+    let (clock_formats, small_clock) = clock_formats(&config, &translator, theme.clock12h);
+    let battery_percent = config.system.battery_percent;
 
     let theme_fonts: Vec<PathBuf> = [&theme.title, &theme.text, &theme.text_small]
         .iter()
@@ -217,7 +209,7 @@ fn run(
 
     let pads = open_pads(session.as_ref(), extra_pads, theme.invert_buttons);
 
-    let (outcome, emulator) = app::run(Content {
+    let (outcome, emulator, setters) = app::run(Content {
         config,
         theme,
         fonts,
@@ -232,6 +224,9 @@ fn run(
         manual,
         translator,
         launched,
+        small_clock,
+        battery_percent,
+        controls: Some(controls),
     })?;
     // The overlay is gone and the controllers are the game's again; the
     // keyboard focus is on its way back to the game. Another overlay may
@@ -242,8 +237,80 @@ fn run(
         Outcome::Quit if !demo => quit_game(),
         Outcome::Quit | Outcome::Back => {}
         Outcome::Request(request) => emulator.back_to_game(request),
+        Outcome::Standby => {
+            // the last slider change first
+            drop(setters);
+            system::standby();
+            return Ok(());
+        }
     }
+    // the last slider change is applied before leaving
+    drop(setters);
     Ok(())
+}
+
+/// The big clock's formats (time, date) and the small one's, when the clock
+/// is the small one: overlay.ini's, else the language's.
+fn clock_formats(
+    config: &Config,
+    translator: &Translator,
+    clock12h: bool,
+) -> ((String, String), Option<String>) {
+    let clock = &config.clock;
+    let (time_key, small_key) = if clock12h {
+        ("clock-time-format-12h", "clock-small-format-12h")
+    } else {
+        ("clock-time-format", "clock-small-format")
+    };
+    let big = (
+        clock
+            .time_format
+            .clone()
+            .unwrap_or_else(|| translator.text(time_key)),
+        clock
+            .date_format
+            .clone()
+            .unwrap_or_else(|| translator.text("clock-date-format")),
+    );
+    let small = (!clock.big).then(|| {
+        clock
+            .small_format
+            .clone()
+            .unwrap_or_else(|| translator.text(small_key))
+    });
+    (big, small)
+}
+
+/// Find and read the sliders' controls in a thread; they reach the menu as
+/// they are ready.
+fn read_controls_in_background() -> calloop::channel::Channel<system::Found> {
+    let (sender, channel) = calloop::channel::channel();
+    let spawned = std::thread::Builder::new()
+        .name("controls".into())
+        .spawn(move || {
+            let primary = system::brightness::primary_output();
+            for found in system::read_controls(primary.as_deref()) {
+                if sender.send(found).is_err() {
+                    break; // the overlay is gone
+                }
+            }
+        });
+    if let Err(err) = spawned {
+        log::warn!("no sliders: {err}");
+    }
+    channel
+}
+
+/// Outside games: sleep (when allowed); the sliders come as they are found.
+fn system_items(translator: &Translator, config: &Config) -> Vec<MenuItem> {
+    let mut items = Vec::new();
+    if config.system.standby {
+        items.push(MenuItem::new(
+            translator.text("menu-standby"),
+            MenuAction::Standby,
+        ));
+    }
+    items
 }
 
 /// The game's controllers and the ones the daemon passed (outside a game,
@@ -335,11 +402,7 @@ fn manual_path(manual: &str, rom: Option<&str>) -> Option<PathBuf> {
 /// Continue, the save states, the manual, what the emulator can do, and
 /// leaving the game.
 fn menu_items(translator: &Translator, emulator: &Emulator, manual: bool) -> Vec<MenuItem> {
-    let item = |key: &str, action| MenuItem {
-        label: translator.text(key),
-        action,
-        enabled: true,
-    };
+    let item = |key: &str, action| MenuItem::new(translator.text(key), action);
     let mut items = vec![item("menu-continue", MenuAction::Continue)];
     if emulator.has_slots() {
         items.push(item("menu-load-state", MenuAction::States(StateMode::Load)));

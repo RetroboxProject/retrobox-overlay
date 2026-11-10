@@ -100,6 +100,27 @@ only while it is shown.
   position, colours, font and icons, the theme's own icons included), which ES exports with
   the menu theme. Without it they look like ES's defaults, with the icons of Retrobox's ES.
 * **Leaving the game** runs `retrobox-emukill`.
+* **Outside games** (in EmulationStation) the same hold opens the system's menu, like the
+  Switch's quick settings: *Sleep mode* (`systemctl suspend`; `standby` in `[system]`), and the
+  brightness and volume sliders, which games get too, under the game's entries.
+* **Sliders.** Left/Right (d-pad, stick, arrow keys) move them by 5 %, holding repeats; the
+  mouse moves them with a click or a drag on the track. Changes apply at once, from a thread
+  that only applies the latest value (a held direction asks for many), and the last one is
+  applied before the overlay exits. A slider shows once its control has been found and read
+  (in a thread too: `ddcutil` takes a while), and not at all when there is none.
+  * **Brightness** of the primary screen: X11's primary output (RandR; KWin sets it for
+    XWayland too), else KDE's (`kscreen-doctor`, priority 1), else a wlroots compositor's
+    first enabled output (`wlr-randr`). A built-in panel (eDP, LVDS, DSI) uses the kernel's
+    backlight, set through logind (`busctl`, allowed to the active session without root; else
+    `brightnessctl`), never below 5 % so the screen does not go black; an external monitor uses
+    DDC/CI through `ddcutil`, when installed and the monitor answers.
+  * **Volume** of the default output: PipeWire (`wpctl`), else PulseAudio (`pactl`, which also
+    works with PipeWire's PulseAudio server). At 0 the output is muted; above, unmuted.
+* **Status line**, above the menu's header: the network (a cable wins over Wi-Fi, whose icon
+  shows the signal), the battery (the computer's own: a controller's is left out) with its
+  percentage (`battery_percent` in `[status]`), and the time when the clock is the small one
+  (`size = small` in `[clock]`, with its own format, `small_format`); the big clock keeps its
+  corner. They are read again every second, from sysfs.
 
 ## Requirements
 
@@ -113,13 +134,16 @@ only while it is shown.
 * retrobox-core and retrobox-emulationstation (the packages depend on both).
 * poppler's command line tools (`poppler-utils`, recommended by the packages) for the manuals;
   without them the menu has no manual entry.
+* For the sliders: `wpctl` (PipeWire) or `pactl` (PulseAudio); `busctl` (systemd) or
+  `brightnessctl` for a built-in panel's backlight; `ddcutil` for an external monitor's
+  brightness (optional; it needs access to `/dev/i2c-*`).
 
 ## Settings
 
 `overlay.ini` in `/etc/retrobox` and `~/.config/retrobox` (the user's file wins, key by key).
 See [`data/overlay.ini`](data/overlay.ini) for every key: the menu's side, the dim opacity, the
-animation length, how long the hotkey is held, the clock (on/off, position, colour, `strftime`
-formats) and who scales the manual. Day and month
+animation length, how long the hotkey is held, sleep, the battery's percentage, the clock (on/off,
+big or small, position, colour, `strftime` formats) and who scales the manual. Day and month
 names follow the language, which is EmulationStation's when one is chosen there, else the
 system's (`LANGUAGE`, `LC_ALL`, `LC_MESSAGES`, `LANG`): English, Spanish,
 Catalan, Galician, Basque, Portuguese, French, Italian, German, Dutch, Polish and Russian.

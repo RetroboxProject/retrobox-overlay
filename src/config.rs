@@ -10,10 +10,18 @@
 //!
 //! [clock]
 //! enabled = true
+//! size = big              ; big (on the free side) | small (status line)
 //! time_format = %H:%M:%S  ; strftime; %p etc. follow the language
 //! date_format = %A, %-d %B %Y
+//! small_format = %H:%M    ; the small clock's
 //! position = top          ; top | center | bottom
 //! color = FFFFFFFF
+//!
+//! [status]
+//! battery_percent = true  ; the battery's percentage next to its icon
+//!
+//! [system]
+//! standby = true          ; offer to sleep, outside games
 //!
 //! [manual]
 //! scaling = compositor    ; compositor | overlay
@@ -52,6 +60,11 @@ pub enum VerticalPosition {
 #[derive(Debug, Clone)]
 pub struct ClockConfig {
     pub enabled: bool,
+    /// The big clock (time and date on the free side of the screen), or the
+    /// small one (the time in the menu's status line).
+    pub big: bool,
+    /// The small clock's format (None: the language's default).
+    pub small_format: Option<String>,
     /// None: the language's default (see `i18n`).
     pub time_format: Option<String>,
     pub date_format: Option<String>,
@@ -72,6 +85,16 @@ pub struct Config {
     /// (`wp_viewporter`); off, the overlay does, for compositors that show
     /// scaled buffers wrong.
     pub compositor_scaling: bool,
+    pub system: SystemConfig,
+}
+
+/// The system's part of the menu.
+#[derive(Debug, Clone)]
+pub struct SystemConfig {
+    /// Whether the battery's percentage shows next to its icon.
+    pub battery_percent: bool,
+    /// Whether the menu offers to put the computer to sleep (outside games).
+    pub standby: bool,
 }
 
 impl Default for Config {
@@ -84,12 +107,18 @@ impl Default for Config {
             hold: Duration::from_millis(DEFAULT_HOLD_MS),
             clock: ClockConfig {
                 enabled: true,
+                big: true,
+                small_format: None,
                 time_format: None,
                 date_format: None,
                 position: VerticalPosition::Top,
                 color: Rgba(0xFFFF_FFFF),
             },
             compositor_scaling: true,
+            system: SystemConfig {
+                battery_percent: true,
+                standby: true,
+            },
         }
     }
 }
@@ -158,6 +187,16 @@ impl Config {
             if let Some(enabled) = section.get("enabled") {
                 clock.enabled = !is_off(enabled);
             }
+            if let Some(size) = section.get("size") {
+                match size.trim().to_ascii_lowercase().as_str() {
+                    "big" => clock.big = true,
+                    "small" => clock.big = false,
+                    other => log::warn!("overlay.ini: unknown clock size {other:?}"),
+                }
+            }
+            if let Some(format) = section.get("small_format").filter(|f| !f.trim().is_empty()) {
+                clock.small_format = Some(format.trim().to_owned());
+            }
             if let Some(format) = section.get("time_format").filter(|f| !f.trim().is_empty()) {
                 clock.time_format = Some(format.trim().to_owned());
             }
@@ -174,6 +213,18 @@ impl Config {
             if let Some(color) = section.get("color").and_then(Rgba::parse) {
                 clock.color = color;
             }
+        }
+        if let Some(percent) = ini
+            .section(Some("status"))
+            .and_then(|section| section.get("battery_percent"))
+        {
+            self.system.battery_percent = !is_off(percent);
+        }
+        if let Some(standby) = ini
+            .section(Some("system"))
+            .and_then(|section| section.get("standby"))
+        {
+            self.system.standby = !is_off(standby);
         }
         if let Some(scaling) = ini
             .section(Some("manual"))
@@ -201,7 +252,8 @@ mod tests {
         std::fs::write(system.join(FILE_NAME), "[overlay]\nside=left\ndim=0.3\n").unwrap();
         std::fs::write(
             user.join(FILE_NAME),
-            "[overlay]\ndim=2\nhold_ms=50\n[clock]\nposition=top\n",
+            "[overlay]\ndim=2\nhold_ms=50\n[clock]\nposition=top\nsize=small\n\
+             [status]\nbattery_percent=no\n",
         )
         .unwrap();
 
@@ -210,6 +262,7 @@ mod tests {
         assert!((config.dim - 1.0).abs() < f32::EPSILON);
         assert_eq!(config.clock.position, VerticalPosition::Top);
         assert_eq!(config.hold, Duration::from_millis(MIN_HOLD_MS));
+        assert!(!config.clock.big && !config.system.battery_percent && config.system.standby);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

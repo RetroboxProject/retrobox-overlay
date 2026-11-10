@@ -12,6 +12,10 @@ menu-reset = Berrabiarazi
 menu-emulator-menu = Emuladorearen menua
 menu-screenshot = Pantaila-argazkia
 menu-quit = Irten jokotik
+# the system menu (sliders and sleep, in every context; sleep outside games)
+menu-standby = Lo modua
+menu-brightness = Distira
+menu-volume = Bolumena
 # save state slots; the date is a strftime format (chrono)
 slot-label = { $number }. zirrikitua
 slot-empty = Hutsik
@@ -20,6 +24,9 @@ slot-date-format = %Y %b %-d · %H:%M
 clock-date-format = %A, %Y.eko %Bren %-da
 clock-time-format = %H:%M:%S
 clock-time-format-12h = %I:%M:%S %p
+# the small clock, in the status line (clock size = small)
+clock-small-format = %H:%M
+clock-small-format-12h = %-I:%M %p
 # the disc line under the game's name (games of several discs)
 disc-status = { $count }tik { $current }. diskoa
 disc-tray-open = erretilua irekita
@@ -29,6 +36,7 @@ help-choose = AUKERATU
 help-select = HAUTATU
 help-back = ATZERA
 help-close = ITXI
+help-adjust = DOITU
 help-zoom = ZOOMA
 help-zoom-in = HANDIAGOTU
 help-zoom-out = TXIKIAGOTU

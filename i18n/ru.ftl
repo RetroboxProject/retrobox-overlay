@@ -12,6 +12,10 @@ menu-reset = Перезапуск
 menu-emulator-menu = Меню эмулятора
 menu-screenshot = Снимок экрана
 menu-quit = Выйти из игры
+# the system menu (sliders and sleep, in every context; sleep outside games)
+menu-standby = Спящий режим
+menu-brightness = Яркость
+menu-volume = Громкость
 # save state slots; the date is a strftime format (chrono)
 slot-label = Слот { $number }
 slot-empty = Пусто
@@ -20,6 +24,9 @@ slot-date-format = %-d %b %Y · %H:%M
 clock-date-format = %A, %-d %B %Y
 clock-time-format = %H:%M:%S
 clock-time-format-12h = %I:%M:%S %p
+# the small clock, in the status line (clock size = small)
+clock-small-format = %H:%M
+clock-small-format-12h = %-I:%M %p
 # the disc line under the game's name (games of several discs)
 disc-status = Диск { $current } из { $count }
 disc-tray-open = лоток открыт
@@ -29,6 +36,7 @@ help-choose = ВЫБРАТЬ
 help-select = ВЫБОР
 help-back = НАЗАД
 help-close = ЗАКРЫТЬ
+help-adjust = НАСТРОИТЬ
 help-zoom = МАСШТАБ
 help-zoom-in = УВЕЛИЧИТЬ
 help-zoom-out = УМЕНЬШИТЬ
