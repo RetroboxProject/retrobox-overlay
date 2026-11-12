@@ -42,6 +42,7 @@ impl Clock {
             path: font_path.to_path_buf(),
             size,
             line_height: size * 1.25,
+            bold: false,
         };
         Self {
             time_format: formats.0,

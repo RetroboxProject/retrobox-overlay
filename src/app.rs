@@ -24,7 +24,6 @@
 //! from.
 
 use std::os::fd::AsFd;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -32,7 +31,7 @@ use anyhow::{Context as _, Result, anyhow};
 use chrono::{Local, Timelike};
 use smithay_client_toolkit::compositor::CompositorHandler;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
-use smithay_client_toolkit::reexports::calloop::channel::{self, Channel, Sender};
+use smithay_client_toolkit::reexports::calloop::channel::{self, Channel};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::signals::{Signal, Signals};
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
@@ -72,14 +71,13 @@ use crate::i18n::Translator;
 use crate::input::{self, Input, Nav, Pad};
 use crate::manual::Manual;
 use crate::savestates::StateMode;
-use crate::system;
-use crate::system::brightness::Screens;
+use crate::system::brightness::{self, Screens};
 use crate::system::status::Status;
 use crate::system::{Control, Found, Msg, STEP, Setter, SliderKind};
 use crate::theme::MenuTheme;
 use crate::ui::clock::Clock;
 use crate::ui::help::{Help, Prompt};
-use crate::ui::panel::{MenuAction, MenuItem, Panel, StatusBar};
+use crate::ui::panel::{MenuAction, MenuItem, Panel, StatusBar, Target};
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
 
@@ -98,14 +96,9 @@ const REPEAT_INTERVAL: Duration = Duration::from_millis(70);
 const CLOCK_MARGIN: f32 = crate::ui::clock::MARGIN;
 /// How long the panel waits, at most, for the volume before it shows.
 const CONTROLS_WAIT: Duration = Duration::from_millis(60);
-/// How long the brightness slider waits for Wayland to tell the output.
-const OUTPUT_WAIT: Duration = Duration::from_millis(300);
-
-/// Whether a program is installed (in `PATH`).
-fn shutil_has(program: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
-}
+/// How long the brightness slider waits to know the primary screen
+/// (`kscreen-doctor` takes a while).
+const PRIMARY_WAIT: Duration = Duration::from_millis(1500);
 
 /// How often the status line (time, network, battery) is read again.
 const STATUS_EVERY: Duration = Duration::from_secs(1);
@@ -139,6 +132,8 @@ pub struct Content {
     pub title: String,
     pub subtitle: String,
     pub items: Vec<MenuItem>,
+    /// The round buttons under the entries (continue, screenshot, quit).
+    pub buttons: Vec<MenuItem>,
     pub clock_formats: (String, String),
     pub locale: chrono::Locale,
     pub pads: Vec<Pad>,
@@ -158,13 +153,11 @@ pub struct Content {
     pub battery_percent: bool,
     /// Whether the menu takes the keyboard (and the focus) from the game.
     pub take_keyboard: bool,
-    /// What the threads that read find (the volume, X11's primary output,
-    /// a monitor's brightness), and how more threads send it.
+    /// What the threads that read find (the volume, the display settings'
+    /// primary screen), and how more threads send it.
     pub controls: Option<Channel<Msg>>,
-    pub sender: Sender<Msg>,
     /// The screens, for the brightness slider.
     pub screens: Screens,
-    pub runtime_dir: PathBuf,
 }
 
 struct State {
@@ -190,41 +183,28 @@ struct State {
     setters: Vec<Setter>,
     /// Sliders found before the panel was there.
     found: Vec<(SliderKind, f32)>,
-    /// What the menu's help prompts were drawn for (a page open, a slider
-    /// selected).
-    menu_help_shown: Option<(bool, bool)>,
+    /// What the menu's help prompts were drawn for (a page open, what kind
+    /// of thing selected).
+    menu_help_shown: Option<(bool, Focus)>,
+    /// The button whose function is to show, and the timer that shows it.
+    tooltip: Option<(usize, RegistrationToken)>,
     /// The button (or finger) held on the panel, and what it turned into.
     press: Option<Press>,
     /// The finger touching the screen (one at a time).
     finger: Option<(i32, SurfaceId, (f64, f64))>,
     /// Whether the brightness slider's screen is settled.
-    brightness: Brightness,
-    /// The primary screen's output, once known.
-    primary_output: Option<String>,
+    brightness_settled: bool,
     /// The threads' findings, until the panel is there (then a source of
     /// the event loop).
     controls: Option<Channel<Msg>>,
-}
-
-/// Where the brightness slider stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Brightness {
-    /// Waiting to know the primary screen.
-    Waiting,
-    /// Looking for monitors that answer DDC/CI (once).
-    Detecting,
-    /// Looked for them: what was found is all there is.
-    Detected,
-    /// Settled (with or without a slider).
-    Done,
 }
 
 /// The button held on the panel (or a finger on it).
 #[derive(Debug, Clone, Copy)]
 struct Press {
     start: (f64, f64),
-    /// The entry it went down on.
-    item: Option<usize>,
+    /// What it went down on.
+    target: Option<Target>,
     gesture: Gesture,
 }
 
@@ -233,15 +213,35 @@ struct Press {
 enum Gesture {
     /// Not moved (yet): a tap on release.
     Tap,
-    /// Dragged up or down: the entries scroll, a row at a time (the pixels
-    /// not scrolled yet).
-    Scroll(f32),
+    /// Dragged up or down: the entries scroll with it.
+    Scroll,
     /// Dragged along a slider: it follows.
     Slide(usize),
 }
 
 /// How far a press moves before it is a drag, in rows.
 const DRAG_THRESHOLD: f32 = 0.3;
+
+/// What kind of thing is selected, for the help prompts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Item,
+    Button,
+    Slider,
+}
+
+impl Focus {
+    const fn of(target: Target) -> Self {
+        match target {
+            Target::Item(_) => Self::Item,
+            Target::Button(_) => Self::Button,
+            Target::Slider(_) => Self::Slider,
+        }
+    }
+}
+
+/// How long a round button stays highlighted before its function shows.
+const TOOLTIP_DELAY: Duration = Duration::from_millis(1200);
 
 /// A pointer event, whichever the display.
 pub(crate) struct PointerInput {
@@ -330,8 +330,8 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         press: None,
         finger: None,
         menu_help_shown: None,
-        brightness: Brightness::Waiting,
-        primary_output: None,
+        tooltip: None,
+        brightness_settled: false,
         controls: None,
     };
     state.controls = state.content.controls.take();
@@ -489,6 +489,7 @@ impl State {
             &self.content.subtitle,
             std::mem::take(&mut self.content.items),
         );
+        panel.set_buttons(std::mem::take(&mut self.content.buttons));
         panel.set_icons(config.icons);
         panel.set_row_scale(config.row_scale);
         panel.set_status_bar(self.status_bar());
@@ -597,6 +598,7 @@ impl State {
     }
 
     fn draw_panel(&mut self) {
+        self.watch_tooltip();
         if let Some((panel, piece)) = &mut self.panel {
             if piece.size.1 == 0 {
                 return;
@@ -610,6 +612,42 @@ impl State {
                 }
                 piece.present(&mut self.display, &pixmap);
             }
+        }
+    }
+
+    /// A round button highlighted: its function shows after a while;
+    /// anything else highlighted hides it.
+    fn watch_tooltip(&mut self) {
+        let Some((panel, _)) = self.panel.as_mut() else {
+            return;
+        };
+        let button = panel.highlighted_button();
+        if self.tooltip.map(|(index, _)| index) == button {
+            return;
+        }
+        if let Some((_, token)) = self.tooltip.take() {
+            self.handle.remove(token);
+        }
+        panel.set_tooltip(None);
+        let Some(index) = button else {
+            return;
+        };
+        let token = self.handle.insert_source(
+            Timer::from_duration(TOOLTIP_DELAY),
+            move |_, &mut (), state| {
+                let shown = state
+                    .panel
+                    .as_mut()
+                    .is_some_and(|(panel, _)| panel.set_tooltip(Some(index)));
+                if shown {
+                    state.draw_panel();
+                }
+                TimeoutAction::Drop
+            },
+        );
+        match token {
+            Ok(token) => self.tooltip = Some((index, token)),
+            Err(err) => log::debug!("no tooltip timer: {}", err.error),
         }
     }
 
@@ -636,7 +674,8 @@ impl State {
             return;
         };
         // the same prompts as shown: nothing to draw again
-        let shown = (panel.page_open(), panel.slider_selected());
+        let focus = Focus::of(panel.selected());
+        let shown = (panel.page_open(), focus);
         if self.menu_help_shown == Some(shown) {
             return;
         }
@@ -651,8 +690,11 @@ impl State {
         } else {
             "help-close"
         };
-        let mut prompts = vec![prompt("up/down", "help-choose")];
-        if panel.slider_selected() {
+        let mut prompts = match focus {
+            Focus::Button => vec![prompt("left/right", "help-choose")],
+            Focus::Item | Focus::Slider => vec![prompt("up/down", "help-choose")],
+        };
+        if focus == Focus::Slider {
             prompts.push(prompt("left/right", "help-adjust"));
         } else {
             prompts.push(prompt(help.ok(), "help-select"));
@@ -770,14 +812,11 @@ impl State {
             return;
         };
         let deadline = Instant::now() + CONTROLS_WAIT;
-        let x11 = self.display.x11().is_some();
         let mut volume = false;
-        let mut primary = !x11;
-        while Instant::now() < deadline && !(volume && primary) {
+        while Instant::now() < deadline && !volume {
             match controls.try_recv() {
                 Ok(msg) => {
                     volume |= matches!(&msg, Msg::Found(found) if found.kind == SliderKind::Volume);
-                    primary |= matches!(msg, Msg::Primary(_));
                     self.message(msg);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -786,8 +825,8 @@ impl State {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
             }
         }
-        // one screen on, or no way to tell: settle it now
-        if !self.content.screens.ambiguous() || x11 {
+        // one screen on: it is the primary one
+        if !self.content.screens.ambiguous() {
             self.settle_brightness(None);
         }
         self.handle
@@ -797,10 +836,9 @@ impl State {
                 }
             })
             .ok();
-        // Wayland tells which output the overlay is on (surface_enter); if it
-        // never does, the best guess
+        // the primary screen never told: no slider
         self.handle
-            .insert_source(Timer::from_duration(OUTPUT_WAIT), |_, &mut (), state| {
+            .insert_source(Timer::from_duration(PRIMARY_WAIT), |_, &mut (), state| {
                 state.settle_brightness(None);
                 TimeoutAction::Drop
             })
@@ -811,22 +849,16 @@ impl State {
     fn message(&mut self, msg: Msg) {
         match msg {
             Msg::Found(found) => self.slider_found(found),
-            Msg::Primary(primary) => {
-                if primary.is_some() {
-                    self.settle_brightness(primary.as_deref());
-                }
-            }
-            Msg::Ddc(monitors) => {
-                self.content.screens.set_ddc(monitors);
-                self.brightness = Brightness::Detected;
-                let primary = self.primary_output.clone();
-                self.settle_brightness(primary.as_deref());
-            }
+            Msg::Primary(primary) => self.settle_brightness(primary.as_deref()),
         }
     }
 
-    /// The overlay is on an output: its screen is the primary one.
+    /// The overlay is on an output: on a Wayland compositor without a
+    /// primary screen (not KDE's), that is the one in use.
     fn entered(&mut self, output: &wl_output::WlOutput) {
+        if brightness::primary_known() {
+            return;
+        }
         let name = self
             .display
             .wl()
@@ -838,33 +870,19 @@ impl State {
         }
     }
 
-    /// Add the brightness slider for the primary screen (`primary`: its
-    /// output, when known), once.
+    /// Add the brightness slider when the primary screen (`primary`: its
+    /// output, when more than one is on) is a built-in one, once.
     fn settle_brightness(&mut self, primary: Option<&str>) {
-        if !matches!(self.brightness, Brightness::Waiting | Brightness::Detected) {
+        if self.brightness_settled {
             return;
         }
-        if primary.is_some() {
-            self.primary_output = primary.map(str::to_owned);
-        }
-        let screens = &self.content.screens;
-        if self.brightness == Brightness::Waiting
-            && screens.needs_detection(primary)
-            && shutil_has("ddcutil")
+        self.brightness_settled = true;
+        if let Some(found) = self
+            .content
+            .screens
+            .resolve(primary)
+            .and_then(|screen| Found::new(Control::Brightness(screen)))
         {
-            // not in the daemon's cache: look, once (slow)
-            self.brightness = Brightness::Detecting;
-            system::detect_ddc(
-                self.content.runtime_dir.clone(),
-                self.content.sender.clone(),
-            );
-            return;
-        }
-        self.brightness = Brightness::Done;
-        let Some(screen) = screens.resolve(primary) else {
-            return;
-        };
-        if let Some(found) = Found::new(Control::Brightness(screen)) {
             self.slider_found(found);
         }
     }
@@ -876,7 +894,7 @@ impl State {
             value,
             setter,
         } = found;
-        // found again (a monitor detected later): the newer one
+        // found again (should it be): the newer one
         self.setters.retain(|known| known.kind() != kind);
         self.setters.push(setter);
         match self.panel.as_mut() {
@@ -900,12 +918,12 @@ impl State {
         }
     }
 
-    /// Do what an entry asks.
-    fn choose(&mut self, index: usize) {
+    /// Do what an entry (or a button) asks.
+    fn choose(&mut self, target: Target) {
         let action = self
             .panel
             .as_ref()
-            .and_then(|(panel, _)| panel.action(index));
+            .and_then(|(panel, _)| panel.action(target));
         self.activate(action);
     }
 
@@ -972,10 +990,8 @@ impl State {
     /// A press or release on a controller: a held direction repeats, as a
     /// held key does (the compositor repeats the keyboard's).
     fn pad_input(&mut self, input: Input) {
-        let repeats = matches!(
-            input.nav,
-            Nav::Up | Nav::Down | Nav::Left | Nav::Right | Nav::PrevPage | Nav::NextPage
-        );
+        let repeats = matches!(input.nav, Nav::Up | Nav::Down | Nav::Left | Nav::Right)
+            || (self.manual_is_open() && matches!(input.nav, Nav::PrevPage | Nav::NextPage));
         if repeats && (input.pressed || self.repeat.is_some_and(|(nav, _)| nav == input.nav)) {
             if let Some((_, token)) = self.repeat.take() {
                 self.handle.remove(token);
@@ -1022,12 +1038,16 @@ impl State {
                 }
             }
             Nav::Left | Nav::Right => {
-                let delta = if nav == Nav::Left { -STEP } else { STEP };
-                let change = self
-                    .panel
-                    .as_mut()
-                    .and_then(|(panel, _)| panel.adjust(delta));
-                self.slid(change);
+                let Some((panel, _)) = self.panel.as_mut() else {
+                    return;
+                };
+                let sign = if nav == Nav::Left { -1 } else { 1 };
+                if panel.move_button(sign) {
+                    self.draw_panel();
+                } else {
+                    let change = panel.adjust(sign as f32 * STEP);
+                    self.slid(change);
+                }
             }
             Nav::Confirm => {
                 let action = self
@@ -1039,7 +1059,19 @@ impl State {
             Nav::Back => self.back(),
             // the shortcut that opened the overlay, again: back to the game
             Nav::Close => self.outcome = Some(Outcome::Back),
-            Nav::ZoomIn | Nav::ZoomOut | Nav::PrevPage | Nav::NextPage => {}
+            // R1 (Page Down): to the buttons and sliders and back; L1
+            // (Page Up): back to the entries
+            Nav::ZoomIn | Nav::ZoomOut | Nav::PrevPage | Nav::NextPage => {
+                let moved = self.panel.as_mut().is_some_and(|(panel, _)| match nav {
+                    Nav::ZoomIn => panel.toggle_footer(),
+                    Nav::NextPage => panel.go_to_footer(),
+                    _ => panel.go_to_list(),
+                });
+                if moved {
+                    self.draw_panel();
+                    self.draw_menu_help();
+                }
+            }
         }
     }
 }
@@ -1128,36 +1160,30 @@ impl State {
             .panel
             .as_ref()
             .is_some_and(|(_, piece)| piece.is(&event.surface));
-        let item = if on_panel {
+        let (x, y) = (event.position.0 as f32, event.position.1 as f32);
+        let target = if on_panel {
             self.panel
                 .as_ref()
-                .and_then(|(panel, _)| panel.item_at(event.position.1 as f32))
+                .and_then(|(panel, _)| panel.target_at(x, y))
         } else {
             None
         };
-        let (x, y) = (event.position.0 as f32, event.position.1 as f32);
         match event.kind {
             PointerKind::Enter | PointerKind::Motion if self.press.is_some() => {
                 self.drag(on_panel, (x, y));
             }
-            PointerKind::Enter | PointerKind::Motion => self.hover(item),
+            PointerKind::Enter | PointerKind::Motion => self.hover(target),
             PointerKind::Leave => {
                 self.press = None;
                 self.hover(None);
             }
             PointerKind::Press(BTN_LEFT) => {
+                // outside: closes on release, if it was not a drag
                 self.press = Some(Press {
                     start: event.position,
-                    item,
+                    target,
                     gesture: Gesture::Tap,
                 });
-                if !on_panel {
-                    // outside: closes on release, if it was not a drag
-                    self.press = self.press.map(|press| Press {
-                        item: None,
-                        ..press
-                    });
-                }
             }
             PointerKind::Release(BTN_LEFT) => {
                 if let Some(press) = self.press.take()
@@ -1183,18 +1209,16 @@ impl State {
         let Some((panel, _)) = self.panel.as_mut() else {
             return;
         };
-        let pitch = panel.row_pitch();
         let (dx, dy) = (x - press.start.0 as f32, y - press.start.1 as f32);
         if press.gesture == Gesture::Tap && on_panel {
-            let threshold = pitch * DRAG_THRESHOLD;
-            let on_slider = press.item.filter(|index| panel.is_slider(*index));
-            if let Some(index) = on_slider
+            let threshold = panel.row_height() * DRAG_THRESHOLD;
+            if let Some(Target::Slider(index)) = press.target
                 && dx.abs() >= threshold
                 && dx.abs() > dy.abs()
             {
                 press.gesture = Gesture::Slide(index);
-            } else if dy.abs() >= threshold {
-                press.gesture = Gesture::Scroll(0.0);
+            } else if dy.abs() >= threshold && panel.in_list(press.start.1 as f32) {
+                press.gesture = Gesture::Scroll;
                 press.start.1 = f64::from(y);
             }
         }
@@ -1206,18 +1230,14 @@ impl State {
                 self.draw_menu_help();
                 return;
             }
-            Gesture::Scroll(_) => {
-                // dragging up shows what is below
-                let moved = -(y - press.start.1 as f32);
-                let rows = (moved / pitch).trunc();
-                if rows != 0.0 {
-                    press.start.1 += f64::from(rows * pitch);
-                    if panel.scroll(rows as i32) {
-                        self.draw_panel();
-                        self.draw_menu_help();
-                    }
+            Gesture::Scroll => {
+                // pixel by pixel: dragging up shows what is below
+                let moved = press.start.1 as f32 - y;
+                press.start.1 = f64::from(y);
+                if panel.scroll_by(moved) {
+                    self.draw_panel();
+                    self.draw_menu_help();
                 }
-                press.gesture = Gesture::Scroll(moved - rows * pitch);
             }
             Gesture::Tap => {}
         }
@@ -1230,23 +1250,23 @@ impl State {
             self.navigate(Nav::Back);
             return;
         }
-        let Some(index) = press.item else {
+        let Some(target) = press.target else {
             return;
         };
         let Some((panel, _)) = self.panel.as_mut() else {
             return;
         };
-        if panel.is_slider(index) {
-            // on the track: the value there; on the label: selected
+        if let Target::Slider(index) = target {
+            // on the track: the value there; on the icon: selected
             let change = panel.slide_to(index, x, false);
             if change.is_none() {
-                panel.select(index);
+                panel.select(target);
                 self.draw_panel();
             }
             self.slid(change);
             self.draw_menu_help();
         } else {
-            self.choose(index);
+            self.choose(target);
         }
     }
 }
@@ -1573,12 +1593,12 @@ impl PointerHandler for State {
 }
 
 impl State {
-    /// Highlight the entry under the pointer, without selecting it.
-    fn hover(&mut self, item: Option<usize>) {
+    /// Highlight what is under the pointer, without selecting it.
+    fn hover(&mut self, target: Option<Target>) {
         let changed = self
             .panel
             .as_mut()
-            .is_some_and(|(panel, _)| panel.hover(item));
+            .is_some_and(|(panel, _)| panel.hover(target));
         if changed {
             self.draw_panel();
         }

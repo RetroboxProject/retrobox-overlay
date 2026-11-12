@@ -43,13 +43,23 @@ only while it is shown.
   *Switch confirm & cancel buttons*. Home or B closes it; the keyboard works too (arrows, Enter,
   Esc, F7), and the mouse: hovering highlights an entry, a click opens it, the wheel moves the
   selection, and a click outside the menu or a right click closes it.
+* **Layout.** The game's title (bold: the title font's bold face when it sits next to it, as
+  `Name-Bold.ttf`, else drawn a little thicker) heads the menu; under it, the entries, which
+  scroll when they do not all fit; pinned at the bottom (they never scroll, and hide only while
+  a save state page is open), three round buttons, *continue* (back to the game), *screenshot*
+  (when the emulator takes them) and *quit*, and under them the sliders. Up and Down go through
+  the entries, the buttons' row and the sliders, round (down from the last entry or up from the
+  first one reaches them); Left/Right choose a button; R1 (Page Down too) jumps from the entries
+  to the buttons and back, L1 (Page Up) back to the entries. A button highlighted for over a
+  second (selected or under the pointer) tells what it does in a small bubble above it, gone as
+  soon as something else is highlighted.
 * **The emulator.** The overlay only asks; the launcher does. While the game runs, the launcher
   serves a control channel (a Unix socket, `control` in `session.json`) and carries out each
   request the best way the emulator allows: RetroArch's command pipe (its standard input,
   `stdin_cmd_enable`), else a key chord on a virtual keyboard the launcher creates when the game
   starts, else a command line. The menu offers what the channel says the emulator can do:
   load and save state, the disc tray and next/previous disc, reset, the emulator's menu
-  (RetroArch's only, for now) and a screenshot, each with its icon.
+  (RetroArch's only, for now), each with its icon, and a screenshot (a round button).
 * **Discs.** Games of a platform with an optical drive (`disc_drive: true` in the system's
   YAML in retrobox-core: Mega-CD, Saturn, PlayStation, Dreamcast...) always have the tray entry,
   which also reaches a console's BIOS menu with the tray open. A game of several discs (an
@@ -116,7 +126,7 @@ only while it is shown.
 * **Leaving the game** runs `retrobox-emukill`.
 * **Outside games** (in EmulationStation) the same hold opens the system's menu, like the
   Switch's quick settings: *Sleep mode* (`systemctl suspend`; `standby` in `[system]`), and the
-  brightness and volume sliders, which games get too, under the game's entries.
+  brightness and volume sliders, which games get too, pinned under the entries.
 * **Sliders.** Left/Right (d-pad, stick, arrow keys) move them by 5 %, holding repeats; the
   mouse or a finger moves them with a tap or a drag on the track. They have no label, only
   their icon (a sun, a speaker that shows the level), so the track takes the row's width; their
@@ -127,31 +137,24 @@ only while it is shown.
   read in a thread from the moment the overlay starts (the menu waits for it 60 ms at most),
   and finding the brightness's screen starts no program at all. A slider is left out when
   there is nothing to control.
-  * **Brightness** of the primary screen: the only screen that is on (`/sys/class/drm`), else
-    the output the overlay shows on (Wayland: the compositor puts it on the screen in use), or
-    X11's primary output (RandR, outside Wayland: XWayland's outputs have names of their own).
-    A built-in panel (eDP, LVDS, DSI) uses the kernel's backlight, written in sysfs when
-    allowed, else through logind (`busctl`, allowed to the active session without root), else
-    `brightnessctl`; the first way that works is kept, and it never goes below 5 % so the
-    screen does not go black. Each change costs the driver some work (NVIDIA's `nvidia_0`
-    stalls the display a little, and refuses a change while it is still fading to the last
-    one, fading to each value on its own), so the brightness follows the slider a few times
-    a second (every 150 ms at most, always with the slider's value at that moment: the fade
-    between two changes makes it look smooth), the same value is never written twice, and a
-    refused change is tried again a moment later (with the latest value) rather than another
-    way. An external monitor uses DDC/CI through `ddcutil` on its I2C bus
-    (`--bus`, so a change does not detect the monitors again): the daemon looks for the
-    monitors that answer when it starts and leaves them in `overlay-ddc.json` in Retrobox's
-    runtime directory, with their brightness, which the slider shows at once. Each DDC/CI
-    exchange goes through the GPU's driver (NVIDIA's stalls the display a little meanwhile),
-    so the monitor is never read when the overlay opens (the cache keeps the value last read or
-    set; one changed with the monitor's own buttons shows from the next Retrobox start) and it
-    is written like a backlight, a few times a second at most.
+  * **Brightness** of a built-in screen (eDP, LVDS, DSI: a laptop's, a Nintendo Switch's),
+    and only when it is the primary one: the only screen that is on (`/sys/class/drm`), else the
+    primary screen of the display settings: X11's primary output (RandR), KDE's on Wayland
+    (`kscreen-doctor`, priority 1), else the output the overlay shows on (other Wayland
+    compositors put it on the screen in use). External monitors get no slider. The kernel's
+    backlight is written in sysfs (retrobox-core's udev rule lets the `video` group write it:
+    no program per change), else through logind (`busctl`, allowed to the active session
+    without root), else `brightnessctl`; the first way that works is kept, a refused change
+    (NVIDIA's `nvidia_0` refuses one while still fading to the last one) is tried again rather
+    than another way, and it never goes below 5 % so the screen does not go black. The
+    brightness glides to the slider's value instead of jumping: a step every 30 ms covering
+    part of what is left (the last steps one unit of the backlight), always towards the
+    slider's latest value, so a drag and a held direction change it smoothly.
   * **Volume** of the default output: PipeWire (`wpctl`), else PulseAudio (`pactl`, which also
     works with PipeWire's PulseAudio server). At 0 the output is muted; above, unmuted.
 * **Touch screens and dragging.** A finger is the left button: a tap opens an entry (or sets a
-  slider where it lands on its track), a drag up or down scrolls the entries, a drag along a
-  slider moves it; the mouse drags the same way. Entries open on release, so a drag never opens
+  slider where it lands on its track), a drag up or down scrolls the entries smoothly (pixel by
+  pixel), a drag along a slider moves it; the mouse drags the same way. Entries open on release, so a drag never opens
   one. `row_scale` in `[touch]` makes the rows taller than EmulationStation's (the text stays
   the same size) so they are easier to hit: 1.5 to 1.66 suits small touch screens.
 * **Status line**, above the menu's header, half as large again as the small text, its icons
@@ -174,9 +177,8 @@ only while it is shown.
 * poppler's command line tools (`poppler-utils`, recommended by the packages) for the manuals;
   without them the menu has no manual entry.
 * For the sliders: `wpctl` (PipeWire) or `pactl` (PulseAudio); `busctl` (systemd) or
-  `brightnessctl` for a built-in panel's backlight (unless sysfs is writable); `ddcutil` for an
-  external monitor's brightness (optional; it needs access to `/dev/i2c-*`, usually the `i2c`
-  group).
+  `brightnessctl` for a built-in panel's backlight (unless sysfs is writable);
+  `kscreen-doctor` to know KDE's primary screen on Wayland with more than one screen on.
 * The menu's look comes from EmulationStation (retrobox-emulationstation exports its resolved
   menu theme when it starts, when its themes are reloaded or its settings saved, and before
   each game, from patch 0008 on), so the overlay is themed in EmulationStation too, not only in

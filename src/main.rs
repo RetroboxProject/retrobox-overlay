@@ -33,7 +33,7 @@ use nix::sys::signal::{SigSet, Signal};
 
 use crate::app::{Content, Outcome};
 use crate::config::Config;
-use crate::emulator::Emulator;
+use crate::emulator::{EmuAction, Emulator};
 use crate::i18n::Translator;
 use crate::input::Pad;
 use crate::instance::Instance;
@@ -158,9 +158,11 @@ fn run(
 
     // what takes a program to read is read from now on, while the rest loads
     let (sender, controls) = calloop::channel::channel();
-    system::read_volume(sender.clone());
-    system::read_x11_primary(sender.clone());
-    let screens = system::brightness::Screens::scan(&runtime_dir);
+    let screens = system::brightness::Screens::scan();
+    if screens.ambiguous() && system::brightness::primary_known() {
+        system::read_primary(sender.clone());
+    }
+    system::read_volume(sender);
 
     let session = Session::load(&runtime_dir);
     if session.as_ref().is_some_and(|session| !session.overlay) && !demo {
@@ -197,12 +199,11 @@ fn run(
         session.as_ref().map(|session| session.rom.as_str()),
     )
     .and_then(|path| Manual::open(&path));
-    let items = if in_game {
-        menu_items(&translator, &emulator, manual.is_some())
-    } else {
-        log::info!("no game running: the system's menu");
-        system_items(&translator, &config)
-    };
+    let (items, buttons) = menus(
+        &translator,
+        &config,
+        in_game.then_some((&emulator, manual.is_some())),
+    );
 
     let (clock_formats, small_clock) = clock_formats(&config, &translator, theme.clock12h);
     let (battery_percent, take_keyboard) = (
@@ -221,6 +222,7 @@ fn run(
         title: info.name,
         subtitle,
         items,
+        buttons,
         clock_formats,
         locale: translator.locale(),
         pads,
@@ -233,9 +235,7 @@ fn run(
         battery_percent,
         take_keyboard,
         controls: Some(controls),
-        sender,
         screens,
-        runtime_dir: runtime_dir.clone(),
     })?;
     // The overlay is gone and the controllers are the game's again; the
     // keyboard focus is on its way back to the game. Another overlay may
@@ -300,6 +300,24 @@ fn clock_formats(
 }
 
 /// Outside games: sleep (when allowed); the sliders come as they are found.
+/// The menu's entries and round buttons: a game's (with its emulator and
+/// whether it has a manual), or the system's.
+fn menus(
+    translator: &Translator,
+    config: &Config,
+    game: Option<(&Emulator, bool)>,
+) -> (Vec<MenuItem>, Vec<MenuItem>) {
+    if let Some((emulator, manual)) = game {
+        (
+            menu_items(translator, emulator, manual),
+            menu_buttons(translator, emulator),
+        )
+    } else {
+        log::info!("no game running: the system's menu");
+        (system_items(translator, config), Vec::new())
+    }
+}
+
 fn system_items(translator: &Translator, config: &Config) -> Vec<MenuItem> {
     let mut items = Vec::new();
     if config.system.standby {
@@ -401,7 +419,7 @@ fn manual_path(manual: &str, rom: Option<&str>) -> Option<PathBuf> {
 /// leaving the game.
 fn menu_items(translator: &Translator, emulator: &Emulator, manual: bool) -> Vec<MenuItem> {
     let item = |key: &str, action| MenuItem::new(translator.text(key), action);
-    let mut items = vec![item("menu-continue", MenuAction::Continue)];
+    let mut items = Vec::new();
     if emulator.has_slots() {
         items.push(item("menu-load-state", MenuAction::States(StateMode::Load)));
         items.push(item("menu-save-state", MenuAction::States(StateMode::Save)));
@@ -414,10 +432,23 @@ fn menu_items(translator: &Translator, emulator: &Emulator, manual: bool) -> Vec
             .actions()
             .iter()
             .copied()
+            .filter(|action| *action != EmuAction::Screenshot)
             .map(|action| item(action.label_key(), MenuAction::Emulator(action))),
     );
-    items.push(item("menu-quit", MenuAction::Quit));
     items
+}
+
+/// The round buttons under a game's entries: continue, a screenshot (when
+/// the emulator takes them), quit.
+fn menu_buttons(translator: &Translator, emulator: &Emulator) -> Vec<MenuItem> {
+    let item = |key: &str, action| MenuItem::new(translator.text(key), action);
+    let mut buttons = vec![item("menu-continue", MenuAction::Continue)];
+    if emulator.actions().contains(&EmuAction::Screenshot) {
+        let action = EmuAction::Screenshot;
+        buttons.push(item(action.label_key(), MenuAction::Emulator(action)));
+    }
+    buttons.push(item("menu-quit", MenuAction::Quit));
+    buttons
 }
 
 /// Leave the game through retrobox-emukill, detached from the overlay.

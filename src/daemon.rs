@@ -24,10 +24,6 @@
 //! keyboard shortcut of the desktop, a script) asks this process to open or
 //! close it (SIGUSR1). New controllers and keyboards are picked up as they
 //! appear (inotify on `/dev/input`).
-//!
-//! When it starts, it also looks for the monitors that answer DDC/CI (in a
-//! thread: `ddcutil detect` takes a second or more) and leaves them in the
-//! runtime directory, so the overlay's brightness slider shows at once.
 
 use std::collections::{HashMap, HashSet};
 use std::os::fd::AsFd;
@@ -190,13 +186,6 @@ pub fn run(runtime_dir: &Path, hold: Duration) -> Result<()> {
             return Ok(());
         }
     };
-    let dir = runtime_dir.to_owned();
-    if let Err(err) = std::thread::Builder::new()
-        .name("ddc".into())
-        .spawn(move || crate::system::brightness::detect_ddc(&dir))
-    {
-        log::warn!("cannot look for DDC/CI monitors: {err}");
-    }
     let mut event_loop: EventLoop<'static, State> =
         EventLoop::try_new().context("cannot create the event loop")?;
     let handle = event_loop.handle();

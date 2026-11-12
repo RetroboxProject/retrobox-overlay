@@ -91,6 +91,7 @@ impl Help {
                 } else {
                     size * 1.25
                 },
+                bold: false,
             },
             height: (letter_height * 1.25).round().max(1.0),
             position,

@@ -9,11 +9,14 @@
 //! screen to this one.
 //!
 //! Above the header, a status line like the Switch's: the time (when the
-//! clock is the small one), the network and the battery. Sliders (the
-//! brightness, the volume) are rows like ES's option rows: the label on the
-//! left, the slider and its value on the right. The entries scroll when they
-//! do not all fit (and can be dragged). For touch screens, the rows can be
-//! taller than ES's (`row_scale`), the text staying as it is.
+//! clock is the small one), the network and the battery. At the bottom,
+//! pinned (they do not scroll, and hide while a save state page is open):
+//! round buttons (continue, screenshot, quit), each telling what it does
+//! when highlighted for a while, and the sliders (the brightness, the
+//! volume): their icon, the slider and its value. The entries between the
+//! header and those scroll when they do not all fit (smoothly when dragged).
+//! For touch screens, the rows can be taller than ES's (`row_scale`), the
+//! text staying as it is.
 
 use cosmic_text::Align;
 use tiny_skia::{
@@ -135,6 +138,25 @@ const TRACK_ALPHA: u8 = 0x50;
 /// A slider's row is this much taller than the other entries, whatever
 /// their size (`row_scale` included), for a finger.
 const SLIDER_SCALE: f32 = 1.2;
+/// A round button's diameter, relative to the entries' height.
+const BUTTON_SCALE: f32 = 1.1;
+/// The space between two round buttons, relative to their diameter.
+const BUTTON_GAP: f32 = 0.6;
+/// The space above and below the round buttons, relative to their diameter.
+const BUTTON_MARGIN: f32 = 0.16;
+/// A round button's icon, relative to its diameter.
+const BUTTON_ICON: f32 = 0.5;
+/// Opacity of a round button's disc when not highlighted.
+const BUTTON_ALPHA: u8 = 0x28;
+
+/// What can be highlighted: an entry of the scrolling list (a slot on a
+/// save state page), a round button or a slider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Item(usize),
+    Button(usize),
+    Slider(usize),
+}
 
 /// A text element of the theme at this screen's size.
 #[derive(Debug, Clone)]
@@ -172,6 +194,7 @@ impl Element {
                 path,
                 size,
                 line_height,
+                bold: false,
             },
             letter_height,
             style: style.clone(),
@@ -184,18 +207,27 @@ pub struct Panel {
     screen_height: f32,
     title: String,
     subtitle: String,
+    /// The scrolling entries.
     items: Vec<MenuItem>,
-    selected: usize,
-    /// The entry under the mouse pointer: highlighted, not selected.
-    hovered: Option<usize>,
-    /// The save state page, when open; `selected`/`hovered` are then its.
+    /// The round buttons, pinned at the bottom.
+    buttons: Vec<MenuItem>,
+    /// The sliders, under the buttons (brightness first).
+    sliders: Vec<MenuItem>,
+    selected: Target,
+    /// What is under the mouse pointer: highlighted, not selected.
+    hovered: Option<Target>,
+    /// The save state page, when open; its slots are `Target::Item`s.
     page: Option<SlotPage>,
-    /// The main entry selected when the page was opened.
-    main_selected: usize,
-    /// The first slot shown: the page scrolls when not all of them fit.
-    first_slot: usize,
-    /// The first main entry shown: they scroll too.
-    first_item: usize,
+    /// What was selected, and the scroll, when the page was opened.
+    main_selected: Target,
+    main_scroll: f32,
+    /// How far the entries (or the slots) are scrolled, in pixels.
+    scroll: f32,
+    /// The entry and the button last selected, to go back to them.
+    item_memory: usize,
+    button_memory: usize,
+    /// The button whose function shows next to it.
+    tooltip: Option<usize>,
     /// The status line above the header.
     status_bar: StatusBar,
     /// How much taller than a line of text the main entries are.
@@ -227,25 +259,31 @@ impl Panel {
             1.0
         };
         let base = width.min(height);
-        let title_element = Element::new(&theme.title, scale, base * FONT_SIZE_LARGE);
+        let mut title_element = Element::new(&theme.title, scale, base * FONT_SIZE_LARGE);
+        title_element.font = title_element.font.bold();
         let text = Element::new(&theme.text, scale, base * FONT_SIZE_MEDIUM);
         let small = Element::new(&theme.text_small, scale, base * FONT_SIZE_SMALL);
 
         let letters = fonts.measure(&text.font, "S") * WIDTH_IN_LETTERS;
         let panel_width = (width * 0.5).min(letters).max(width / 3.0);
 
-        Self {
+        let mut panel = Self {
             width: panel_width.round() as u32,
             screen_height: height,
             title: title.to_uppercase(),
             subtitle: subtitle.to_owned(),
             items,
-            selected: 0,
+            buttons: Vec::new(),
+            sliders: Vec::new(),
+            selected: Target::Item(0),
             hovered: None,
             page: None,
-            main_selected: 0,
-            first_slot: 0,
-            first_item: 0,
+            main_selected: Target::Item(0),
+            main_scroll: 0.0,
+            scroll: 0.0,
+            item_memory: 0,
+            button_memory: 0,
+            tooltip: None,
             status_bar: StatusBar::default(),
             row_scale: 1.0,
             icons: true,
@@ -254,12 +292,21 @@ impl Panel {
             title_element,
             text,
             small,
-        }
+        };
+        panel.fix_selection();
+        panel
+    }
+
+    /// The round buttons at the bottom.
+    pub fn set_buttons(&mut self, buttons: Vec<MenuItem>) {
+        self.buttons = buttons;
+        self.fix_selection();
     }
 
     /// The line under the header (None: none).
     pub fn set_status(&mut self, status: Option<String>) {
         self.status = status;
+        self.scroll_to_selection();
     }
 
     /// The status line above the header; true when it changed.
@@ -269,34 +316,33 @@ impl Panel {
         changed
     }
 
-    /// Set a slider, adding it (sliders go last, brightness first) when the
-    /// menu does not have it yet.
+    /// Set a slider, adding it (brightness first) when the menu does not
+    /// have it yet.
     pub fn set_slider(&mut self, kind: SliderKind, label: &str, value: f32) {
         let action = MenuAction::Slider(kind);
-        if let Some(item) = self.items.iter_mut().find(|item| item.action == action) {
+        if let Some(item) = self.sliders.iter_mut().find(|item| item.action == action) {
             item.value = Some(value.clamp(0.0, 1.0));
             return;
         }
         let position = self
-            .items
+            .sliders
             .iter()
             .position(|item| {
                 matches!(item.action, MenuAction::Slider(other) if slider_order(other) > slider_order(kind))
             })
-            .unwrap_or(self.items.len());
+            .unwrap_or(self.sliders.len());
         let mut item = MenuItem::new(label.to_owned(), action);
         item.value = Some(value.clamp(0.0, 1.0));
-        let had_items = !self.items.is_empty();
-        self.items.insert(position, item);
-        // the same entry stays selected
-        let selected = if self.page.is_some() {
-            &mut self.main_selected
-        } else {
-            &mut self.selected
-        };
-        if had_items && position <= *selected {
-            *selected += 1;
+        self.sliders.insert(position, item);
+        // the same slider stays selected
+        for selected in [&mut self.selected, &mut self.main_selected] {
+            if let Target::Slider(index) = selected
+                && position <= *index
+            {
+                *index += 1;
+            }
         }
+        self.fix_selection();
         self.scroll_to_selection();
     }
 
@@ -306,8 +352,7 @@ impl Panel {
     }
 
     /// Set a slider from the pointer at `x` (surface coordinates): what
-    /// changed, if `index` is a slider and `x` is on its track (or `force`,
-    /// while dragging).
+    /// changed, if `x` is on its track (or `force`, while dragging).
     pub fn slide_to(&mut self, index: usize, x: f32, force: bool) -> Option<(SliderKind, f32)> {
         let (start, end) = self.track();
         // a fingertip's width around the track
@@ -315,19 +360,19 @@ impl Panel {
         if !force && (x < start - slack || x > end + slack) {
             return None;
         }
-        if self.page.is_some() || self.items.get(index)?.value.is_none() {
+        if self.page.is_some() || index >= self.sliders.len() {
             return None;
         }
-        self.selected = index;
+        self.selected = Target::Slider(index);
         let value = (x - start) / (end - start);
         self.set_selected_value(|_| value)
     }
 
     fn set_selected_value(&mut self, change: impl Fn(f32) -> f32) -> Option<(SliderKind, f32)> {
-        if self.page.is_some() {
+        let (None, Target::Slider(index)) = (&self.page, self.selected) else {
             return None;
-        }
-        let item = self.items.get_mut(self.selected)?;
+        };
+        let item = self.sliders.get_mut(index)?;
         let (MenuAction::Slider(kind), Some(value), true) = (item.action, item.value, item.enabled)
         else {
             return None;
@@ -341,21 +386,131 @@ impl Panel {
         Some((kind, new))
     }
 
-    /// Select an entry of the current page.
-    pub fn select(&mut self, index: usize) {
-        if index < self.count() {
-            self.selected = index;
-            self.scroll_to_selection();
+    /// What is selected.
+    pub const fn selected(&self) -> Target {
+        self.selected
+    }
+
+    /// Select something of the current page (from the pointer).
+    pub fn select(&mut self, target: Target) {
+        if self.exists(target) {
+            self.set_selected(target);
         }
     }
 
-    /// Whether the selected entry is a slider.
-    pub fn slider_selected(&self) -> bool {
-        self.page.is_none()
-            && self
-                .items
-                .get(self.selected)
-                .is_some_and(|item| item.value.is_some())
+    fn set_selected(&mut self, target: Target) {
+        self.selected = target;
+        match target {
+            Target::Item(index) if self.page.is_none() => self.item_memory = index,
+            Target::Button(index) => self.button_memory = index,
+            _ => {}
+        }
+        self.scroll_to_selection();
+    }
+
+    /// Whether a target is there on the current page.
+    fn exists(&self, target: Target) -> bool {
+        match (target, &self.page) {
+            (Target::Item(index), _) => index < self.count(),
+            (_, Some(_)) => false,
+            (Target::Button(index), None) => index < self.buttons.len(),
+            (Target::Slider(index), None) => index < self.sliders.len(),
+        }
+    }
+
+    /// Something that exists selected (the first stop when what was
+    /// selected is gone, or was never there).
+    fn fix_selection(&mut self) {
+        if !self.exists(self.selected)
+            && let Some(first) = self.stops().first().copied()
+        {
+            self.set_selected(first);
+        }
+    }
+
+    /// Where Up and Down stop, in order: the entries, the buttons' row (at
+    /// the button last selected) and the sliders.
+    fn stops(&self) -> Vec<Target> {
+        let mut stops: Vec<Target> = (0..self.count()).map(Target::Item).collect();
+        if self.page.is_none() {
+            if !self.buttons.is_empty() {
+                stops.push(Target::Button(
+                    self.button_memory.min(self.buttons.len() - 1),
+                ));
+            }
+            stops.extend((0..self.sliders.len()).map(Target::Slider));
+        }
+        stops
+    }
+
+    /// Up or Down: the previous or next stop, round; true when it changed.
+    pub fn move_selection(&mut self, delta: i32) -> bool {
+        let stops = self.stops();
+        if stops.is_empty() {
+            return false;
+        }
+        let current = stops
+            .iter()
+            .position(|stop| match (stop, self.selected) {
+                (Target::Button(_), Target::Button(_)) => true,
+                (stop, selected) => *stop == selected,
+            })
+            .unwrap_or(0);
+        let next = stops[(current as i32 + delta).rem_euclid(stops.len() as i32) as usize];
+        let changed = next != self.selected;
+        self.set_selected(next);
+        changed
+    }
+
+    /// Left or Right among the buttons; false when not on them (or at the
+    /// end).
+    pub fn move_button(&mut self, delta: i32) -> bool {
+        let Target::Button(index) = self.selected else {
+            return false;
+        };
+        let next = index
+            .saturating_add_signed(delta as isize)
+            .min(self.buttons.len().saturating_sub(1));
+        if next == index {
+            return false;
+        }
+        self.set_selected(Target::Button(next));
+        true
+    }
+
+    /// To the buttons (or the sliders) from the entries, and back; true
+    /// when it changed.
+    pub fn toggle_footer(&mut self) -> bool {
+        if matches!(self.selected, Target::Item(_)) {
+            self.go_to_footer()
+        } else {
+            self.go_to_list()
+        }
+    }
+
+    /// To the buttons (or the first slider); true when it changed.
+    pub fn go_to_footer(&mut self) -> bool {
+        let target = if self.buttons.is_empty() {
+            Target::Slider(0)
+        } else {
+            Target::Button(self.button_memory.min(self.buttons.len() - 1))
+        };
+        self.go(target)
+    }
+
+    /// Back to the entry last selected; true when it changed.
+    pub fn go_to_list(&mut self) -> bool {
+        self.go(Target::Item(
+            self.item_memory.min(self.count().saturating_sub(1)),
+        ))
+    }
+
+    fn go(&mut self, target: Target) -> bool {
+        if self.page.is_some() || target == self.selected || !self.exists(target) {
+            return false;
+        }
+        self.set_selected(target);
+        true
     }
 
     /// A slider's icon size: the entries'.
@@ -376,9 +531,11 @@ impl Panel {
         (self.width as f32 * 0.04).max(20.0)
     }
 
-    /// Change the label of an entry and whether it can be chosen.
+    /// Change the label of an entry (or a button) and whether it can be
+    /// chosen.
     pub fn set_entry(&mut self, action: MenuAction, label: Option<&str>, enabled: bool) {
-        for item in self.items.iter_mut().filter(|item| item.action == action) {
+        let all = self.items.iter_mut().chain(self.buttons.iter_mut());
+        for item in all.filter(|item| item.action == action) {
             if let Some(label) = label {
                 label.clone_into(&mut item.label);
             }
@@ -394,11 +551,12 @@ impl Panel {
     /// Show a save state page instead of the main entries.
     pub fn open_page(&mut self, page: SlotPage) {
         self.main_selected = self.selected;
-        self.selected = page.slots.iter().position(|slot| slot.enabled).unwrap_or(0);
+        self.main_scroll = self.scroll;
+        let first = page.slots.iter().position(|slot| slot.enabled).unwrap_or(0);
         self.hovered = None;
         self.page = Some(page);
-        self.first_slot = 0;
-        self.scroll_to_selection();
+        self.scroll = 0.0;
+        self.set_selected(Target::Item(first));
     }
 
     /// Whether a save state page is shown.
@@ -412,64 +570,28 @@ impl Panel {
             return false;
         }
         self.selected = self.main_selected;
+        self.scroll = self.main_scroll;
         self.hovered = None;
+        self.fix_selection();
+        self.scroll_to_selection();
         true
     }
 
-    /// How many entries the current page has.
+    /// How many entries (or slots) the current page has.
     fn count(&self) -> usize {
         self.page
             .as_ref()
             .map_or(self.items.len(), |page| page.slots.len())
     }
 
-    /// Move the selection; true when it changed.
-    pub fn move_selection(&mut self, delta: i32) -> bool {
-        if self.count() == 0 {
-            return false;
-        }
-        let count = self.count() as i32;
-        let next = (self.selected as i32 + delta).rem_euclid(count) as usize;
-        let changed = next != self.selected;
-        self.selected = next;
-        self.scroll_to_selection();
-        changed
-    }
-
-    /// Scroll the slots so that the selected one is shown.
-    fn scroll_to_selection(&mut self) {
-        let visible = if self.page.is_some() {
-            self.visible_slots()
-        } else {
-            self.visible_items()
-        };
-        let first = if self.page.is_some() {
-            &mut self.first_slot
-        } else {
-            &mut self.first_item
-        };
-        if self.selected < *first {
-            *first = self.selected;
-        } else if self.selected >= *first + visible {
-            *first = self.selected + 1 - visible;
-        }
-        // the main entries are not all as tall: one more step if needed
-        if self.page.is_none() {
-            while self.first_item < self.selected
-                && self.selected >= self.first_item + self.fit_from(self.first_item)
-            {
-                self.first_item += 1;
-            }
-        }
-    }
-
     /// Taller rows, for fingers: 1 is ES's.
     pub fn set_row_scale(&mut self, scale: f32) {
         self.row_scale = scale.max(1.0);
+        self.scroll_to_selection();
     }
 
     /// The height of a main entry, without its separator.
-    fn row_height(&self) -> f32 {
+    pub fn row_height(&self) -> f32 {
         (self.text.font.line_height * self.row_scale).round()
     }
 
@@ -478,156 +600,205 @@ impl Panel {
         (self.row_height() * SLIDER_SCALE).round()
     }
 
-    /// The height of a main entry, with its separator.
-    fn item_pitch(&self) -> f32 {
-        self.row_height() + self.line()
+    /// A round button's diameter.
+    fn button_size(&self) -> f32 {
+        (self.row_height() * BUTTON_SCALE).round()
     }
 
-    /// The height of the main entry `index`, without its separator.
-    fn height_of(&self, index: usize) -> f32 {
-        if self
-            .items
-            .get(index)
-            .is_some_and(|item| item.value.is_some())
-        {
-            self.slider_height()
+    /// The height of the buttons' row (0: no buttons).
+    fn buttons_height(&self) -> f32 {
+        if self.buttons.is_empty() {
+            0.0
         } else {
-            self.row_height()
+            (self.button_size() * (1.0 + 2.0 * BUTTON_MARGIN)).round()
         }
     }
 
-    /// How many main entries fit under the header from `first`.
-    fn fit_from(&self, first: usize) -> usize {
-        let mut free = self.screen_height - self.header_height();
-        let mut count = 0;
-        for index in first..self.items.len() {
-            free -= self.height_of(index) + self.line();
-            if free < 0.0 {
-                break;
-            }
-            count += 1;
-        }
-        count.max(1)
+    /// Whether the buttons and sliders show: not on a save state page.
+    fn footer_shown(&self) -> bool {
+        self.page.is_none() && !(self.buttons.is_empty() && self.sliders.is_empty())
     }
 
-    /// The last first entry: the one from which the last entries fit.
-    fn last_first(&self) -> usize {
-        let mut free = self.screen_height - self.header_height();
-        let mut first = self.items.len();
-        while first > 0 {
-            free -= self.height_of(first - 1) + self.line();
-            if free < 0.0 {
-                break;
-            }
-            first -= 1;
+    /// The height of what is pinned at the bottom: the buttons' row and
+    /// the sliders, each with a separator above.
+    fn footer_height(&self) -> f32 {
+        if !self.footer_shown() {
+            return 0.0;
         }
-        first.min(self.items.len().saturating_sub(1))
+        let line = self.line();
+        let buttons = if self.buttons.is_empty() {
+            0.0
+        } else {
+            line + self.buttons_height()
+        };
+        buttons + self.sliders.len() as f32 * (line + self.slider_height())
     }
 
-    /// The height of a row of the current page (what a drag scrolls by).
-    pub fn row_pitch(&self) -> f32 {
+    /// Where the scrolling entries are: from under the header to the
+    /// footer.
+    fn list_area(&self) -> (f32, f32) {
+        let top = self.header_height();
+        let bottom = (self.screen_height - self.footer_height()).max(top + 1.0);
+        (top, bottom)
+    }
+
+    /// The height of a row of the current page, with its separator.
+    fn pitch(&self) -> f32 {
         if self.page.is_some() {
             self.slot_height()
         } else {
-            self.item_pitch()
+            self.row_height() + self.line()
         }
     }
 
-    /// Whether an entry of the main page is a slider.
-    pub fn is_slider(&self, index: usize) -> bool {
-        self.page.is_none()
-            && self
-                .items
-                .get(index)
-                .is_some_and(|item| item.value.is_some() && item.enabled)
+    /// How far the current page can scroll.
+    fn max_scroll(&self) -> f32 {
+        let (top, bottom) = self.list_area();
+        (self.count() as f32 * self.pitch() - (bottom - top)).max(0.0)
     }
 
-    /// Scroll the current page by `rows` (down when positive), keeping the
-    /// selection among the rows shown; true when it moved.
-    pub fn scroll(&mut self, rows: i32) -> bool {
-        let count = self.count();
-        let (first, visible) = if self.page.is_some() {
-            (self.first_slot, self.visible_slots())
-        } else {
-            (self.first_item, self.visible_items())
-        };
-        let last = if self.page.is_some() {
-            count.saturating_sub(visible)
-        } else {
-            self.last_first()
-        };
-        let moved = first.saturating_add_signed(rows as isize).min(last);
-        if moved == first {
+    /// Scroll so that the selected entry shows whole.
+    fn scroll_to_selection(&mut self) {
+        if let Target::Item(index) = self.selected {
+            let (top, bottom) = self.list_area();
+            let pitch = self.pitch();
+            let row_top = index as f32 * pitch;
+            if row_top < self.scroll {
+                self.scroll = row_top;
+            } else if row_top + pitch > self.scroll + (bottom - top) {
+                self.scroll = row_top + pitch - (bottom - top);
+            }
+        }
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+    }
+
+    /// Whether `y` (surface coordinates) is on the scrolling entries.
+    pub fn in_list(&self, y: f32) -> bool {
+        let (top, bottom) = self.list_area();
+        (top..bottom).contains(&y)
+    }
+
+    /// Scroll the current page by `pixels` (down when positive), keeping a
+    /// selected entry among the ones shown whole; true when it moved.
+    pub fn scroll_by(&mut self, pixels: f32) -> bool {
+        let scroll = (self.scroll + pixels).clamp(0.0, self.max_scroll());
+        if (scroll - self.scroll).abs() < 0.5 {
             return false;
         }
-        let visible = if self.page.is_some() {
-            self.first_slot = moved;
-            visible
-        } else {
-            self.first_item = moved;
-            self.fit_from(moved)
-        };
-        self.selected = self.selected.clamp(
-            moved,
-            (moved + visible).min(count).saturating_sub(1).max(moved),
-        );
+        self.scroll = scroll;
+        if let Target::Item(index) = self.selected {
+            let (top, bottom) = self.list_area();
+            let pitch = self.pitch();
+            // the rows shown whole (a hair of slack for rounding)
+            let first = ((scroll - 0.5) / pitch).ceil().max(0.0) as usize;
+            let last = (((scroll + bottom - top + 0.5) / pitch).floor() as usize).saturating_sub(1);
+            let last = last.max(first).min(self.count().saturating_sub(1));
+            let clamped = index.clamp(first.min(last), last);
+            if clamped != index {
+                self.selected = Target::Item(clamped);
+                if self.page.is_none() {
+                    self.item_memory = clamped;
+                }
+            }
+        }
         true
     }
 
-    /// How many main entries fit under the header, from the first shown.
-    fn visible_items(&self) -> usize {
-        self.fit_from(self.first_item)
-    }
-
-    /// Highlight the entry under the pointer (None: none); true when it changed.
-    pub fn hover(&mut self, index: Option<usize>) -> bool {
-        let index = index.filter(|index| *index < self.count());
-        let changed = index != self.hovered;
-        self.hovered = index;
+    /// Highlight what is under the pointer (None: nothing); true when it
+    /// changed.
+    pub fn hover(&mut self, target: Option<Target>) -> bool {
+        let target = target.filter(|target| self.exists(*target));
+        let changed = target != self.hovered;
+        self.hovered = target;
         changed
     }
 
-    /// What an entry of the current page does (None: nothing, e.g. an
-    /// empty slot to load).
-    pub fn action(&self, index: usize) -> Option<MenuAction> {
-        match &self.page {
-            Some(page) => page
+    /// The button highlighted (selected, or under the pointer), whose
+    /// function shows after a while.
+    pub fn highlighted_button(&self) -> Option<usize> {
+        match (&self.page, self.hovered.unwrap_or(self.selected)) {
+            (None, Target::Button(index)) => Some(index),
+            _ => None,
+        }
+    }
+
+    /// Show what a button does next to it (None: hide it); true when it
+    /// changed.
+    pub fn set_tooltip(&mut self, button: Option<usize>) -> bool {
+        let changed = button != self.tooltip;
+        self.tooltip = button;
+        changed
+    }
+
+    /// What a target does (None: nothing, e.g. an empty slot to load).
+    pub fn action(&self, target: Target) -> Option<MenuAction> {
+        let entry = |items: &[MenuItem], index: usize| {
+            items
+                .get(index)
+                .filter(|item| item.enabled)
+                .map(|item| item.action)
+        };
+        match (&self.page, target) {
+            (Some(page), Target::Item(index)) => page
                 .slots
                 .get(index)
                 .filter(|slot| slot.enabled)
                 .map(|slot| MenuAction::Slot(page.mode, slot.number)),
-            None => self
-                .items
-                .get(index)
-                .filter(|item| item.enabled)
-                .map(|item| item.action),
+            (Some(_), _) => None,
+            (None, Target::Item(index)) => entry(&self.items, index),
+            (None, Target::Button(index)) => entry(&self.buttons, index),
+            (None, Target::Slider(index)) => entry(&self.sliders, index),
         }
     }
 
-    /// The entry at height `y` of the panel (surface coordinates), if any.
-    pub fn item_at(&self, y: f32) -> Option<usize> {
-        let top = self.header_height();
+    pub fn selected_action(&self) -> Option<MenuAction> {
+        self.action(self.selected)
+    }
+
+    /// The round buttons' centres, and their row's top.
+    fn button_centres(&self) -> (Vec<(f32, f32)>, f32) {
+        let size = self.button_size();
+        let gap = (size * BUTTON_GAP).round();
+        let count = self.buttons.len() as f32;
+        let total = count * size + (count - 1.0).max(0.0) * gap;
+        let left = ((self.width as f32 - total) / 2.0).round();
+        let row_top = self.list_area().1 + self.line();
+        let middle = row_top + self.buttons_height() / 2.0;
+        let centres = (0..self.buttons.len())
+            .map(|index| (left + size / 2.0 + index as f32 * (size + gap), middle))
+            .collect();
+        (centres, row_top)
+    }
+
+    /// What is at a point of the panel (surface coordinates), if anything.
+    pub fn target_at(&self, x: f32, y: f32) -> Option<Target> {
+        let (top, bottom) = self.list_area();
         if y < top {
             return None;
         }
-        if self.page.is_none() {
-            // the rows' own heights (sliders are taller)
-            let mut bottom = top;
-            for index in self.first_item..self.first_item + self.visible_items() {
-                bottom += self.height_of(index) + self.line();
-                if y < bottom {
-                    return (index < self.count()).then_some(index);
-                }
+        if y < bottom {
+            let index = ((y - top + self.scroll) / self.pitch()) as usize;
+            return (index < self.count()).then_some(Target::Item(index));
+        }
+        if !self.footer_shown() {
+            return None;
+        }
+        let line = self.line();
+        let mut row_top = bottom;
+        if !self.buttons.is_empty() {
+            row_top += line + self.buttons_height();
+            if y < row_top {
+                // a finger's slack around each button
+                let reach = self.button_size() / 2.0 * 1.25;
+                let (centres, _) = self.button_centres();
+                return centres
+                    .iter()
+                    .position(|&(cx, cy)| (x - cx).hypot(y - cy) <= reach)
+                    .map(Target::Button);
             }
-            return None;
         }
-        let (pitch, visible, first) = (self.slot_height(), self.visible_slots(), self.first_slot);
-        let row = ((y - top) / pitch) as usize;
-        if row >= visible {
-            return None;
-        }
-        let index = first + row;
-        (index < self.count()).then_some(index)
+        let index = ((y - row_top) / (line + self.slider_height())) as usize;
+        (index < self.sliders.len()).then_some(Target::Slider(index))
     }
 
     /// How many slot rows fit, with previews no larger than about a third of
@@ -645,10 +816,6 @@ impl Panel {
     /// The thickness of the separators.
     fn line(&self) -> f32 {
         (self.screen_height / 540.0).max(1.0).round()
-    }
-
-    pub fn selected_action(&self) -> Option<MenuAction> {
-        self.action(self.selected)
     }
 
     /// The header's two lines: the game and "developer · year", or on a
@@ -717,7 +884,16 @@ impl Panel {
         pixmap.fill(self.background.to_color());
 
         let padding = self.padding();
+        // the entries first: the header and the footer cover what scrolled
+        // past them
+        match &self.page {
+            Some(page) => self.draw_slots(&mut pixmap, fonts, page, padding),
+            None => self.draw_items(&mut pixmap, fonts, padding),
+        }
+        self.draw_scrollbar(&mut pixmap);
+
         let header = self.header_height();
+        fill(&mut pixmap, 0.0, 0.0, width, header, self.background);
         let bar = self.status_bar_height();
         if bar > 0.0 {
             self.draw_status_bar(&mut pixmap, fonts, padding, bar);
@@ -731,11 +907,33 @@ impl Panel {
             self.line(),
             self.text.style.separator_color,
         );
-        match &self.page {
-            Some(page) => self.draw_slots(&mut pixmap, fonts, page, padding, header),
-            None => self.draw_items(&mut pixmap, fonts, padding, header),
+        if self.footer_shown() {
+            self.draw_footer(&mut pixmap, fonts, padding);
+            self.draw_tooltip(&mut pixmap, fonts);
         }
         Some(pixmap)
+    }
+
+    /// Where the shown entries are among all of them, when they scroll.
+    fn draw_scrollbar(&self, pixmap: &mut Pixmap) {
+        let (top, bottom) = self.list_area();
+        let track = bottom - top;
+        let content = self.count() as f32 * self.pitch();
+        if content <= track + 0.5 {
+            return;
+        }
+        let width = self.width as f32;
+        let bar = (width * 0.006).max(3.0);
+        let length = track * track / content;
+        let at = top + track * self.scroll / content;
+        fill(
+            pixmap,
+            width - bar,
+            at,
+            bar,
+            length,
+            self.text.style.selector_color,
+        );
     }
 
     /// The status line: the time, then the network's and the battery's
@@ -871,16 +1069,13 @@ impl Panel {
         let (font, status) = fonts.fit(&self.small.font, status, inner - icon_size - gap, 0.8);
         let text_width = fonts.measure(&font, &status);
         let left = padding + ((inner - icon_size - gap - text_width) / 2.0).max(0.0);
-        if let Some(image) = Icon::Disc.render(icon_size as u32, color) {
-            pixmap.draw_pixmap(
-                left.round() as i32,
-                (y + (height - icon_size) / 2.0).round() as i32,
-                image.as_ref(),
-                &PixmapPaint::default(),
-                Transform::identity(),
-                None,
-            );
-        }
+        draw_icon(
+            pixmap,
+            Icon::Disc,
+            icon_size,
+            (left, y + (height - icon_size) / 2.0),
+            color,
+        );
         fonts.draw(
             pixmap,
             &font,
@@ -897,12 +1092,12 @@ impl Panel {
     }
 
     /// The background of a row: the selector, the hover highlight or nothing.
-    fn draw_row_background(&self, pixmap: &mut Pixmap, index: usize, y: f32, height: f32) {
+    fn draw_row_background(&self, pixmap: &mut Pixmap, target: Target, y: f32, height: f32) {
         let width = self.width as f32;
         let style = &self.text.style;
-        if index == self.selected {
+        if target == self.selected {
             fill_selector(pixmap, y, width, height, style);
-        } else if self.hovered == Some(index) {
+        } else if self.hovered == Some(target) {
             fill(
                 pixmap,
                 0.0,
@@ -914,12 +1109,40 @@ impl Panel {
         }
     }
 
-    /// The main entries, one line each (the ones that fit, from
-    /// `first_item`).
-    fn draw_items(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, padding: f32, header: f32) {
+    /// The colour of a row's text and icons.
+    fn row_color(&self, target: Target, enabled: bool) -> Rgba {
+        let style = &self.text.style;
+        let color = if target == self.selected {
+            style.selected_color
+        } else {
+            style.color
+        };
+        if enabled {
+            color
+        } else {
+            color.with_alpha(DISABLED_ALPHA)
+        }
+    }
+
+    /// The rows of the current page shown, at least in part: their indices
+    /// and where the first one starts.
+    fn shown_rows(&self) -> (std::ops::Range<usize>, f32) {
+        let (top, bottom) = self.list_area();
+        let pitch = self.pitch();
+        let first = (self.scroll / pitch).floor() as usize;
+        let last = (((self.scroll + bottom - top) / pitch).ceil() as usize).min(self.count());
+        (
+            first..last.max(first),
+            top + first as f32 * pitch - self.scroll,
+        )
+    }
+
+    /// The main entries, one line each.
+    fn draw_items(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, padding: f32) {
         let width = self.width as f32;
         let inner = width - 2.0 * padding;
         let line = self.line();
+        let row_height = self.row_height();
         let style = &self.text.style;
         // icons as tall as capital letters plus a bit, then a gap
         let icon_size = (self.text.letter_height * ICON_SCALE).round().max(1.0);
@@ -928,83 +1151,190 @@ impl Panel {
         } else {
             padding
         };
-        let visible = self.visible_items();
-        let mut y = header;
-        let shown = self
-            .items
-            .iter()
-            .enumerate()
-            .skip(self.first_item)
-            .take(visible);
-        for (index, item) in shown {
-            let row_height = self.height_of(index);
-            self.draw_row_background(pixmap, index, y, row_height);
-            let color = if index == self.selected {
-                style.selected_color
-            } else {
-                style.color
-            };
-            let color = if item.enabled {
-                color
-            } else {
-                color.with_alpha(DISABLED_ALPHA)
-            };
-            if let Some(value) = item.value {
-                // a slider: its icon (always: it has no label), the slider
-                let icon = match item.action {
-                    MenuAction::Slider(SliderKind::Volume) => Icon::volume(value),
-                    _ => Icon::Sun,
-                };
-                let size = self.slider_icon();
-                draw_icon(
-                    pixmap,
-                    icon,
-                    size,
-                    (padding, y + (row_height - size) / 2.0),
-                    color,
-                );
-                self.draw_slider(pixmap, fonts, value, (y, row_height), color);
-            } else {
-                if self.icons
-                    && let Some(icon) = Icon::for_action(item.action)
-                {
-                    let top = y + (row_height - icon_size) / 2.0;
-                    draw_icon(pixmap, icon, icon_size, (padding, top), color);
-                }
-                let label_width = inner - (text_x - padding);
-                let (font, label) = fonts.fit(
-                    &self.text.font,
-                    &item.label.to_uppercase(),
-                    label_width,
-                    0.7,
-                );
-                fonts.draw(
-                    pixmap,
-                    &font,
-                    &label,
-                    TextBox {
-                        x: text_x,
-                        y,
-                        width: label_width.max(1.0),
-                        height: row_height,
-                        align: Align::Left,
-                    },
-                    color,
-                );
+        let (rows, mut y) = self.shown_rows();
+        for index in rows {
+            let item = &self.items[index];
+            let target = Target::Item(index);
+            self.draw_row_background(pixmap, target, y, row_height);
+            let color = self.row_color(target, item.enabled);
+            if self.icons
+                && let Some(icon) = Icon::for_action(item.action)
+            {
+                let top = y + (row_height - icon_size) / 2.0;
+                draw_icon(pixmap, icon, icon_size, (padding, top), color);
             }
+            let label_width = inner - (text_x - padding);
+            let (font, label) = fonts.fit(
+                &self.text.font,
+                &item.label.to_uppercase(),
+                label_width,
+                0.7,
+            );
+            fonts.draw(
+                pixmap,
+                &font,
+                &label,
+                TextBox {
+                    x: text_x,
+                    y,
+                    width: label_width.max(1.0),
+                    height: row_height,
+                    align: Align::Left,
+                },
+                color,
+            );
             y += row_height;
             fill(pixmap, 0.0, y, width, line, style.separator_color);
             y += line;
         }
-        // where the shown entries are among all of them
-        if self.items.len() > visible {
-            let track = self.screen_height - header;
-            let bar = (width * 0.006).max(3.0);
-            let count = self.items.len() as f32;
-            let length = track * visible as f32 / count;
-            let top = header + track * self.first_item as f32 / count;
-            fill(pixmap, width - bar, top, bar, length, style.selector_color);
+    }
+
+    /// What is pinned at the bottom: the round buttons, then the sliders,
+    /// each under a separator.
+    fn draw_footer(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, padding: f32) {
+        let width = self.width as f32;
+        let line = self.line();
+        let style = &self.text.style;
+        let mut y = self.list_area().1;
+        fill(
+            pixmap,
+            0.0,
+            y,
+            width,
+            self.screen_height - y,
+            self.background,
+        );
+        if !self.buttons.is_empty() {
+            fill(pixmap, 0.0, y, width, line, style.separator_color);
+            y += line + self.buttons_height();
+            self.draw_buttons(pixmap);
         }
+        let height = self.slider_height();
+        for (index, slider) in self.sliders.iter().enumerate() {
+            fill(pixmap, 0.0, y, width, line, style.separator_color);
+            y += line;
+            let target = Target::Slider(index);
+            self.draw_row_background(pixmap, target, y, height);
+            let color = self.row_color(target, slider.enabled);
+            let value = slider.value.unwrap_or_default();
+            let icon = match slider.action {
+                MenuAction::Slider(SliderKind::Volume) => Icon::volume(value),
+                _ => Icon::Sun,
+            };
+            let size = self.slider_icon();
+            draw_icon(
+                pixmap,
+                icon,
+                size,
+                (padding, y + (height - size) / 2.0),
+                color,
+            );
+            self.draw_slider(pixmap, fonts, value, (y, height), color);
+            y += height;
+        }
+    }
+
+    /// The round buttons: a faint disc with the icon, the selector's
+    /// colours when selected.
+    fn draw_buttons(&self, pixmap: &mut Pixmap) {
+        let style = &self.text.style;
+        let size = self.button_size();
+        let icon_size = (size * BUTTON_ICON).round().max(1.0);
+        let (centres, _) = self.button_centres();
+        for (index, (button, &(cx, cy))) in self.buttons.iter().zip(&centres).enumerate() {
+            let target = Target::Button(index);
+            let selected = target == self.selected;
+            let disc = if selected {
+                style.selector_color
+            } else {
+                style.color.with_alpha(BUTTON_ALPHA)
+            };
+            fill_circle(pixmap, (cx, cy), size / 2.0, disc);
+            if !selected && self.hovered == Some(target) {
+                fill_circle(
+                    pixmap,
+                    (cx, cy),
+                    size / 2.0,
+                    style.selector_color.with_alpha(HOVER_ALPHA),
+                );
+            }
+            if let Some(icon) = Icon::for_action(button.action) {
+                // the play triangle looks centred a bit to the right
+                let nudge = if button.action == MenuAction::Continue {
+                    icon_size * 0.06
+                } else {
+                    0.0
+                };
+                draw_icon(
+                    pixmap,
+                    icon,
+                    icon_size,
+                    (cx - icon_size / 2.0 + nudge, cy - icon_size / 2.0),
+                    self.row_color(target, button.enabled),
+                );
+            }
+        }
+    }
+
+    /// What the highlighted button does, in a bubble above it.
+    fn draw_tooltip(&self, pixmap: &mut Pixmap, fonts: &mut Fonts) {
+        let Some(button) = self
+            .tooltip
+            .and_then(|index| self.buttons.get(index).map(|b| (index, b)))
+        else {
+            return;
+        };
+        let (index, button) = button;
+        let (centres, row_top) = self.button_centres();
+        let Some(&(cx, _)) = centres.get(index) else {
+            return;
+        };
+        let style = &self.text.style;
+        let font = &self.small.font;
+        let margin = self.padding() / 2.0;
+        let pad = (self.small.letter_height * 0.8).round();
+        let (font, label) = fonts.fit(
+            font,
+            &button.label,
+            self.width as f32 - 2.0 * (margin + pad),
+            0.8,
+        );
+        let text_width = fonts.measure(&font, &label).ceil();
+        let width = text_width + 2.0 * pad;
+        let height = (font.line_height + pad * 0.5).round();
+        let arrow = (height * 0.3).round();
+        // above the button, inside the panel
+        let left = (cx - width / 2.0)
+            .clamp(margin, (self.width as f32 - margin - width).max(margin))
+            .round();
+        let circle_top = row_top + (self.buttons_height() - self.button_size()) / 2.0;
+        let bottom = (circle_top - arrow * 0.6).round();
+        let top = bottom - height;
+        let color = style.selector_color;
+        if let Some(path) = rounded_rect(left, top, width, height, height * 0.3) {
+            fill_path(pixmap, &path, color);
+        }
+        let mut builder = PathBuilder::new();
+        builder.move_to(cx - arrow, bottom - 1.0);
+        builder.line_to(cx + arrow, bottom - 1.0);
+        builder.line_to(cx, bottom + arrow * 0.8);
+        builder.close();
+        if let Some(path) = builder.finish() {
+            fill_path(pixmap, &path, color);
+        }
+        fonts.draw(
+            pixmap,
+            &font,
+            &label,
+            TextBox {
+                x: left + pad,
+                y: top,
+                width: text_width + 1.0,
+                height,
+                align: Align::Left,
+            },
+            style.selected_color,
+        );
     }
 
     /// A slider like ES's: a line, filled up to the value, with a knob, and
@@ -1039,18 +1369,7 @@ impl Panel {
             thickness,
             color,
         );
-        if let Some(path) = PathBuilder::from_circle(filled, middle, knob) {
-            let mut paint = Paint::default();
-            paint.set_color(color.to_color());
-            paint.anti_alias = true;
-            pixmap.fill_path(
-                &path,
-                &paint,
-                tiny_skia::FillRule::Winding,
-                Transform::identity(),
-                None,
-            );
-        }
+        fill_circle(pixmap, (filled, middle), knob, color);
         let padding = self.padding();
         let inner = self.width as f32 - 2.0 * padding;
         let value_x = padding + inner * VALUE_START;
@@ -1070,14 +1389,7 @@ impl Panel {
     }
 
     /// The save state slots: preview on the left, slot and date on the right.
-    fn draw_slots(
-        &self,
-        pixmap: &mut Pixmap,
-        fonts: &mut Fonts,
-        page: &SlotPage,
-        padding: f32,
-        header: f32,
-    ) {
+    fn draw_slots(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, page: &SlotPage, padding: f32) {
         let width = self.width as f32;
         let line = self.line();
         let row = self.slot_height();
@@ -1088,26 +1400,14 @@ impl Panel {
         let text_x = padding + preview_width + padding;
         let text_width = (width - text_x - padding).max(1.0);
 
-        let visible = self.visible_slots();
-        let shown = page
-            .slots
-            .iter()
-            .enumerate()
-            .skip(self.first_slot)
-            .take(visible);
-        for (index, slot) in shown {
-            let y = header + (index - self.first_slot) as f32 * row;
-            self.draw_row_background(pixmap, index, y, row - line);
-            let color = if index == self.selected {
-                style.selected_color
-            } else {
-                style.color
-            };
-            let color = if slot.enabled {
-                color
-            } else {
-                color.with_alpha(DISABLED_ALPHA)
-            };
+        let (rows, first_y) = self.shown_rows();
+        let first = rows.start;
+        for index in rows {
+            let slot = &page.slots[index];
+            let y = first_y + (index - first) as f32 * row;
+            let target = Target::Item(index);
+            self.draw_row_background(pixmap, target, y, row - line);
+            let color = self.row_color(target, slot.enabled);
 
             let frame = (padding, y + margin, preview_width, preview_height);
             match &slot.preview {
@@ -1161,15 +1461,45 @@ impl Panel {
                 style.separator_color,
             );
         }
-        // where the shown slots are among all of them
-        if page.slots.len() > visible {
-            let track = self.screen_height - header;
-            let bar = (width * 0.006).max(3.0);
-            let length = track * visible as f32 / page.slots.len() as f32;
-            let top = header + track * self.first_slot as f32 / page.slots.len() as f32;
-            fill(pixmap, width - bar, top, bar, length, style.selector_color);
-        }
     }
+}
+
+/// A filled circle.
+fn fill_circle(pixmap: &mut Pixmap, centre: (f32, f32), radius: f32, color: Rgba) {
+    if let Some(path) = PathBuilder::from_circle(centre.0, centre.1, radius) {
+        fill_path(pixmap, &path, color);
+    }
+}
+
+fn fill_path(pixmap: &mut Pixmap, path: &tiny_skia::Path, color: Rgba) {
+    let mut paint = Paint::default();
+    paint.set_color(color.to_color());
+    paint.anti_alias = true;
+    pixmap.fill_path(
+        path,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+}
+
+/// A rectangle with rounded corners.
+fn rounded_rect(x: f32, y: f32, width: f32, height: f32, radius: f32) -> Option<tiny_skia::Path> {
+    let r = radius.min(width / 2.0).min(height / 2.0);
+    let (right, bottom) = (x + width, y + height);
+    let mut builder = PathBuilder::new();
+    builder.move_to(x + r, y);
+    builder.line_to(right - r, y);
+    builder.quad_to(right, y, right, y + r);
+    builder.line_to(right, bottom - r);
+    builder.quad_to(right, bottom, right - r, bottom);
+    builder.line_to(x + r, bottom);
+    builder.quad_to(x, bottom, x, bottom - r);
+    builder.line_to(x, y + r);
+    builder.quad_to(x, y, x + r, y);
+    builder.close();
+    builder.finish()
 }
 
 /// An icon, `size` pixels square, at `at` (its top left corner).

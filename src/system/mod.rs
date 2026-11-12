@@ -4,10 +4,11 @@
 //! putting the computer to sleep (outside games).
 //!
 //! Nothing here may stall the menu: what takes a program to read (the
-//! volume) is read in a thread as soon as the overlay starts, and comes
-//! back as a `Msg`; each change is applied
-//! by a thread of its own that only ever applies the latest value asked for
-//! (a slider held down asks for many).
+//! volume, the primary screen) is read in a thread as soon as the overlay
+//! starts, and comes back as a `Msg`; each change is applied by a thread of
+//! its own that only ever applies the latest value asked for (a slider held
+//! down asks for many). The brightness glides to it, a few backlight steps
+//! at a time, rather than jumping.
 
 pub mod audio;
 pub mod brightness;
@@ -19,7 +20,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use audio::Mixer;
-use brightness::{DdcMonitor, Screen};
+use brightness::Screen;
 
 /// What a slider controls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,20 +31,16 @@ pub enum SliderKind {
 
 /// How much Left/Right move a slider.
 pub const STEP: f32 = 0.05;
-/// How often a slider's changes reach the system, at most: each one runs a
-/// program, and the backlight or the sound server do some work.
+/// How often the volume's changes reach the sound server, at most: each one
+/// runs a program.
 const VOLUME_SPACING: Duration = Duration::from_millis(50);
-/// The brightness follows the slider while it moves, a few times a second:
-/// each change stalls NVIDIA's display a little (a backlight write, or a
-/// DDC/CI exchange over its I2C), and the backlight or the monitor fades
-/// between two changes by itself, so a few are enough to look smooth. Each
-/// one is the slider's value at that moment, never an older one: a slider
-/// going back and forth is followed as it goes.
-const BACKLIGHT_SPACING: Duration = Duration::from_millis(150);
-/// A refused change (NVIDIA's backlight while it still fades) is tried
-/// again this much later, with the slider's latest value, this many times.
-const RETRY_AFTER: Duration = Duration::from_millis(120);
-const RETRIES: u32 = 3;
+/// The brightness glides to the slider's value: every `GLIDE_TICK`, this
+/// part of the way left (at least one backlight step), the latest value
+/// always the goal. About 0.4 s from one end to the other.
+const GLIDE_TICK: Duration = Duration::from_millis(30);
+const GLIDE_EASE: f32 = 0.3;
+/// How many times the last value of a glide is tried when refused.
+const LAST_TRIES: u32 = 10;
 /// How long closing waits for the last change to be applied.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -79,16 +76,6 @@ impl Control {
             }
         }
     }
-
-    /// How far apart its changes go, at least: the brightness's driver has
-    /// work to do on each one (and NVIDIA's backlight refuses one too close
-    /// to the last).
-    fn spacing(&self) -> Duration {
-        match self {
-            Self::Brightness(_) => BACKLIGHT_SPACING,
-            Self::Volume(_) => VOLUME_SPACING,
-        }
-    }
 }
 
 /// A slider's control, found and read.
@@ -114,10 +101,9 @@ impl Found {
 pub enum Msg {
     /// A slider's control.
     Found(Found),
-    /// X11's primary output (None: none set).
+    /// The display settings' primary screen (None: none set, or no way
+    /// to ask).
     Primary(Option<String>),
-    /// The monitors that answer DDC/CI, found again.
-    Ddc(Vec<DdcMonitor>),
 }
 
 /// Read the volume in a thread (`wpctl` or `pactl`).
@@ -129,20 +115,17 @@ pub fn read_volume(sender: calloop::channel::Sender<Msg>) {
     });
 }
 
-/// Read X11's primary output in a thread (nothing under Wayland).
-pub fn read_x11_primary(sender: calloop::channel::Sender<Msg>) {
+/// Read the display settings' primary screen in a thread.
+pub fn read_primary(sender: calloop::channel::Sender<Msg>) {
     spawn("primary", move || {
-        sender.send(Msg::Primary(brightness::x11_primary())).ok();
+        sender.send(Msg::Primary(brightness::primary_output())).ok();
     });
 }
 
-/// Find the monitors that answer DDC/CI in a thread (slow).
-pub fn detect_ddc(runtime_dir: std::path::PathBuf, sender: calloop::channel::Sender<Msg>) {
-    spawn("ddc", move || {
-        sender
-            .send(Msg::Ddc(brightness::detect_ddc(&runtime_dir)))
-            .ok();
-    });
+/// Whether a program is installed (in `PATH`).
+pub fn installed(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
 }
 
 fn spawn(name: &str, work: impl FnOnce() + Send + 'static) {
@@ -166,59 +149,13 @@ struct Pending {
 }
 
 impl Setter {
-    fn new(mut control: Control) -> Self {
+    fn new(control: Control) -> Self {
         let kind = control.kind();
         let shared = Arc::new((Mutex::new(Pending::default()), Condvar::new()));
         let worker = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
             .name(format!("{kind:?}"))
-            .spawn(move || {
-                let (lock, changed) = &*worker;
-                let mut last: Option<Instant> = None;
-                loop {
-                    let mut value = {
-                        let mut pending = lock.lock().unwrap_or_else(PoisonError::into_inner);
-                        loop {
-                            if let Some(value) = pending.value.take() {
-                                pending.busy = true;
-                                break value;
-                            }
-                            if pending.stop {
-                                return;
-                            }
-                            pending = changed
-                                .wait(pending)
-                                .unwrap_or_else(PoisonError::into_inner);
-                        }
-                    };
-                    // changes spaced (a drag asks for dozens a second): the
-                    // latest one, after waiting; a refused one again later
-                    let spacing = control.spacing();
-                    let newer = || {
-                        lock.lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .value
-                            .take()
-                    };
-                    let wait = last.map_or(Duration::ZERO, |last: Instant| {
-                        spacing.saturating_sub(last.elapsed())
-                    });
-                    if !wait.is_zero() {
-                        std::thread::sleep(wait);
-                        value = newer().unwrap_or(value);
-                    }
-                    let mut tries = 0;
-                    while !control.set(value) && tries < RETRIES {
-                        tries += 1;
-                        std::thread::sleep(RETRY_AFTER);
-                        value = newer().unwrap_or(value);
-                    }
-                    last = Some(Instant::now());
-                    let mut pending = lock.lock().unwrap_or_else(PoisonError::into_inner);
-                    pending.busy = false;
-                    changed.notify_all();
-                }
-            })
+            .spawn(move || work(control, &worker))
             .ok();
         Self {
             kind,
@@ -236,6 +173,86 @@ impl Setter {
         let (lock, changed) = &*self.shared;
         lock.lock().unwrap_or_else(PoisonError::into_inner).value = Some(value.clamp(0.0, 1.0));
         changed.notify_all();
+    }
+}
+
+/// The setter's thread: wait for a value, apply it, again.
+fn work(mut control: Control, shared: &(Mutex<Pending>, Condvar)) {
+    let (lock, changed) = shared;
+    let newer = || {
+        lock.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .value
+            .take()
+    };
+    let mut current = control.get();
+    let mut last: Option<Instant> = None;
+    loop {
+        let target = {
+            let mut pending = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            loop {
+                if let Some(value) = pending.value.take() {
+                    pending.busy = true;
+                    break value;
+                }
+                if pending.stop {
+                    return;
+                }
+                pending = changed
+                    .wait(pending)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        };
+        match &mut control {
+            Control::Brightness(screen) => {
+                current = Some(glide(screen, current.unwrap_or(target), target, &newer));
+            }
+            Control::Volume(_) => {
+                // spaced: the latest value after waiting
+                let wait = last.map_or(Duration::ZERO, |last| {
+                    VOLUME_SPACING.saturating_sub(last.elapsed())
+                });
+                let mut target = target;
+                if !wait.is_zero() {
+                    std::thread::sleep(wait);
+                    target = newer().unwrap_or(target);
+                }
+                control.set(target);
+                last = Some(Instant::now());
+            }
+        }
+        let mut pending = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        pending.busy = false;
+        changed.notify_all();
+    }
+}
+
+/// Take the backlight from `from` to `target` (or to a newer one, as they
+/// come) a few steps at a time; where it ends.
+fn glide(screen: &mut Screen, from: f32, mut target: f32, newer: &impl Fn() -> Option<f32>) -> f32 {
+    let one_step = screen.step();
+    let mut now = from;
+    let mut refused = 0;
+    loop {
+        if let Some(moved) = newer() {
+            target = moved;
+        }
+        let left = target - now;
+        if left.abs() <= one_step / 2.0 {
+            // the last value must land: tried again a few times if refused
+            if screen.set(target) || refused >= LAST_TRIES {
+                return target;
+            }
+            refused += 1;
+            now = target;
+            std::thread::sleep(GLIDE_TICK);
+            continue;
+        }
+        let step = (left * GLIDE_EASE).abs().max(one_step).min(left.abs());
+        now += step.copysign(left);
+        // refused (NVIDIA's backlight while it still fades): the next one comes soon
+        screen.set(now);
+        std::thread::sleep(GLIDE_TICK);
     }
 }
 

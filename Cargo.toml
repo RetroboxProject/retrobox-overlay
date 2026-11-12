@@ -63,8 +63,7 @@ depends = "$auto, retrobox-core, retrobox-emulationstation"
 # pdftoppm and pdfinfo, for the games' manuals
 recommends = "poppler-utils"
 # the volume (wpctl / pactl), a backlight without logind (brightnessctl)
-# and an external monitor's brightness (ddcutil)
-suggests = "wireplumber | pulseaudio-utils, brightnessctl, ddcutil"
+suggests = "wireplumber | pulseaudio-utils, brightnessctl"
 extended-description = """\
 Retrobox's in-game menu: opened by holding the controller's hotkey or Shift+F7, it
 shows a side menu over the dimmed game, drawn with the active EmulationStation

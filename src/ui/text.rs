@@ -3,12 +3,17 @@
 //! Only the fonts the theme names and a couple of common fallbacks are loaded
 //! (scanning every system font would cost a noticeable part of the start-up);
 //! the whole system set is used only when none of the fallbacks exists.
+//! Each one's bold face is loaded too when it sits next to it (as
+//! `Name-Bold.ttf` next to `Name-Regular.ttf`); without one, bold text is
+//! drawn twice, a little apart.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use cosmic_text::fontdb::{self, Source};
-use cosmic_text::{Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Wrap};
+use cosmic_text::{
+    Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, Wrap,
+};
 use tiny_skia::Pixmap;
 
 use crate::theme::Rgba;
@@ -31,6 +36,17 @@ pub struct FontRef {
     pub path: PathBuf,
     pub size: f32,
     pub line_height: f32,
+    pub bold: bool,
+}
+
+impl FontRef {
+    /// The same font, bold.
+    pub fn bold(&self) -> Self {
+        Self {
+            bold: true,
+            ..self.clone()
+        }
+    }
 }
 
 /// Where a piece of text goes and how.
@@ -48,6 +64,23 @@ pub struct Fonts {
     cache: SwashCache,
     families: HashMap<PathBuf, String>,
     default_family: Option<String>,
+    /// The families that have a bold face.
+    bold_families: HashSet<String>,
+}
+
+/// The bold face next to a font file: `Name-Bold.ttf` for
+/// `Name-Regular.ttf` (or `Name.ttf`), if there is one.
+fn bold_sibling(path: &Path) -> Option<PathBuf> {
+    let stem = path.file_stem()?.to_str()?;
+    let extension = path.extension()?.to_str()?;
+    let base = stem
+        .strip_suffix("-Regular")
+        .or_else(|| stem.strip_suffix("Regular"))
+        .unwrap_or(stem);
+    ["-Bold", "Bold", "_Bold", "-Bd"]
+        .iter()
+        .map(|suffix| path.with_file_name(format!("{base}{suffix}.{extension}")))
+        .find(|candidate| candidate != path && candidate.exists())
 }
 
 fn family_of(db: &fontdb::Database, path: &Path) -> Option<String> {
@@ -74,6 +107,9 @@ impl Fonts {
                     if let Some(family) = family_of(&db, path) {
                         families.insert(path.to_path_buf(), family);
                     }
+                    if let Some(bold) = bold_sibling(path) {
+                        db.load_font_file(bold).ok();
+                    }
                 }
                 Err(err) => log::warn!("cannot load font {}: {err}", path.display()),
             }
@@ -87,6 +123,9 @@ impl Fonts {
         {
             if db.load_font_file(path).is_ok() && default_family.is_none() {
                 default_family = family_of(&db, path);
+                if let Some(bold) = bold_sibling(path) {
+                    db.load_font_file(bold).ok();
+                }
             }
         }
         if default_family.is_none() {
@@ -96,21 +135,50 @@ impl Fonts {
             db.set_sans_serif_family(family.clone());
         }
 
+        let bold_families = db
+            .faces()
+            .filter(|face| face.weight.0 >= Weight::SEMIBOLD.0)
+            .filter_map(|face| face.families.first())
+            .map(|(name, _)| name.clone())
+            .collect();
         Self {
             system: FontSystem::new_with_locale_and_db(locale.to_owned(), db),
             cache: SwashCache::new(),
             families,
             default_family,
+            bold_families,
         }
+    }
+
+    fn family(&self, font: &FontRef) -> Option<&String> {
+        self.families
+            .get(&font.path)
+            .or(self.default_family.as_ref())
     }
 
     fn attrs<'a>(&'a self, font: &FontRef) -> Attrs<'a> {
         let family = self
-            .families
-            .get(&font.path)
-            .or(self.default_family.as_ref())
+            .family(font)
             .map_or(Family::SansSerif, |name| Family::Name(name.as_str()));
-        Attrs::new().family(family)
+        let attrs = Attrs::new().family(family);
+        if font.bold {
+            attrs.weight(Weight::BOLD)
+        } else {
+            attrs
+        }
+    }
+
+    /// How far apart bold text without a bold face is drawn twice (0: it
+    /// has one).
+    fn faux_bold(&self, font: &FontRef) -> f32 {
+        let has_bold = self
+            .family(font)
+            .is_some_and(|family| self.bold_families.contains(family));
+        if font.bold && !has_bold {
+            (font.size / 24.0).max(1.0).round()
+        } else {
+            0.0
+        }
     }
 
     fn layout(&mut self, font: &FontRef, text: &str, width: Option<f32>, align: Align) -> Buffer {
@@ -131,6 +199,7 @@ impl Fonts {
             .layout_runs()
             .map(|run| run.line_w)
             .fold(0.0, f32::max)
+            + self.faux_bold(font)
     }
 
     /// Make a line fit a width: a smaller font (down to `min_scale` of its
@@ -199,6 +268,32 @@ impl Fonts {
 
     /// Draw one line of text, vertically centred in the box and clipped to it.
     pub fn draw(
+        &mut self,
+        pixmap: &mut Pixmap,
+        font: &FontRef,
+        text: &str,
+        area: TextBox,
+        color: Rgba,
+    ) {
+        let offset = self.faux_bold(font);
+        if offset > 0.0 {
+            // no bold face: twice, a little apart, within the same box
+            let narrower = TextBox {
+                width: area.width - offset,
+                ..area
+            };
+            self.draw_once(pixmap, font, text, narrower, color);
+            let shifted = TextBox {
+                x: area.x + offset,
+                ..narrower
+            };
+            self.draw_once(pixmap, font, text, shifted, color);
+        } else {
+            self.draw_once(pixmap, font, text, area, color);
+        }
+    }
+
+    fn draw_once(
         &mut self,
         pixmap: &mut Pixmap,
         font: &FontRef,
