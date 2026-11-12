@@ -62,10 +62,17 @@ pub fn kept_menu_theme() -> PathBuf {
     state_dir().join("overlay-menu-theme.json")
 }
 
-/// A Retrobox command: from the install's `bin/` when known, else from `$PATH`.
+/// Where the packages install Retrobox (outside a Retrobox session, such as
+/// from a terminal, `RETROBOX_ROOTDIR` is not set).
+const PACKAGED_ROOT: &str = "/opt/retrobox";
+
+/// A Retrobox command: from the install's `bin/` (`RETROBOX_ROOTDIR`, else
+/// the packages' `/opt/retrobox`), else from `$PATH`.
 pub fn retrobox_command(name: &str) -> PathBuf {
     env_path("RETROBOX_ROOTDIR")
+        .into_iter()
+        .chain(std::iter::once(PathBuf::from(PACKAGED_ROOT)))
         .map(|root| root.join("bin").join(name))
-        .filter(|path| path.exists())
+        .find(|path| path.exists())
         .unwrap_or_else(|| PathBuf::from(name))
 }
