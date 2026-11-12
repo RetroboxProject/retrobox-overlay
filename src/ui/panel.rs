@@ -79,6 +79,8 @@ pub struct SlotPage {
 
 /// The icons' size, relative to the height of the text's capital letters.
 const ICON_SCALE: f32 = 1.35;
+/// The status line (time, network, battery) next to the small text: larger.
+const STATUS_SCALE: f32 = 1.5;
 /// The gap between an icon and its text, relative to the panel's padding.
 const ICON_GAP: f32 = 0.7;
 /// Opacity of the frame drawn where a slot has no preview.
@@ -600,7 +602,17 @@ impl Panel {
         if self.status_bar.is_empty() {
             0.0
         } else {
-            self.small.font.line_height + self.screen_height * SUBTITLE_VERT_PADDING
+            self.status_font().line_height + self.screen_height * SUBTITLE_VERT_PADDING
+        }
+    }
+
+    /// The status line's font: the small text's, larger.
+    fn status_font(&self) -> FontRef {
+        let font = &self.small.font;
+        FontRef {
+            size: font.size * STATUS_SCALE,
+            line_height: font.line_height * STATUS_SCALE,
+            ..font.clone()
         }
     }
 
@@ -654,11 +666,18 @@ impl Panel {
     /// icons (and the battery's percentage), aligned to the right.
     fn draw_status_bar(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, padding: f32, height: f32) {
         let color = self.small.style.color;
-        let font = &self.small.font;
+        let font = &self.status_font();
         let row = font.line_height;
         let top = height - row;
-        let icon_size = (self.small.letter_height * ICON_SCALE).round().max(1.0);
+        let icon_size = (self.small.letter_height * STATUS_SCALE * ICON_SCALE)
+            .round()
+            .max(1.0);
         let gap = icon_size * 0.6;
+        // the icons centred on the digits' ink, not on the line
+        let middle = fonts
+            .ink_middle(font, "0123456789", row)
+            .unwrap_or(row / 2.0);
+        let icon_top = (top + middle - icon_size / 2.0).round();
         let bar = &self.status_bar;
         // right to left
         let mut right = self.width as f32 - padding;
@@ -689,7 +708,7 @@ impl Panel {
                 pixmap,
                 Icon::battery(battery),
                 icon_size,
-                (right, top + (row - icon_size) / 2.0),
+                (right, icon_top),
                 color,
             );
             right -= gap;
@@ -700,7 +719,7 @@ impl Panel {
                 pixmap,
                 Icon::network(network),
                 icon_size,
-                (right, top + (row - icon_size) / 2.0),
+                (right, icon_top),
                 color,
             );
             right -= gap;

@@ -130,8 +130,9 @@ only while it is shown.
     `brightnessctl`; the first way that works is kept, and it never goes below 5 % so the
     screen does not go black. Each change costs the driver some work (NVIDIA's `nvidia_0`
     stalls the display a little, and refuses a change while it is still fading to the last
-    one, fading to each value on its own), so the backlight changes once, when the slider has
-    stopped for 250 ms, never on the way; the same value is never written twice, and a
+    one, fading to each value on its own), so the brightness follows the slider a few times
+    a second (every 150 ms at most, always with the slider's value at that moment: the fade
+    between two changes makes it look smooth), the same value is never written twice, and a
     refused change is tried again a moment later (with the latest value) rather than another
     way. An external monitor uses DDC/CI through `ddcutil` on its I2C bus
     (`--bus`, so a change does not detect the monitors again): the daemon looks for the
@@ -140,7 +141,7 @@ only while it is shown.
     exchange goes through the GPU's driver (NVIDIA's stalls the display a little meanwhile),
     so the monitor is never read when the overlay opens (the cache keeps the value last read or
     set; one changed with the monitor's own buttons shows from the next Retrobox start) and it
-    is written once per slide, like a backlight.
+    is written like a backlight, a few times a second at most.
   * **Volume** of the default output: PipeWire (`wpctl`), else PulseAudio (`pactl`, which also
     works with PipeWire's PulseAudio server). At 0 the output is muted; above, unmuted.
 * **Touch screens and dragging.** A finger is the left button: a tap opens an entry (or sets a
@@ -148,7 +149,8 @@ only while it is shown.
   slider moves it; the mouse drags the same way. Entries open on release, so a drag never opens
   one. `row_scale` in `[touch]` makes the rows taller than EmulationStation's (the text stays
   the same size) so they are easier to hit: 1.5 to 1.66 suits small touch screens.
-* **Status line**, above the menu's header: the network (a cable wins over Wi-Fi, whose icon
+* **Status line**, above the menu's header, half as large again as the small text, its icons
+  centred on the digits: the network (a cable wins over Wi-Fi, whose icon
   shows the signal), the battery (the computer's own: a controller's is left out) with its
   percentage (`battery_percent` in `[status]`), and the time when the clock is the small one
   (`size = small` in `[clock]`, with its own format, `small_format`); the big clock keeps its

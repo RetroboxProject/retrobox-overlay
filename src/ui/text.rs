@@ -166,6 +166,37 @@ impl Fonts {
         (smaller, "…".to_owned())
     }
 
+    /// Where the ink of `text` is, vertically, in the middle of a box
+    /// `height` high (as `draw` places it): the middle of its glyphs, to
+    /// line icons up with them (the line's own middle sits lower or higher,
+    /// depending on the font).
+    pub fn ink_middle(&mut self, font: &FontRef, text: &str, height: f32) -> Option<f32> {
+        let width = (self.measure(font, text).ceil() as u32).max(1) + 2;
+        let mut scratch = Pixmap::new(width, height.ceil().max(1.0) as u32)?;
+        self.draw(
+            &mut scratch,
+            font,
+            text,
+            TextBox {
+                x: 0.0,
+                y: 0.0,
+                width: width as f32,
+                height,
+                align: Align::Left,
+            },
+            Rgba(0xffff_ffff),
+        );
+        let inked: Vec<usize> = scratch
+            .pixels()
+            .chunks_exact(width as usize)
+            .enumerate()
+            .filter(|(_, row)| row.iter().any(|pixel| pixel.alpha() > 0x40))
+            .map(|(y, _)| y)
+            .collect();
+        let (first, last) = (*inked.first()?, *inked.last()?);
+        Some((first + last + 1) as f32 / 2.0)
+    }
+
     /// Draw one line of text, vertically centred in the box and clipped to it.
     pub fn draw(
         &mut self,

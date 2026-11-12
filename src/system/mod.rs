@@ -33,18 +33,16 @@ pub const STEP: f32 = 0.05;
 /// How often a slider's changes reach the system, at most: each one runs a
 /// program, and the backlight or the sound server do some work.
 const VOLUME_SPACING: Duration = Duration::from_millis(50);
-/// NVIDIA's backlight fades to each value it is given, and refuses another
-/// one meanwhile; a monitor fades too, and DDC/CI is slow.
-const BACKLIGHT_SPACING: Duration = Duration::from_millis(300);
-/// The brightness changes once the slider has stopped this long, never
-/// while it moves: each change stalls NVIDIA's display a little (a backlight
-/// write, or a DDC/CI exchange over its I2C), and changes on the way (each
-/// one fading on its own) made the screen go the other way when the slider
-/// went back and forth.
-const BACKLIGHT_SETTLE: Duration = Duration::from_millis(250);
-/// A refused change is tried again this much later, this many times (unless
-/// a newer one comes).
-const RETRY_AFTER: Duration = Duration::from_millis(200);
+/// The brightness follows the slider while it moves, a few times a second:
+/// each change stalls NVIDIA's display a little (a backlight write, or a
+/// DDC/CI exchange over its I2C), and the backlight or the monitor fades
+/// between two changes by itself, so a few are enough to look smooth. Each
+/// one is the slider's value at that moment, never an older one: a slider
+/// going back and forth is followed as it goes.
+const BACKLIGHT_SPACING: Duration = Duration::from_millis(150);
+/// A refused change (NVIDIA's backlight while it still fades) is tried
+/// again this much later, with the slider's latest value, this many times.
+const RETRY_AFTER: Duration = Duration::from_millis(120);
 const RETRIES: u32 = 3;
 /// How long closing waits for the last change to be applied.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
@@ -89,15 +87,6 @@ impl Control {
         match self {
             Self::Brightness(_) => BACKLIGHT_SPACING,
             Self::Volume(_) => VOLUME_SPACING,
-        }
-    }
-
-    /// How long the slider has to stay still before a change goes (see
-    /// `BACKLIGHT_SETTLE`).
-    fn settle(&self) -> Duration {
-        match self {
-            Self::Brightness(_) => BACKLIGHT_SETTLE,
-            Self::Volume(_) => Duration::ZERO,
         }
     }
 }
@@ -217,17 +206,6 @@ impl Setter {
                     if !wait.is_zero() {
                         std::thread::sleep(wait);
                         value = newer().unwrap_or(value);
-                    }
-                    // still moving: wait for it to stop
-                    let settle = control.settle();
-                    if !settle.is_zero() {
-                        loop {
-                            std::thread::sleep(settle);
-                            match newer() {
-                                Some(moved) => value = moved,
-                                None => break,
-                            }
-                        }
                     }
                     let mut tries = 0;
                     while !control.set(value) && tries < RETRIES {
