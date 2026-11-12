@@ -82,8 +82,10 @@ only while it is shown.
 * **The game keeps the focus.** Opened from a controller, the overlay does not take the
   keyboard (`take_keyboard = auto`): the game stays the focused window, because many games and
   emulators slow down, or lower their frame rate, when they lose it. The controller is all the
-  menu needs; the mouse and touch work too. Opened from the keyboard (Shift+F7) it takes the
-  keyboard, on demand and not exclusively: when the compositor gives it to another window
+  menu needs; the mouse and touch work too. On X11 it always takes the focus: window managers
+  keep a focused fullscreen window above everything (xfwm4 even shows it outside its
+  compositor), so the overlay would open behind the game. Opened from the keyboard (Shift+F7)
+  it takes the keyboard, on demand and not exclusively: when the compositor gives it to another window
   (Alt+Tab, a click elsewhere), the overlay goes away, like Steam's (on X11, when the focus
   moves to another window). `take_keyboard = yes` always takes it, `no` never does.
 * **Save states** (RetroArch). *Load state* and *Save state* open a page of ten slots (it

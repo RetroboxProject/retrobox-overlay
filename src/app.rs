@@ -66,7 +66,7 @@ use x11rb::connection::Connection as _;
 use x11rb::protocol::Event as XEvent;
 use x11rb::protocol::xproto::{self, NotifyDetail, NotifyMode};
 
-use crate::config::{Config, Side, VerticalPosition};
+use crate::config::{Config, Side, TakeKeyboard, VerticalPosition};
 use crate::emulator::{EmuAction, Emulator, Request};
 use crate::i18n::Translator;
 use crate::input::{self, Input, Nav, Pad};
@@ -265,7 +265,7 @@ enum PointerKind {
 /// Show the overlay until the user leaves it: on Wayland with layer-shell,
 /// else on X11 (an X11 session, or `XWayland` where the compositor has no
 /// layer-shell).
-pub fn run(content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
+pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
     let mut event_loop: EventLoop<'static, State> =
         EventLoop::try_new().context("cannot create the event loop")?;
     let handle = event_loop.handle();
@@ -278,6 +278,14 @@ pub fn run(content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
                 .context("no display to show the overlay on")?
         }
     };
+
+    // On X11 the game cannot keep the focus: a window manager keeps a
+    // focused fullscreen window above everything, and xfwm4 even shows it
+    // outside its compositor (it asks to bypass it), where nothing can be
+    // drawn over it. Taking the focus is what puts the overlay on top.
+    if content.config.take_keyboard == TakeKeyboard::Auto && display.x11().is_some() {
+        content.take_keyboard = true;
+    }
 
     // SIGUSR1: the overlay started again (the hotkey, Shift+F7) closes this
     // one, as being stopped does
