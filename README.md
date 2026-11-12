@@ -118,7 +118,10 @@ only while it is shown.
   Switch's quick settings: *Sleep mode* (`systemctl suspend`; `standby` in `[system]`), and the
   brightness and volume sliders, which games get too, under the game's entries.
 * **Sliders.** Left/Right (d-pad, stick, arrow keys) move them by 5 %, holding repeats; the
-  mouse moves them with a click or a drag on the track. Changes apply at once, from a thread
+  mouse or a finger moves them with a tap or a drag on the track. They have no label, only
+  their icon (a sun, a speaker that shows the level), so the track takes the row's width; their
+  rows are 20 % taller than the other entries, whatever `row_scale` says, with a thicker track
+  and a larger knob, for a finger. Changes apply at once, from a thread
   that only applies the latest value (a held direction asks for many), and the last one is
   applied before the overlay exits. The sliders are there when the menu shows: the volume is
   read in a thread from the moment the overlay starts (the menu waits for it 60 ms at most),

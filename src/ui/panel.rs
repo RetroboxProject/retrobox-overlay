@@ -126,13 +126,15 @@ impl StatusBar {
 }
 
 /// Where a slider row's parts go, as fractions of the panel's inner width:
-/// the label before `TRACK_START`, the track up to `TRACK_END`, the value
-/// after `VALUE_START`.
-const TRACK_START: f32 = 0.46;
+/// the icon first, the track up to `TRACK_END`, the value after
+/// `VALUE_START`. Sliders have no label: their icon says what they are.
 const TRACK_END: f32 = 0.84;
 const VALUE_START: f32 = 0.87;
 /// Opacity of the part of a slider's track past its value.
 const TRACK_ALPHA: u8 = 0x50;
+/// A slider's row is this much taller than the other entries, whatever
+/// their size (`row_scale` included), for a finger.
+const SLIDER_SCALE: f32 = 1.2;
 
 /// A text element of the theme at this screen's size.
 #[derive(Debug, Clone)]
@@ -308,7 +310,8 @@ impl Panel {
     /// while dragging).
     pub fn slide_to(&mut self, index: usize, x: f32, force: bool) -> Option<(SliderKind, f32)> {
         let (start, end) = self.track();
-        let slack = (end - start) * 0.05;
+        // a fingertip's width around the track
+        let slack = self.slider_height() * 0.3;
         if !force && (x < start - slack || x > end + slack) {
             return None;
         }
@@ -355,11 +358,18 @@ impl Panel {
                 .is_some_and(|item| item.value.is_some())
     }
 
-    /// The horizontal span of the sliders' tracks.
+    /// A slider's icon size: the entries'.
+    fn slider_icon(&self) -> f32 {
+        (self.text.letter_height * ICON_SCALE).round().max(1.0)
+    }
+
+    /// The horizontal span of the sliders' tracks: from after the icon to
+    /// before the value.
     fn track(&self) -> (f32, f32) {
         let padding = self.padding();
         let inner = self.width as f32 - 2.0 * padding;
-        (padding + inner * TRACK_START, padding + inner * TRACK_END)
+        let start = padding + self.slider_icon() + padding * ICON_GAP;
+        (start, padding + inner * TRACK_END)
     }
 
     fn padding(&self) -> f32 {
@@ -443,6 +453,14 @@ impl Panel {
         } else if self.selected >= *first + visible {
             *first = self.selected + 1 - visible;
         }
+        // the main entries are not all as tall: one more step if needed
+        if self.page.is_none() {
+            while self.first_item < self.selected
+                && self.selected >= self.first_item + self.fit_from(self.first_item)
+            {
+                self.first_item += 1;
+            }
+        }
     }
 
     /// Taller rows, for fingers: 1 is ES's.
@@ -455,9 +473,55 @@ impl Panel {
         (self.text.font.line_height * self.row_scale).round()
     }
 
+    /// The height of a slider's row, without its separator.
+    fn slider_height(&self) -> f32 {
+        (self.row_height() * SLIDER_SCALE).round()
+    }
+
     /// The height of a main entry, with its separator.
     fn item_pitch(&self) -> f32 {
         self.row_height() + self.line()
+    }
+
+    /// The height of the main entry `index`, without its separator.
+    fn height_of(&self, index: usize) -> f32 {
+        if self
+            .items
+            .get(index)
+            .is_some_and(|item| item.value.is_some())
+        {
+            self.slider_height()
+        } else {
+            self.row_height()
+        }
+    }
+
+    /// How many main entries fit under the header from `first`.
+    fn fit_from(&self, first: usize) -> usize {
+        let mut free = self.screen_height - self.header_height();
+        let mut count = 0;
+        for index in first..self.items.len() {
+            free -= self.height_of(index) + self.line();
+            if free < 0.0 {
+                break;
+            }
+            count += 1;
+        }
+        count.max(1)
+    }
+
+    /// The last first entry: the one from which the last entries fit.
+    fn last_first(&self) -> usize {
+        let mut free = self.screen_height - self.header_height();
+        let mut first = self.items.len();
+        while first > 0 {
+            free -= self.height_of(first - 1) + self.line();
+            if free < 0.0 {
+                break;
+            }
+            first -= 1;
+        }
+        first.min(self.items.len().saturating_sub(1))
     }
 
     /// The height of a row of the current page (what a drag scrolls by).
@@ -487,16 +551,22 @@ impl Panel {
         } else {
             (self.first_item, self.visible_items())
         };
-        let last = count.saturating_sub(visible);
+        let last = if self.page.is_some() {
+            count.saturating_sub(visible)
+        } else {
+            self.last_first()
+        };
         let moved = first.saturating_add_signed(rows as isize).min(last);
         if moved == first {
             return false;
         }
-        if self.page.is_some() {
+        let visible = if self.page.is_some() {
             self.first_slot = moved;
+            visible
         } else {
             self.first_item = moved;
-        }
+            self.fit_from(moved)
+        };
         self.selected = self.selected.clamp(
             moved,
             (moved + visible).min(count).saturating_sub(1).max(moved),
@@ -504,10 +574,9 @@ impl Panel {
         true
     }
 
-    /// How many main entries fit under the header.
+    /// How many main entries fit under the header, from the first shown.
     fn visible_items(&self) -> usize {
-        let free = self.screen_height - self.header_height();
-        ((free / self.item_pitch()).floor() as usize).max(1)
+        self.fit_from(self.first_item)
     }
 
     /// Highlight the entry under the pointer (None: none); true when it changed.
@@ -541,11 +610,18 @@ impl Panel {
         if y < top {
             return None;
         }
-        let (pitch, visible, first) = if self.page.is_some() {
-            (self.slot_height(), self.visible_slots(), self.first_slot)
-        } else {
-            (self.item_pitch(), self.visible_items(), self.first_item)
-        };
+        if self.page.is_none() {
+            // the rows' own heights (sliders are taller)
+            let mut bottom = top;
+            for index in self.first_item..self.first_item + self.visible_items() {
+                bottom += self.height_of(index) + self.line();
+                if y < bottom {
+                    return (index < self.count()).then_some(index);
+                }
+            }
+            return None;
+        }
+        let (pitch, visible, first) = (self.slot_height(), self.visible_slots(), self.first_slot);
         let row = ((y - top) / pitch) as usize;
         if row >= visible {
             return None;
@@ -844,7 +920,6 @@ impl Panel {
         let width = self.width as f32;
         let inner = width - 2.0 * padding;
         let line = self.line();
-        let row_height = self.row_height();
         let style = &self.text.style;
         // icons as tall as capital letters plus a bit, then a gap
         let icon_size = (self.text.letter_height * ICON_SCALE).round().max(1.0);
@@ -862,6 +937,7 @@ impl Panel {
             .skip(self.first_item)
             .take(visible);
         for (index, item) in shown {
+            let row_height = self.height_of(index);
             self.draw_row_background(pixmap, index, y, row_height);
             let color = if index == self.selected {
                 style.selected_color
@@ -873,41 +949,48 @@ impl Panel {
             } else {
                 color.with_alpha(DISABLED_ALPHA)
             };
-            let icon = match (item.action, item.value) {
-                (MenuAction::Slider(SliderKind::Volume), Some(value)) => Some(Icon::volume(value)),
-                (action, _) => Icon::for_action(action),
-            };
-            if self.icons
-                && let Some(icon) = icon
-            {
-                let top = y + (row_height - icon_size) / 2.0;
-                draw_icon(pixmap, icon, icon_size, (padding, top), color);
-            }
-            let label_width = match item.value {
-                Some(_) => padding + inner * TRACK_START - text_x - padding * ICON_GAP,
-                None => inner - (text_x - padding),
-            };
-            let (font, label) = fonts.fit(
-                &self.text.font,
-                &item.label.to_uppercase(),
-                label_width,
-                0.7,
-            );
-            fonts.draw(
-                pixmap,
-                &font,
-                &label,
-                TextBox {
-                    x: text_x,
-                    y,
-                    width: label_width.max(1.0),
-                    height: row_height,
-                    align: Align::Left,
-                },
-                color,
-            );
             if let Some(value) = item.value {
+                // a slider: its icon (always: it has no label), the slider
+                let icon = match item.action {
+                    MenuAction::Slider(SliderKind::Volume) => Icon::volume(value),
+                    _ => Icon::Sun,
+                };
+                let size = self.slider_icon();
+                draw_icon(
+                    pixmap,
+                    icon,
+                    size,
+                    (padding, y + (row_height - size) / 2.0),
+                    color,
+                );
                 self.draw_slider(pixmap, fonts, value, (y, row_height), color);
+            } else {
+                if self.icons
+                    && let Some(icon) = Icon::for_action(item.action)
+                {
+                    let top = y + (row_height - icon_size) / 2.0;
+                    draw_icon(pixmap, icon, icon_size, (padding, top), color);
+                }
+                let label_width = inner - (text_x - padding);
+                let (font, label) = fonts.fit(
+                    &self.text.font,
+                    &item.label.to_uppercase(),
+                    label_width,
+                    0.7,
+                );
+                fonts.draw(
+                    pixmap,
+                    &font,
+                    &label,
+                    TextBox {
+                        x: text_x,
+                        y,
+                        width: label_width.max(1.0),
+                        height: row_height,
+                        align: Align::Left,
+                    },
+                    color,
+                );
             }
             y += row_height;
             fill(pixmap, 0.0, y, width, line, style.separator_color);
@@ -937,8 +1020,8 @@ impl Panel {
         let (y, height) = row;
         let (start, end) = self.track();
         let middle = y + height / 2.0;
-        let thickness = (height * 0.08).max(2.0).round();
-        let knob = (height * 0.17).max(4.0);
+        let thickness = (height * 0.1).max(3.0).round();
+        let knob = (height * 0.2).max(6.0);
         let filled = start + (end - start) * value.clamp(0.0, 1.0);
         fill(
             pixmap,
