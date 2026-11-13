@@ -123,14 +123,9 @@ impl Screen {
     }
 
     /// The backlight's own steps a value is (raw units).
-    pub fn raw(&self, value: f32) -> u32 {
+    fn raw(&self, value: f32) -> u32 {
         let fraction = MIN_BACKLIGHT + value.clamp(0.0, 1.0) * (1.0 - MIN_BACKLIGHT);
         ((fraction * self.max as f32).round() as u32).clamp(1, self.max)
-    }
-
-    /// How fine the backlight is: a value a step apart.
-    pub fn step(&self) -> f32 {
-        1.0 / (self.max as f32 * (1.0 - MIN_BACKLIGHT))
     }
 
     /// Set the brightness; false when the driver refused (still fading).

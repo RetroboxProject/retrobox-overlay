@@ -37,6 +37,7 @@ help-select = ВЫБОР
 help-back = НАЗАД
 help-close = ЗАКРЫТЬ
 help-adjust = НАСТРОИТЬ
+help-mute = БЕЗ ЗВУКА
 help-zoom = МАСШТАБ
 help-zoom-in = УВЕЛИЧИТЬ
 help-zoom-out = УМЕНЬШИТЬ

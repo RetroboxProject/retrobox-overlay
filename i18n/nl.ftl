@@ -37,6 +37,7 @@ help-select = SELECTEER
 help-back = TERUG
 help-close = SLUITEN
 help-adjust = AANPASSEN
+help-mute = DEMPEN
 help-zoom = ZOOM
 help-zoom-in = ZOOM IN
 help-zoom-out = ZOOM UIT

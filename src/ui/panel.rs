@@ -82,6 +82,9 @@ pub struct SlotPage {
 
 /// The icons' size, relative to the height of the text's capital letters.
 const ICON_SCALE: f32 = 1.35;
+/// The entries' and sliders' icons are `ICON_SCALE` at this `row_scale`,
+/// and grow or shrink with it.
+const ICON_ROW_SCALE: f32 = 1.25;
 /// The status line (time, network, battery) next to the small text: larger.
 const STATUS_SCALE: f32 = 1.5;
 /// The gap between an icon and its text, relative to the panel's padding.
@@ -99,6 +102,8 @@ pub struct MenuItem {
     pub enabled: bool,
     /// A slider's value, 0 to 1.
     pub value: Option<f32>,
+    /// The volume's slider: muted (its value kept).
+    pub muted: bool,
 }
 
 impl MenuItem {
@@ -108,6 +113,7 @@ impl MenuItem {
             action,
             enabled: true,
             value: None,
+            muted: false,
         }
     }
 }
@@ -147,7 +153,11 @@ const BUTTON_MARGIN: f32 = 0.16;
 /// A round button's icon, relative to its diameter.
 const BUTTON_ICON: f32 = 0.5;
 /// Opacity of a round button's disc when not highlighted.
-const BUTTON_ALPHA: u8 = 0x28;
+const BUTTON_ALPHA: u8 = 0x22;
+/// The ring around the selected round button: its thickness and its gap
+/// from the disc, relative to the diameter.
+const RING_WIDTH: f32 = 0.06;
+const RING_GAP: f32 = 0.05;
 
 /// What can be highlighted: an entry of the scrolling list (a slot on a
 /// save state page), a round button or a slider.
@@ -318,10 +328,11 @@ impl Panel {
 
     /// Set a slider, adding it (brightness first) when the menu does not
     /// have it yet.
-    pub fn set_slider(&mut self, kind: SliderKind, label: &str, value: f32) {
+    pub fn set_slider(&mut self, kind: SliderKind, label: &str, value: f32, muted: bool) {
         let action = MenuAction::Slider(kind);
         if let Some(item) = self.sliders.iter_mut().find(|item| item.action == action) {
             item.value = Some(value.clamp(0.0, 1.0));
+            item.muted = muted;
             return;
         }
         let position = self
@@ -333,6 +344,7 @@ impl Panel {
             .unwrap_or(self.sliders.len());
         let mut item = MenuItem::new(label.to_owned(), action);
         item.value = Some(value.clamp(0.0, 1.0));
+        item.muted = muted;
         self.sliders.insert(position, item);
         // the same slider stays selected
         for selected in [&mut self.selected, &mut self.main_selected] {
@@ -383,7 +395,25 @@ impl Panel {
             return None;
         }
         item.value = Some(new);
+        // moving the volume unmutes it (the mixer does too)
+        if new > 0.0 {
+            item.muted = false;
+        }
         Some((kind, new))
+    }
+
+    /// Mute or unmute the volume, when its slider is selected: whether it
+    /// is muted now.
+    pub fn toggle_mute(&mut self) -> Option<bool> {
+        let (None, Target::Slider(index)) = (&self.page, self.selected) else {
+            return None;
+        };
+        let item = self
+            .sliders
+            .get_mut(index)
+            .filter(|item| item.action == MenuAction::Slider(SliderKind::Volume) && item.enabled)?;
+        item.muted = !item.muted;
+        Some(item.muted)
     }
 
     /// What is selected.
@@ -513,9 +543,11 @@ impl Panel {
         true
     }
 
-    /// A slider's icon size: the entries'.
-    fn slider_icon(&self) -> f32 {
-        (self.text.letter_height * ICON_SCALE).round().max(1.0)
+    /// The entries' and the sliders' icon size: larger with taller rows.
+    fn row_icon(&self) -> f32 {
+        (self.text.letter_height * ICON_SCALE * self.row_scale / ICON_ROW_SCALE)
+            .round()
+            .max(1.0)
     }
 
     /// The horizontal span of the sliders' tracks: from after the icon to
@@ -523,7 +555,7 @@ impl Panel {
     fn track(&self) -> (f32, f32) {
         let padding = self.padding();
         let inner = self.width as f32 - 2.0 * padding;
-        let start = padding + self.slider_icon() + padding * ICON_GAP;
+        let start = padding + self.row_icon() + padding * ICON_GAP;
         (start, padding + inner * TRACK_END)
     }
 
@@ -1144,8 +1176,8 @@ impl Panel {
         let line = self.line();
         let row_height = self.row_height();
         let style = &self.text.style;
-        // icons as tall as capital letters plus a bit, then a gap
-        let icon_size = (self.text.letter_height * ICON_SCALE).round().max(1.0);
+        // icons as tall as capital letters plus a bit (with the rows), then a gap
+        let icon_size = self.row_icon();
         let text_x = if self.icons {
             padding + icon_size + padding * ICON_GAP
         } else {
@@ -1218,10 +1250,11 @@ impl Panel {
             let color = self.row_color(target, slider.enabled);
             let value = slider.value.unwrap_or_default();
             let icon = match slider.action {
+                MenuAction::Slider(SliderKind::Volume) if slider.muted => Icon::VolumeX,
                 MenuAction::Slider(SliderKind::Volume) => Icon::volume(value),
                 _ => Icon::Sun,
             };
-            let size = self.slider_icon();
+            let size = self.row_icon();
             draw_icon(
                 pixmap,
                 icon,
@@ -1229,7 +1262,13 @@ impl Panel {
                 (padding, y + (height - size) / 2.0),
                 color,
             );
-            self.draw_slider(pixmap, fonts, value, (y, height), color);
+            // muted: the slider faded, its value kept
+            let slider_color = if slider.muted {
+                color.with_alpha(DISABLED_ALPHA.min((color.0 & 0xff) as u8))
+            } else {
+                color
+            };
+            self.draw_slider(pixmap, fonts, value, (y, height), slider_color);
             y += height;
         }
     }
@@ -1250,6 +1289,13 @@ impl Panel {
                 style.color.with_alpha(BUTTON_ALPHA)
             };
             fill_circle(pixmap, (cx, cy), size / 2.0, disc);
+            if selected {
+                // a ring in the text's colour around it: it stands out whatever
+                // the theme's selector
+                let width = (size * RING_WIDTH).max(2.0).round();
+                let radius = size / 2.0 + (size * RING_GAP).max(2.0).round() + width / 2.0;
+                stroke_circle(pixmap, (cx, cy), radius, width, style.color);
+            }
             if !selected && self.hovered == Some(target) {
                 fill_circle(
                     pixmap,
@@ -1307,7 +1353,10 @@ impl Panel {
         let left = (cx - width / 2.0)
             .clamp(margin, (self.width as f32 - margin - width).max(margin))
             .round();
-        let circle_top = row_top + (self.buttons_height() - self.button_size()) / 2.0;
+        // over the selected button's ring
+        let size = self.button_size();
+        let ring = (size * RING_GAP).max(2.0).round() + (size * RING_WIDTH).max(2.0).round();
+        let circle_top = row_top + (self.buttons_height() - size) / 2.0 - ring;
         let bottom = (circle_top - arrow * 0.6).round();
         let top = bottom - height;
         let color = style.selector_color;
@@ -1468,6 +1517,20 @@ impl Panel {
 fn fill_circle(pixmap: &mut Pixmap, centre: (f32, f32), radius: f32, color: Rgba) {
     if let Some(path) = PathBuilder::from_circle(centre.0, centre.1, radius) {
         fill_path(pixmap, &path, color);
+    }
+}
+
+/// A circle's outline, `width` thick.
+fn stroke_circle(pixmap: &mut Pixmap, centre: (f32, f32), radius: f32, width: f32, color: Rgba) {
+    if let Some(path) = PathBuilder::from_circle(centre.0, centre.1, radius) {
+        let mut paint = Paint::default();
+        paint.set_color(color.to_color());
+        paint.anti_alias = true;
+        let stroke = tiny_skia::Stroke {
+            width,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
     }
 }
 

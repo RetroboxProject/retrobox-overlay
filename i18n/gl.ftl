@@ -37,6 +37,7 @@ help-select = SELECCIONAR
 help-back = VOLVER
 help-close = PECHAR
 help-adjust = AXUSTAR
+help-mute = SILENCIAR
 help-zoom = AUMENTAR
 help-zoom-in = ACHEGAR
 help-zoom-out = ALONXAR

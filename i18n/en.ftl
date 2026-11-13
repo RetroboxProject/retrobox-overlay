@@ -37,6 +37,7 @@ help-select = SELECT
 help-back = BACK
 help-close = CLOSE
 help-adjust = ADJUST
+help-mute = MUTE
 help-zoom = ZOOM
 help-zoom-in = ZOOM IN
 help-zoom-out = ZOOM OUT

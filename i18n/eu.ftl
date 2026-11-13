@@ -37,6 +37,7 @@ help-select = HAUTATU
 help-back = ATZERA
 help-close = ITXI
 help-adjust = DOITU
+help-mute = ISILDU
 help-zoom = ZOOMA
 help-zoom-in = HANDIAGOTU
 help-zoom-out = TXIKIAGOTU

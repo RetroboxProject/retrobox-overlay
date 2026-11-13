@@ -181,8 +181,6 @@ struct State {
     outcome: Option<Outcome>,
     /// What applies each slider's changes.
     setters: Vec<Setter>,
-    /// Sliders found before the panel was there.
-    found: Vec<(SliderKind, f32)>,
     /// What the menu's help prompts were drawn for (a page open, what kind
     /// of thing selected).
     menu_help_shown: Option<(bool, Focus)>,
@@ -228,13 +226,20 @@ enum Focus {
     Item,
     Button,
     Slider,
+    /// The volume's slider: A mutes it.
+    Volume,
 }
 
 impl Focus {
-    const fn of(target: Target) -> Self {
-        match target {
+    fn of(panel: &Panel) -> Self {
+        match panel.selected() {
             Target::Item(_) => Self::Item,
             Target::Button(_) => Self::Button,
+            Target::Slider(_)
+                if panel.selected_action() == Some(MenuAction::Slider(SliderKind::Volume)) =>
+            {
+                Self::Volume
+            }
             Target::Slider(_) => Self::Slider,
         }
     }
@@ -326,7 +331,6 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         started: None,
         outcome: None,
         setters: Vec::new(),
-        found: Vec::new(),
         press: None,
         finger: None,
         menu_help_shown: None,
@@ -674,7 +678,7 @@ impl State {
             return;
         };
         // the same prompts as shown: nothing to draw again
-        let focus = Focus::of(panel.selected());
+        let focus = Focus::of(panel);
         let shown = (panel.page_open(), focus);
         if self.menu_help_shown == Some(shown) {
             return;
@@ -692,12 +696,15 @@ impl State {
         };
         let mut prompts = match focus {
             Focus::Button => vec![prompt("left/right", "help-choose")],
-            Focus::Item | Focus::Slider => vec![prompt("up/down", "help-choose")],
+            Focus::Item | Focus::Slider | Focus::Volume => vec![prompt("up/down", "help-choose")],
         };
-        if focus == Focus::Slider {
-            prompts.push(prompt("left/right", "help-adjust"));
-        } else {
-            prompts.push(prompt(help.ok(), "help-select"));
+        match focus {
+            Focus::Slider => prompts.push(prompt("left/right", "help-adjust")),
+            Focus::Volume => {
+                prompts.push(prompt("left/right", "help-adjust"));
+                prompts.push(prompt(help.ok(), "help-mute"));
+            }
+            Focus::Item | Focus::Button => prompts.push(prompt(help.ok(), "help-select")),
         }
         prompts.push(prompt(help.back(), back));
         let screen_width = self.dim.size.0 as f32;
@@ -892,18 +899,37 @@ impl State {
         let Found {
             kind,
             value,
+            muted,
             setter,
         } = found;
         // found again (should it be): the newer one
         self.setters.retain(|known| known.kind() != kind);
         self.setters.push(setter);
-        match self.panel.as_mut() {
-            Some((panel, _)) => {
-                panel.set_slider(kind, &slider_label(&self.content.translator, kind), value);
-                self.draw_panel();
-                self.draw_menu_help();
-            }
-            None => self.found.push((kind, value)),
+        // (the threads' findings come once the panel is there)
+        if let Some((panel, _)) = self.panel.as_mut() {
+            let label = slider_label(&self.content.translator, kind);
+            panel.set_slider(kind, &label, value, muted);
+            self.draw_panel();
+            self.draw_menu_help();
+        }
+    }
+
+    /// Mute or unmute the volume (A, Enter or a click on its slider).
+    fn toggle_mute(&mut self) {
+        let Some(muted) = self
+            .panel
+            .as_mut()
+            .and_then(|(panel, _)| panel.toggle_mute())
+        else {
+            return;
+        };
+        self.draw_panel();
+        if let Some(setter) = self
+            .setters
+            .iter()
+            .find(|setter| setter.kind() == SliderKind::Volume)
+        {
+            setter.mute(muted);
         }
     }
 
@@ -930,7 +956,11 @@ impl State {
     fn activate(&mut self, action: Option<MenuAction>) {
         self.outcome = match action {
             // e.g. an empty slot to load; Left/Right or the mouse change a slider
-            None | Some(MenuAction::Slider(_)) => return,
+            None | Some(MenuAction::Slider(SliderKind::Brightness)) => return,
+            Some(MenuAction::Slider(SliderKind::Volume)) => {
+                self.toggle_mute();
+                return;
+            }
             Some(MenuAction::States(mode)) => {
                 self.open_states(mode);
                 return;
@@ -1257,11 +1287,17 @@ impl State {
             return;
         };
         if let Target::Slider(index) = target {
-            // on the track: the value there; on the icon: selected
+            // on the track: the value there; elsewhere: selected (and the
+            // volume muted or unmuted)
             let change = panel.slide_to(index, x, false);
             if change.is_none() {
                 panel.select(target);
+                let volume =
+                    panel.selected_action() == Some(MenuAction::Slider(SliderKind::Volume));
                 self.draw_panel();
+                if volume {
+                    self.toggle_mute();
+                }
             }
             self.slid(change);
             self.draw_menu_help();

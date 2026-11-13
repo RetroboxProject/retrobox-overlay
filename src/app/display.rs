@@ -152,6 +152,16 @@ pub(super) struct X11 {
     /// The window with the keyboard focus before the overlay (the game's).
     previous_focus: Option<xproto::Window>,
     active_window: xproto::Atom,
+    /// What the monitor showed when the overlay started, without a
+    /// compositing manager (B, G, R, X in memory): the dim darkens it,
+    /// since a window cannot be translucent then.
+    backdrop: Option<Backdrop>,
+}
+
+/// A copy of the screen.
+struct Backdrop {
+    size: (u32, u32),
+    pixels: Vec<u8>,
 }
 
 pub(super) enum Display {
@@ -302,18 +312,24 @@ impl X11 {
             root,
             &ChangeWindowAttributesAux::new().event_mask(EventMask::SUBSTRUCTURE_NOTIFY),
         )?;
+        let composited = compositing(&conn, screen);
         log::info!(
             "X11: {}x{} at {},{}{}",
             monitor.2,
             monitor.3,
             monitor.0,
             monitor.1,
-            if compositing(&conn, screen) {
+            if composited {
                 ""
             } else {
-                " (no compositing manager: no translucency)"
+                " (no compositing manager: the dim darkens a copy of the screen)"
             }
         );
+        let backdrop = if composited {
+            None
+        } else {
+            snapshot(&conn, root, root_screen.root_depth, monitor)
+        };
         Ok(Self {
             conn: Rc::new(conn),
             root,
@@ -329,6 +345,7 @@ impl X11 {
             tops: Rc::default(),
             previous_focus,
             active_window,
+            backdrop,
         })
     }
 
@@ -551,7 +568,6 @@ fn primary_monitor(conn: &RustConnection, root: xproto::Window) -> Option<(i16, 
     ))
 }
 
-/// Whether a compositing manager runs (it owns `_NET_WM_CM_Sn`).
 /// The window with the keyboard focus: the focused one, else the window
 /// manager's active one (when the focus is on the root or nowhere).
 fn focused_window(
@@ -573,6 +589,45 @@ fn focused_window(
         .filter(|&window| window != 0)
 }
 
+/// A copy of what a monitor shows (the root window's part of it), as
+/// 32-bit pixels; None when the server keeps them otherwise.
+fn snapshot(
+    conn: &RustConnection,
+    root: xproto::Window,
+    depth: u8,
+    monitor: (i16, i16, u32, u32),
+) -> Option<Backdrop> {
+    let four_bytes = conn
+        .setup()
+        .pixmap_formats
+        .iter()
+        .any(|format| format.depth == depth && format.bits_per_pixel == 32);
+    if !four_bytes || conn.setup().image_byte_order != xproto::ImageOrder::LSB_FIRST {
+        return None;
+    }
+    let (x, y, width, height) = monitor;
+    let size = (u32::from(clamp_u16(width)), u32::from(clamp_u16(height)));
+    let reply = conn
+        .get_image(
+            ImageFormat::Z_PIXMAP,
+            root,
+            x,
+            y,
+            clamp_u16(width),
+            clamp_u16(height),
+            u32::MAX,
+        )
+        .ok()?
+        .reply()
+        .inspect_err(|err| log::warn!("cannot copy the screen: {err}"))
+        .ok()?;
+    (reply.data.len() >= size.0 as usize * size.1 as usize * 4).then_some(Backdrop {
+        size,
+        pixels: reply.data,
+    })
+}
+
+/// Whether a compositing manager runs (it owns `_NET_WM_CM_Sn`).
 fn compositing(conn: &RustConnection, screen: usize) -> bool {
     let name = format!("_NET_WM_CM_S{screen}");
     conn.intern_atom(false, name.as_bytes())
@@ -822,6 +877,27 @@ impl Piece {
                 self.shown = true;
                 return;
             }
+        }
+        // X11 without translucency: the screen as it was, darkened
+        if let Display::X11(X11 {
+            backdrop: Some(backdrop),
+            ..
+        }) = &*display
+            && backdrop.size == (width, height)
+        {
+            let keep = 255 - u32::from(pixel[3]);
+            let darker = |byte: u8| ((u32::from(byte) * keep + 127) / 255) as u8;
+            let pixels: Vec<u8> = backdrop
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|&[b, g, r, _]| [darker(b), darker(g), darker(r), 0xff])
+                .collect();
+            self.show(display, width, height, |canvas| {
+                canvas.copy_from_slice(&pixels[..canvas.len()]);
+            });
+            return;
         }
         self.show(display, width, height, |canvas| {
             for target in canvas.as_chunks_mut::<4>().0 {

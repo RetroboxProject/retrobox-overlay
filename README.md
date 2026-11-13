@@ -52,7 +52,8 @@ only while it is shown.
   first one reaches them); Left/Right choose a button; R1 (Page Down too) jumps from the entries
   to the buttons and back, L1 (Page Up) back to the entries. A button highlighted for over a
   second (selected or under the pointer) tells what it does in a small bubble above it, gone as
-  soon as something else is highlighted.
+  soon as something else is highlighted. The selected button gets a ring in the text's colour
+  around the selector's disc, so it stands out whatever the theme.
 * **The emulator.** The overlay only asks; the launcher does. While the game runs, the launcher
   serves a control channel (a Unix socket, `control` in `session.json`) and carries out each
   request the best way the emulator allows: RetroArch's command pipe (its standard input,
@@ -147,16 +148,21 @@ only while it is shown.
     without root), else `brightnessctl`; the first way that works is kept, a refused change
     (NVIDIA's `nvidia_0` refuses one while still fading to the last one) is tried again rather
     than another way, and it never goes below 5 % so the screen does not go black. The
-    brightness glides to the slider's value instead of jumping: a step every 30 ms covering
-    part of what is left (the last steps one unit of the backlight), always towards the
-    slider's latest value, so a drag and a held direction change it smoothly.
+    brightness does not follow the slider while it moves: once it has rested for 250 ms, it
+    glides from where it is straight to the slider's value (down when that is lower, up when
+    higher, never both), easing in and out over 0.4 s at most (less for a short change), a
+    write every 35 ms and never the same value twice; moving the slider again stops it there
+    until the slider rests again.
   * **Volume** of the default output: PipeWire (`wpctl`), else PulseAudio (`pactl`, which also
-    works with PipeWire's PulseAudio server). At 0 the output is muted; above, unmuted.
+    works with PipeWire's PulseAudio server). At 0 the output is muted; above, unmuted. A
+    (Enter, a click or a tap off its track) on the volume's slider mutes or unmutes it, its
+    level kept: the speaker crossed out and the slider faded; moving it unmutes.
 * **Touch screens and dragging.** A finger is the left button: a tap opens an entry (or sets a
   slider where it lands on its track), a drag up or down scrolls the entries smoothly (pixel by
-  pixel), a drag along a slider moves it; the mouse drags the same way. Entries open on release, so a drag never opens
-  one. `row_scale` in `[touch]` makes the rows taller than EmulationStation's (the text stays
-  the same size) so they are easier to hit: 1.5 to 1.66 suits small touch screens.
+  pixel), a drag along a slider moves it; the mouse drags the same way. Entries open on
+  release, so a drag never opens one. `row_scale` in `[touch]` makes the rows taller than
+  EmulationStation's (the text stays the same size, the entries' and sliders' icons grow with
+  them) so they are easier to hit: 1.5 to 1.66 suits small touch screens.
 * **Status line**, above the menu's header, half as large again as the small text, its icons
   centred on the digits: the network (a cable wins over Wi-Fi, whose icon
   shows the signal), the battery (the computer's own: a controller's is left out) with its
@@ -172,7 +178,9 @@ only while it is shown.
   XWayland.
 * On Wayland, `wp_alpha_modifier` (KWin 6.1+, labwc 0.9+) adds the fade-in; without it the menu
   only slides. On X11 a compositing manager (KWin's, picom...) makes the dim translucent and
-  fades the menu in (`_NET_WM_WINDOW_OPACITY`); without one the dim is opaque black.
+  fades the menu in (`_NET_WM_WINDOW_OPACITY`); without one (xfwm4 with its compositor off,
+  for instance) a window cannot be translucent, so the dim is a darkened copy of what the
+  screen showed when the overlay opened (the game goes on under it, unseen until it closes).
 * retrobox-core and retrobox-emulationstation (the packages depend on both).
 * poppler's command line tools (`poppler-utils`, recommended by the packages) for the manuals;
   without them the menu has no manual entry.

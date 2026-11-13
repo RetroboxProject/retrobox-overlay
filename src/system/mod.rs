@@ -7,8 +7,9 @@
 //! volume, the primary screen) is read in a thread as soon as the overlay
 //! starts, and comes back as a `Msg`; each change is applied by a thread of
 //! its own that only ever applies the latest value asked for (a slider held
-//! down asks for many). The brightness glides to it, a few backlight steps
-//! at a time, rather than jumping.
+//! down asks for many). The brightness waits for the slider to rest, then
+//! glides there from where it is, one way only, rather than jumping or
+//! following every move.
 
 pub mod audio;
 pub mod brightness;
@@ -34,11 +35,15 @@ pub const STEP: f32 = 0.05;
 /// How often the volume's changes reach the sound server, at most: each one
 /// runs a program.
 const VOLUME_SPACING: Duration = Duration::from_millis(50);
-/// The brightness glides to the slider's value: every `GLIDE_TICK`, this
-/// part of the way left (at least one backlight step), the latest value
-/// always the goal. About 0.4 s from one end to the other.
-const GLIDE_TICK: Duration = Duration::from_millis(30);
-const GLIDE_EASE: f32 = 0.3;
+/// The brightness changes once the slider has rested this long (moving it
+/// again meanwhile starts the wait again)...
+const BRIGHTNESS_REST: Duration = Duration::from_millis(250);
+/// ...and glides there from where it is, easing in and out, straight there
+/// (a move meanwhile stops it where it is, until the slider rests again):
+/// `GLIDE_TIME` from one end to the other (less for a short change), a
+/// write every `GLIDE_TICK` (a dozen at most; none twice the same).
+const GLIDE_TIME: Duration = Duration::from_millis(420);
+const GLIDE_TICK: Duration = Duration::from_millis(35);
 /// How many times the last value of a glide is tried when refused.
 const LAST_TRIES: u32 = 10;
 /// How long closing waits for the last change to be applied.
@@ -58,11 +63,11 @@ impl Control {
         }
     }
 
-    /// The current value, 0 to 1.
-    pub fn get(&self) -> Option<f32> {
+    /// The current value, 0 to 1, and whether it is muted.
+    pub fn get(&self) -> Option<(f32, bool)> {
         match self {
-            Self::Brightness(screen) => screen.get(),
-            Self::Volume(mixer) => mixer.get(),
+            Self::Brightness(screen) => screen.get().map(|value| (value, false)),
+            Self::Volume(mixer) => mixer.read(),
         }
     }
 
@@ -82,16 +87,23 @@ impl Control {
 pub struct Found {
     pub kind: SliderKind,
     pub value: f32,
+    pub muted: bool,
     pub setter: Setter,
 }
 
 impl Found {
     pub fn new(control: Control) -> Option<Self> {
-        let value = control.get()?;
-        log::info!("{:?}: {:.0} %", control.kind(), value * 100.0);
+        let (value, muted) = control.get()?;
+        log::info!(
+            "{:?}: {:.0} %{}",
+            control.kind(),
+            value * 100.0,
+            if muted { " (muted)" } else { "" }
+        );
         Some(Self {
             kind: control.kind(),
             value,
+            muted,
             setter: Setter::new(control),
         })
     }
@@ -144,8 +156,18 @@ pub struct Setter {
 #[derive(Default)]
 struct Pending {
     value: Option<f32>,
+    /// Mute or unmute (the volume).
+    mute: Option<bool>,
     busy: bool,
+    /// The overlay is closing: no waiting for the slider to rest.
+    closing: bool,
     stop: bool,
+}
+
+impl Pending {
+    const fn idle(&self) -> bool {
+        self.value.is_none() && self.mute.is_none() && !self.busy
+    }
 }
 
 impl Setter {
@@ -174,26 +196,37 @@ impl Setter {
         lock.lock().unwrap_or_else(PoisonError::into_inner).value = Some(value.clamp(0.0, 1.0));
         changed.notify_all();
     }
+
+    /// Mute or unmute soon (the volume).
+    pub fn mute(&self, muted: bool) {
+        let (lock, changed) = &*self.shared;
+        lock.lock().unwrap_or_else(PoisonError::into_inner).mute = Some(muted);
+        changed.notify_all();
+    }
+}
+
+/// What the setter's thread is asked to do.
+enum Job {
+    Value(f32),
+    Mute(bool),
 }
 
 /// The setter's thread: wait for a value, apply it, again.
 fn work(mut control: Control, shared: &(Mutex<Pending>, Condvar)) {
     let (lock, changed) = shared;
-    let newer = || {
-        lock.lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .value
-            .take()
-    };
-    let mut current = control.get();
+    let mut current = control.get().map(|(value, _)| value);
     let mut last: Option<Instant> = None;
     loop {
-        let target = {
+        let job = {
             let mut pending = lock.lock().unwrap_or_else(PoisonError::into_inner);
             loop {
+                if let Some(muted) = pending.mute.take() {
+                    pending.busy = true;
+                    break Job::Mute(muted);
+                }
                 if let Some(value) = pending.value.take() {
                     pending.busy = true;
-                    break value;
+                    break Job::Value(value);
                 }
                 if pending.stop {
                     return;
@@ -203,11 +236,21 @@ fn work(mut control: Control, shared: &(Mutex<Pending>, Condvar)) {
                     .unwrap_or_else(PoisonError::into_inner);
             }
         };
-        match &mut control {
-            Control::Brightness(screen) => {
-                current = Some(glide(screen, current.unwrap_or(target), target, &newer));
+        match (&mut control, job) {
+            (Control::Volume(mixer), Job::Mute(muted)) => mixer.set_mute(muted),
+            (Control::Brightness(_), Job::Mute(_)) => {}
+            (Control::Brightness(screen), Job::Value(target)) => {
+                let target = rested(shared, target);
+                let from = current.unwrap_or(target);
+                let moved = || {
+                    lock.lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .value
+                        .is_some()
+                };
+                current = Some(glide(screen, from, target, &moved));
             }
-            Control::Volume(_) => {
+            (Control::Volume(_), Job::Value(target)) => {
                 // spaced: the latest value after waiting
                 let wait = last.map_or(Duration::ZERO, |last| {
                     VOLUME_SPACING.saturating_sub(last.elapsed())
@@ -215,7 +258,8 @@ fn work(mut control: Control, shared: &(Mutex<Pending>, Condvar)) {
                 let mut target = target;
                 if !wait.is_zero() {
                     std::thread::sleep(wait);
-                    target = newer().unwrap_or(target);
+                    let mut pending = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                    target = pending.value.take().unwrap_or(target);
                 }
                 control.set(target);
                 last = Some(Instant::now());
@@ -227,33 +271,58 @@ fn work(mut control: Control, shared: &(Mutex<Pending>, Condvar)) {
     }
 }
 
-/// Take the backlight from `from` to `target` (or to a newer one, as they
-/// come) a few steps at a time; where it ends.
-fn glide(screen: &mut Screen, from: f32, mut target: f32, newer: &impl Fn() -> Option<f32>) -> f32 {
-    let one_step = screen.step();
-    let mut now = from;
-    let mut refused = 0;
+/// Wait for the slider to rest (`BRIGHTNESS_REST` without a newer value,
+/// or the overlay closing): its value then.
+fn rested((lock, changed): &(Mutex<Pending>, Condvar), mut target: f32) -> f32 {
+    let mut pending = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut since = Instant::now();
     loop {
-        if let Some(moved) = newer() {
-            target = moved;
+        if let Some(newer) = pending.value.take() {
+            target = newer;
+            since = Instant::now();
         }
-        let left = target - now;
-        if left.abs() <= one_step / 2.0 {
-            // the last value must land: tried again a few times if refused
-            if screen.set(target) || refused >= LAST_TRIES {
-                return target;
-            }
-            refused += 1;
-            now = target;
-            std::thread::sleep(GLIDE_TICK);
-            continue;
+        let left = BRIGHTNESS_REST.saturating_sub(since.elapsed());
+        if pending.closing || pending.stop || left.is_zero() {
+            return target;
         }
-        let step = (left * GLIDE_EASE).abs().max(one_step).min(left.abs());
-        now += step.copysign(left);
+        pending = changed
+            .wait_timeout(pending, left)
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
+    }
+}
+
+/// Take the backlight from `from` straight to `target` along an ease in
+/// and out, a write every `GLIDE_TICK`; a new value asked for (`moved`)
+/// stops it where it is. Where it ends.
+fn glide(screen: &mut Screen, from: f32, target: f32, moved: &impl Fn() -> bool) -> f32 {
+    let distance = (target - from).abs();
+    // a short change takes less time; one end to the other, GLIDE_TIME
+    let time = GLIDE_TIME.mul_f32(distance.sqrt().clamp(0.35, 1.0));
+    let steps = (time.as_secs_f32() / GLIDE_TICK.as_secs_f32())
+        .ceil()
+        .max(1.0) as u32;
+    for step in 1..=steps {
+        let t = step as f32 / steps as f32;
+        let eased = t * t * (3.0 - 2.0 * t);
+        let now = from + (target - from) * eased;
         // refused (NVIDIA's backlight while it still fades): the next one comes soon
         screen.set(now);
+        if step < steps {
+            std::thread::sleep(GLIDE_TICK);
+            if moved() {
+                return now;
+            }
+        }
+    }
+    // the last value must land: tried again a few times if refused
+    for _ in 0..LAST_TRIES {
+        if screen.set(target) || moved() {
+            break;
+        }
         std::thread::sleep(GLIDE_TICK);
     }
+    target
 }
 
 impl Drop for Setter {
@@ -262,7 +331,9 @@ impl Drop for Setter {
         let (lock, changed) = &*self.shared;
         let deadline = Instant::now() + FLUSH_TIMEOUT;
         let mut pending = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        while pending.value.is_some() || pending.busy {
+        pending.closing = true;
+        changed.notify_all();
+        while !pending.idle() {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 log::warn!("{:?}: the last change is still being applied", self.kind);

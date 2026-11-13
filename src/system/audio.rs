@@ -28,23 +28,35 @@ impl Mixer {
         let mixer = [Tool::Wpctl, Tool::Pactl]
             .into_iter()
             .map(|tool| Self { tool, muted: None })
-            .find(|mixer| mixer.get().is_some());
+            .find(|mixer| mixer.read().is_some());
         if mixer.is_none() {
             log::info!("no PipeWire or PulseAudio output found: no volume slider");
         }
         mixer
     }
 
-    /// The default output's volume, 0 to 1 (0 when muted).
-    pub fn get(self) -> Option<f32> {
+    /// The default output's volume, 0 to 1, and whether it is muted.
+    pub fn read(self) -> Option<(f32, bool)> {
         match self.tool {
             Tool::Wpctl => parse_wpctl(&output("wpctl", &["get-volume", WPCTL_SINK])?),
             Tool::Pactl => {
                 let volume = parse_pactl(&output("pactl", &["get-sink-volume", PACTL_SINK])?)?;
                 let muted = output("pactl", &["get-sink-mute", PACTL_SINK])
                     .is_some_and(|mute| mute.contains("yes"));
-                Some(if muted { 0.0 } else { volume })
+                Some((volume, muted))
             }
+        }
+    }
+
+    /// Mute or unmute the default output, its volume kept.
+    pub fn set_mute(&mut self, muted: bool) {
+        let mute = if muted { "1" } else { "0" };
+        let done = match self.tool {
+            Tool::Wpctl => run("wpctl", &["set-mute", WPCTL_SINK, mute]),
+            Tool::Pactl => run("pactl", &["set-sink-mute", PACTL_SINK, mute]),
+        };
+        if done {
+            self.muted = Some(muted);
         }
     }
 
@@ -79,14 +91,10 @@ impl Mixer {
 }
 
 /// `Volume: 0.40` or `Volume: 0.40 [MUTED]`.
-fn parse_wpctl(text: &str) -> Option<f32> {
+fn parse_wpctl(text: &str) -> Option<(f32, bool)> {
     let rest = text.trim().strip_prefix("Volume:")?;
     let value: f32 = rest.split_whitespace().next()?.parse().ok()?;
-    Some(if rest.contains("[MUTED]") {
-        0.0
-    } else {
-        value.clamp(0.0, 1.0)
-    })
+    Some((value.clamp(0.0, 1.0), rest.contains("[MUTED]")))
 }
 
 /// `Volume: front-left: 26214 /  40% / -23.88 dB,   front-right: ...`: the
@@ -105,9 +113,9 @@ mod tests {
 
     #[test]
     fn reads_wpctl() {
-        assert_eq!(parse_wpctl("Volume: 0.40\n"), Some(0.4));
-        assert_eq!(parse_wpctl("Volume: 0.40 [MUTED]\n"), Some(0.0));
-        assert_eq!(parse_wpctl("Volume: 1.50"), Some(1.0));
+        assert_eq!(parse_wpctl("Volume: 0.40\n"), Some((0.4, false)));
+        assert_eq!(parse_wpctl("Volume: 0.40 [MUTED]\n"), Some((0.4, true)));
+        assert_eq!(parse_wpctl("Volume: 1.50"), Some((1.0, false)));
         assert_eq!(parse_wpctl("nothing"), None);
     }
 
