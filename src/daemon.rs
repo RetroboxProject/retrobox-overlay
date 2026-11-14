@@ -383,8 +383,14 @@ impl State {
             Err(err) => err.kind() != std::io::ErrorKind::WouldBlock,
         };
         if gone {
-            // unplugged
+            // Unplugged, or its driver reloaded: close it now (the kernel
+            // frees the input device, and runs its driver's cleanup code, when
+            // the last descriptor closes, so a driver unloaded meanwhile would
+            // crash it), then look for a node that took its place: the
+            // inotify scan may have run first and found the new node under
+            // the old one's path, which it took for the watched device.
             self.forget(path);
+            self.scan();
         }
         for event in &events {
             // looked up again: a trigger may have changed things

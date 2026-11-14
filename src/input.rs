@@ -14,7 +14,7 @@
 //! hid-playstation, hid-nintendo...).
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use evdev::AttributeSet;
@@ -74,7 +74,12 @@ const RELEASE_POLL: Duration = Duration::from_millis(10);
 
 /// A grabbed controller.
 pub struct Pad {
+    /// Where it was opened from; what tells the controllers apart.
+    pub path: PathBuf,
     pub device: Device,
+    /// Reading failed for good (unplugged, or its driver unloaded): it must be
+    /// dropped at once, see `is_gone`.
+    gone: bool,
     grabbed: bool,
     opened: Instant,
     /// Buttons that read as down for longer than `GRAB_WAIT` before the grab.
@@ -116,7 +121,9 @@ impl Pad {
             }
         }
         let mut pad = Self {
+            path: path.to_owned(),
             device,
+            gone: false,
             grabbed: false,
             opened: Instant::now(),
             stuck: AttributeSet::new(),
@@ -169,13 +176,33 @@ impl Pad {
         self.grabbed = true;
     }
 
+    /// Whether the controller is gone (`ENODEV` once it is unplugged or its
+    /// driver unloads). The owner must then drop it, and stop polling its
+    /// descriptor, without waiting for the overlay to close: the kernel only
+    /// frees the input device (running its driver's cleanup code) when the
+    /// last descriptor is closed, and a driver unloaded in the meantime leaves
+    /// that code gone, which crashes the kernel.
+    pub const fn is_gone(&self) -> bool {
+        self.gone
+    }
+
     /// The presses and releases in the pending events.
     pub fn read(&mut self) -> Vec<Input> {
         let events: Vec<_> = match self.device.fetch_events() {
             Ok(events) => events.collect(),
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Vec::new(),
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                return Vec::new();
+            }
             Err(err) => {
-                log::warn!("controller read error: {err}");
+                // the error would come back on every poll: the controller is
+                // done for
+                log::warn!("controller {} gone: {err}", self.path.display());
+                self.gone = true;
                 return Vec::new();
             }
         };

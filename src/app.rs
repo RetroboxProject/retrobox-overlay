@@ -398,13 +398,28 @@ fn connect_x11(handle: &LoopHandle<'static, State>) -> Result<Display> {
 /// Read the controllers' events, and grab them all once `GRAB_WAIT` has
 /// passed (one whose buttons are not all up yet is grabbed by then anyway).
 fn watch_controllers(handle: &LoopHandle<'static, State>, pads: &[Pad]) -> Result<()> {
-    for (index, pad) in pads.iter().enumerate() {
+    for pad in pads {
         let fd = pad.device.as_fd().try_clone_to_owned()?;
+        let path = pad.path.clone();
         handle
             .insert_source(
                 Generic::new(fd, Interest::READ, Mode::Level),
                 move |_, _, state| {
-                    for input in state.content.pads[index].read() {
+                    let Some(pad) = state.content.pads.iter_mut().find(|pad| pad.path == path)
+                    else {
+                        return Ok(PostAction::Remove);
+                    };
+                    let inputs = pad.read();
+                    if pad.is_gone() {
+                        // Close both descriptors of the controller right now
+                        // (the pad's, and this source's, which `Remove` drops):
+                        // holding a gone device open until the overlay closes
+                        // is what lets its driver unload under it, and also
+                        // makes this level-triggered source fire non-stop.
+                        state.content.pads.retain(|pad| pad.path != path);
+                        return Ok(PostAction::Remove);
+                    }
+                    for input in inputs {
                         state.pad_input(input);
                     }
                     Ok(PostAction::Continue)
