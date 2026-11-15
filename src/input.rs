@@ -122,6 +122,7 @@ pub struct Pad {
 impl Pad {
     /// Open and grab a controller; None (logged) when it cannot be.
     pub fn open(path: &Path, swap_confirm: bool) -> Option<Self> {
+        let started = Instant::now();
         let device = match Device::open(path) {
             Ok(device) => device,
             Err(err) => {
@@ -173,7 +174,14 @@ impl Pad {
             // the codes are the standard ones now, whatever the driver says
             pad.faces = Faces::Standard;
         }
+        let opened = started.elapsed();
         pad.try_grab();
+        log::info!(
+            "{}: opened in {} ms, grabbed in {} ms",
+            path.display(),
+            opened.as_millis(),
+            started.elapsed().saturating_sub(opened).as_millis()
+        );
         Some(pad)
     }
 
@@ -440,7 +448,15 @@ impl Faces {
 /// moved with: not the virtual ones (the launcher's, which is what the
 /// on-screen keyboard types on, would be grabbed from itself).
 pub fn open_keyboards() -> Vec<Pad> {
-    evdev::enumerate()
+    let started = Instant::now();
+    let devices: Vec<_> = evdev::enumerate().collect();
+    log::info!(
+        "{} input devices listed in {} ms",
+        devices.len(),
+        started.elapsed().as_millis()
+    );
+    devices
+        .into_iter()
         .filter(|(_, device)| is_physical_keyboard(device))
         .filter_map(|(path, _)| Pad::open(&path, false))
         .map(|mut pad| {
