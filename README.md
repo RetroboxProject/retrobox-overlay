@@ -128,7 +128,15 @@ only while it is shown.
   emulator or app whose feature file in retrobox-core lists `osk` (the web browsers): a keyboard
   slides up from the bottom of the screen, in the menu's theme colours and font, over the game
   without dimming it. The d-pad or stick moves over the keys, A types, Y is backspace, X space,
-  Start enter, L and R move the cursor, R2 toggles shift (locked on at the start), L2 the symbols layer,
+  Start enter, L and R move the cursor, R2 toggles shift (locked on at the start), L2 the symbols
+  layer, B the accents page, Home closes it, and a click or a tap outside the keyboard too. The
+  keys around the letters: Shift (2x2), Tab and symbols on the left, the overlay button
+  (opens the standard overlay in its place), backspace and Enter (2x2) on the right; and the
+  bottom row has Close, the cursors on either side of the space bar, and Accents. The buttons
+  are those `es_input.cfg` gives each controller (its `b`, `a`, `x`, `y`, `start`... numbered
+  as SDL's evdev driver does, matched by GUID or name), as the emulators do; without an entry
+  for the pad, the evdev names (and the Xbox ones' quirk) decide. Icons are Lucide's (ISC), and
+  the buttons' the theme's help icons, else EmulationStation's `button_<name>.svg`, else text.
   Home closes it, and a click or a tap outside the keyboard too. It never takes the keyboard
   focus: the game keeps it, and the keys are typed on the launcher's virtual keyboard through the
   control channel (`key down|up`), so the overlay and the keyboard are never open together (they

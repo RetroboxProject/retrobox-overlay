@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use evdev::AttributeSet;
 
+use crate::es_input::{self, Translation};
 use evdev::{AbsoluteAxisCode, Device, EventSummary, KeyCode};
 
 /// What the overlay does with a controller or keyboard input.
@@ -111,6 +112,9 @@ pub struct Pad {
     axes: HashMap<AbsoluteAxisCode, (i32, i32, i32)>,
     role: Role,
     faces: Faces,
+    /// The buttons as `EmulationStation` numbers them, as standard codes
+    /// (see `es_input`); none when it does not know the controller.
+    translation: Option<Translation>,
     /// The analog triggers, in keyboard mode: axis -> (lowest, highest, down).
     triggers: HashMap<AbsoluteAxisCode, (i32, i32, bool)>,
 }
@@ -161,8 +165,14 @@ impl Pad {
             axes,
             role: Role::Menu,
             faces: Faces::of(&device_id),
+            translation: None,
             triggers: HashMap::new(),
         };
+        pad.translation = es_input::translation(&pad.device);
+        if pad.translation.is_some() {
+            // the codes are the standard ones now, whatever the driver says
+            pad.faces = Faces::Standard;
+        }
         pad.try_grab();
         Some(pad)
     }
@@ -270,6 +280,7 @@ impl Pad {
             match event.destructure() {
                 // 2 is the kernel's auto-repeat: holding is followed here
                 EventSummary::Key(_, code, value @ (0 | 1)) => {
+                    let code = self.standard(code);
                     inputs.extend(self.button(code).map(|nav| Input {
                         nav,
                         pressed: value == 1,
@@ -283,6 +294,16 @@ impl Pad {
             }
         }
         inputs
+    }
+
+    /// A button code as the standard layout calls it, going by what
+    /// `EmulationStation` says the controller's buttons are.
+    fn standard(&self, code: KeyCode) -> KeyCode {
+        self.translation
+            .as_ref()
+            .and_then(|translation| translation.get(&code))
+            .copied()
+            .unwrap_or(code)
     }
 
     fn button(&self, code: KeyCode) -> Option<Nav> {

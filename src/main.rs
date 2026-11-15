@@ -13,6 +13,7 @@ mod app;
 mod config;
 mod daemon;
 mod emulator;
+mod es_input;
 mod i18n;
 mod input;
 mod instance;
@@ -253,6 +254,7 @@ fn run(
     match outcome {
         Outcome::Quit if !demo => quit_game(),
         Outcome::Quit | Outcome::Back => {}
+        Outcome::Overlay => open_overlay(),
         Outcome::Request(request) => emulator.back_to_game(request),
         Outcome::Standby => {
             // the last slider change first
@@ -264,6 +266,14 @@ fn run(
     // the last slider change is applied before leaving
     drop(setters);
     Ok(())
+}
+
+/// Start the overlay again, as the pad's hotkey does (the on-screen keyboard
+/// has just left, and its lock with it).
+fn open_overlay() {
+    if let Ok(exe) = std::env::current_exe() {
+        emulator::spawn(&[exe.to_string_lossy().into_owned(), "--from-pad".into()]);
+    }
 }
 
 /// The theme's menu fonts, then the fallbacks for the language.

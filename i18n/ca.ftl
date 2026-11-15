@@ -51,9 +51,4 @@ audio-no-outputs = No s'han trobat sortides d'àudio
 audio-loading = Carregant…
 help-audio = ÀUDIO
 # the on-screen keyboard's keys
-osk-delete = Esborrar
-osk-space = Espai
-osk-enter = Intro
-osk-shift = Majús
-osk-close = Tancar
 osk-accents = Accents

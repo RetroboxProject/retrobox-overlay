@@ -127,6 +127,9 @@ pub enum Outcome {
     Quit,
     /// Put the computer to sleep, once the overlay is gone.
     Standby,
+    /// The on-screen keyboard's overlay key: the overlay opens once the
+    /// keyboard is gone.
+    Overlay,
 }
 
 /// Everything the overlay shows, prepared before it connects to the display.
@@ -638,14 +641,8 @@ impl State {
     /// The on-screen keyboard: at the bottom, hidden below the screen's edge;
     /// it slides in (see animate), without a fade.
     fn create_osk(&mut self, screen: (u32, u32)) {
-        let texts = &self.content.translator;
         let labels = Labels {
-            backspace: texts.text("osk-delete"),
-            space: texts.text("osk-space"),
-            enter: texts.text("osk-enter"),
-            shift: texts.text("osk-shift"),
-            close: texts.text("osk-close"),
-            accents: texts.text("osk-accents"),
+            accents: self.content.translator.text("osk-accents"),
         };
         let osk = Osk::new(&self.content.theme, screen, self.layout(), labels);
         let piece = self.display.create_piece(Spec {
@@ -1463,7 +1460,11 @@ impl State {
             self.draw_osk();
         }
         if activation.close {
-            self.outcome = Some(Outcome::Back);
+            self.outcome = Some(if activation.overlay {
+                Outcome::Overlay
+            } else {
+                Outcome::Back
+            });
         }
     }
 

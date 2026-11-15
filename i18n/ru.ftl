@@ -51,9 +51,4 @@ audio-no-outputs = Аудиовыходы не найдены
 audio-loading = Загрузка…
 help-audio = ЗВУК
 # the on-screen keyboard's keys
-osk-delete = Удалить
-osk-space = Пробел
-osk-enter = Ввод
-osk-shift = Shift
-osk-close = Закрыть
 osk-accents = Акценты

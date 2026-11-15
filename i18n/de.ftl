@@ -51,9 +51,4 @@ audio-no-outputs = Keine Audioausgänge gefunden
 audio-loading = Wird geladen…
 help-audio = AUDIO
 # the on-screen keyboard's keys
-osk-delete = Entf
-osk-space = Leer
-osk-enter = Eingabe
-osk-shift = Umschalt
-osk-close = Schließen
 osk-accents = Akzente

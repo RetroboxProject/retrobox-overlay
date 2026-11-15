@@ -46,6 +46,16 @@ pub enum Icon {
     BatteryFull,
     BatteryCharging,
     BatteryWarning,
+    CornerDownLeft,
+    ArrowBigUp,
+    ArrowBigUpDash,
+    Delete,
+    Space,
+    X,
+    ArrowLeft,
+    ArrowRight,
+    ArrowRightToLine,
+    Gamepad,
 }
 
 impl Icon {
@@ -140,6 +150,16 @@ impl Icon {
             Self::BatteryFull => include_str!("../../assets/icons/battery-full.svg"),
             Self::BatteryCharging => include_str!("../../assets/icons/battery-charging.svg"),
             Self::BatteryWarning => include_str!("../../assets/icons/battery-warning.svg"),
+            Self::CornerDownLeft => include_str!("../../assets/icons/corner-down-left.svg"),
+            Self::ArrowBigUp => include_str!("../../assets/icons/arrow-big-up.svg"),
+            Self::ArrowBigUpDash => include_str!("../../assets/icons/arrow-big-up-dash.svg"),
+            Self::Delete => include_str!("../../assets/icons/delete.svg"),
+            Self::Space => include_str!("../../assets/icons/space.svg"),
+            Self::X => include_str!("../../assets/icons/x.svg"),
+            Self::ArrowLeft => include_str!("../../assets/icons/arrow-left.svg"),
+            Self::ArrowRight => include_str!("../../assets/icons/arrow-right.svg"),
+            Self::ArrowRightToLine => include_str!("../../assets/icons/arrow-right-to-line.svg"),
+            Self::Gamepad => include_str!("../../assets/icons/gamepad-2.svg"),
         }
     }
 
@@ -201,6 +221,16 @@ mod tests {
             Icon::BatteryFull,
             Icon::BatteryCharging,
             Icon::BatteryWarning,
+            Icon::CornerDownLeft,
+            Icon::ArrowBigUp,
+            Icon::ArrowBigUpDash,
+            Icon::Delete,
+            Icon::Space,
+            Icon::X,
+            Icon::ArrowLeft,
+            Icon::ArrowRight,
+            Icon::ArrowRightToLine,
+            Icon::Gamepad,
         ];
         for icon in icons {
             let pixmap = icon.render(48, Rgba(0xff00_00ff)).unwrap();

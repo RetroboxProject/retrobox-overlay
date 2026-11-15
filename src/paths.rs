@@ -66,6 +66,15 @@ pub fn kept_menu_theme() -> PathBuf {
 /// from a terminal, `RETROBOX_ROOTDIR` is not set).
 const PACKAGED_ROOT: &str = "/opt/retrobox";
 
+/// The install's root, when it is known: `RETROBOX_ROOTDIR`, else the
+/// packages' one if it exists.
+pub fn root_dir() -> Option<PathBuf> {
+    env_path("RETROBOX_ROOTDIR").or_else(|| {
+        let packaged = PathBuf::from(PACKAGED_ROOT);
+        packaged.exists().then_some(packaged)
+    })
+}
+
 /// A Retrobox command: from the install's `bin/` (`RETROBOX_ROOTDIR`, else
 /// the packages' `/opt/retrobox`), else from `$PATH`.
 pub fn retrobox_command(name: &str) -> PathBuf {

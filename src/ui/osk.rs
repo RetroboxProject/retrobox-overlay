@@ -17,6 +17,7 @@ use tiny_skia::{Paint, PathBuilder, Pixmap, Stroke, Transform};
 use std::collections::HashMap;
 use std::path::Path;
 
+use super::icons::Icon;
 use super::layout::{Layout, Page, Slot, Step};
 use super::text::{FontRef, Fonts, TextBox};
 use crate::theme::{MenuTheme, Rgba};
@@ -43,17 +44,14 @@ const HOVER_ALPHA: u8 = 0x60;
 const RING_WIDTH: f32 = 0.035;
 const RING_GAP: f32 = 0.02;
 const ACTIVE_ALPHA: u8 = 0x70;
+/// An icon's size on a key, relative to a key's width.
+const ICON_SIZE: f32 = 0.42;
 /// Where the grid starts, in keys: the first letter column.
 const LEFT: f32 = SIDE;
 
-/// The names of the keys that have a word on them.
+/// The words on the keys that have one (the others have icons).
 #[derive(Debug, Clone)]
 pub struct Labels {
-    pub backspace: String,
-    pub space: String,
-    pub enter: String,
-    pub shift: String,
-    pub close: String,
     pub accents: String,
 }
 
@@ -68,6 +66,9 @@ pub enum Action {
     Backspace,
     Space,
     Enter,
+    Tab,
+    /// Leave for the overlay.
+    Overlay,
     CursorLeft,
     CursorRight,
     Shift,
@@ -83,6 +84,8 @@ pub struct Activation {
     /// The keys to tap, in order (an accent is a dead key and a letter).
     pub taps: Vec<Step>,
     pub close: bool,
+    /// Close it and open the overlay.
+    pub overlay: bool,
     /// The keyboard looks different now (a layer, shift).
     pub redraw: bool,
 }
@@ -242,12 +245,15 @@ impl Osk {
                 badge: badge.map(str::to_owned),
             });
         };
+        let right = LEFT + 10.0;
+        // the side columns: layers and tab on the left, the overlay and
+        // delete on the right, with shift and enter twice as tall
         add(Action::Symbols, 0.0, 0.0, SIDE, 1.0, Some("l2"));
-        add(Action::CursorLeft, 0.0, 1.0, SIDE, 2.0, Some("l"));
-        add(Action::Shift, 0.0, 3.0, SIDE, 1.0, Some("r2"));
-        add(Action::Backspace, LEFT + 10.0, 0.0, SIDE, 1.0, Some("y"));
-        add(Action::CursorRight, LEFT + 10.0, 1.0, SIDE, 2.0, Some("r"));
-        add(Action::Enter, LEFT + 10.0, 3.0, SIDE, 1.0, Some("start"));
+        add(Action::Tab, 0.0, 1.0, SIDE, 1.0, None);
+        add(Action::Shift, 0.0, 2.0, SIDE, 2.0, Some("r2"));
+        add(Action::Overlay, right, 0.0, SIDE, 1.0, None);
+        add(Action::Backspace, right, 1.0, SIDE, 1.0, Some("y"));
+        add(Action::Enter, right, 2.0, SIDE, 2.0, Some("start"));
         for row in 0..4 {
             for column in 0..10 {
                 add(
@@ -260,17 +266,15 @@ impl Osk {
                 );
             }
         }
-        add(Action::Close, LEFT, 4.0, 2.0, 1.0, Some("home"));
+        // the bottom row: the cursors on both sides of the space bar, under
+        // the first and last two letters, and close and accents under the
+        // side columns
+        add(Action::Close, 0.0, 4.0, SIDE, 1.0, Some("hotkey"));
+        add(Action::CursorLeft, LEFT, 4.0, 2.0, 1.0, Some("l"));
         add(Action::Space, LEFT + 2.0, 4.0, 6.0, 1.0, Some("x"));
+        add(Action::CursorRight, LEFT + 8.0, 4.0, 2.0, 1.0, Some("r"));
         // the cancel button, wherever the theme has put it
-        add(
-            Action::Accents,
-            LEFT + 8.0,
-            4.0,
-            2.0,
-            1.0,
-            Some(accents_icon),
-        );
+        add(Action::Accents, right, 4.0, SIDE, 1.0, Some(accents_icon));
         keys
     }
 
@@ -362,6 +366,7 @@ impl Osk {
                 | Action::Backspace
                 | Action::Space
                 | Action::Enter
+                | Action::Tab
                 | Action::CursorLeft
                 | Action::CursorRight
         )
@@ -397,6 +402,12 @@ impl Osk {
             Action::Backspace => tap("KEY_BACKSPACE"),
             Action::Space => tap("KEY_SPACE"),
             Action::Enter => tap("KEY_ENTER"),
+            Action::Tab => tap("KEY_TAB"),
+            Action::Overlay => Activation {
+                close: true,
+                overlay: true,
+                ..Activation::default()
+            },
             Action::CursorLeft => tap("KEY_LEFT"),
             Action::CursorRight => tap("KEY_RIGHT"),
             Action::Shift => {
@@ -415,20 +426,32 @@ impl Osk {
         }
     }
 
-    /// What a key shows.
+    /// The word on a key: a character, or the symbols and accents keys'.
     fn label(&self, action: Action) -> &str {
         match action {
             Action::Char(slot) => &self.slot(slot).label,
-            Action::Backspace => &self.labels.backspace,
-            Action::Space => &self.labels.space,
-            Action::Enter => &self.labels.enter,
-            Action::CursorLeft => "<",
-            Action::CursorRight => ">",
-            Action::Shift => &self.labels.shift,
             Action::Symbols => "#+=",
-            Action::Close => &self.labels.close,
             Action::Accents => &self.labels.accents,
+            _ => "",
         }
+    }
+
+    /// The icon on a key, for the keys that have one.
+    fn icon(&self, action: Action) -> Option<Icon> {
+        Some(match action {
+            Action::Backspace => Icon::Delete,
+            Action::Space => Icon::Space,
+            Action::Enter => Icon::CornerDownLeft,
+            Action::Tab => Icon::ArrowRightToLine,
+            Action::Overlay => Icon::Gamepad,
+            Action::CursorLeft => Icon::ArrowLeft,
+            Action::CursorRight => Icon::ArrowRight,
+            // locked on, shift is caps lock
+            Action::Shift if self.shift => Icon::ArrowBigUpDash,
+            Action::Shift => Icon::ArrowBigUp,
+            Action::Close => Icon::X,
+            Action::Char(_) | Action::Symbols | Action::Accents => return None,
+        })
     }
 
     /// Whether a toggle key is on.
@@ -491,24 +514,35 @@ impl Osk {
                 }
             }
             let label_height = if key.badge.is_some() { h * 0.62 } else { h };
-            let font = if matches!(key.action, Action::Char(_)) {
-                &self.font
-            } else {
-                &self.word_font
+            let area = TextBox {
+                x,
+                y,
+                width: w,
+                height: label_height,
+                align: Align::Center,
             };
-            fonts.draw(
-                &mut pixmap,
-                font,
-                self.label(key.action),
-                TextBox {
-                    x,
-                    y,
-                    width: w,
-                    height: label_height,
-                    align: Align::Center,
-                },
-                text,
-            );
+            if let Some(icon) = self.icon(key.action) {
+                let size = (self.unit * ICON_SIZE).round().max(1.0) as u32;
+                if let Some(image) = icon.render(size, text) {
+                    let left = x + (w - size as f32) / 2.0;
+                    let top = y + (label_height - size as f32) / 2.0;
+                    pixmap.draw_pixmap(
+                        left.round() as i32,
+                        top.round() as i32,
+                        image.as_ref(),
+                        &tiny_skia::PixmapPaint::default(),
+                        Transform::identity(),
+                        None,
+                    );
+                }
+            } else {
+                let font = if matches!(key.action, Action::Char(_)) {
+                    &self.font
+                } else {
+                    &self.word_font
+                };
+                fonts.draw(&mut pixmap, font, self.label(key.action), area, text);
+            }
             if let Some(badge) = &key.badge {
                 self.draw_badge(&mut pixmap, fonts, badge, key.rect, (text, selected));
             }
@@ -542,7 +576,7 @@ impl Osk {
         }
         let written = match name {
             "start" => "+".to_owned(),
-            "home" => "Home".to_owned(),
+            "hotkey" => "Hotkey".to_owned(),
             other => other.to_uppercase(),
         };
         let badge = written.as_str();
@@ -632,14 +666,8 @@ mod tests {
     use super::*;
 
     fn labels() -> Labels {
-        let label = |text: &str| text.to_owned();
         Labels {
-            backspace: label("Del"),
-            space: label("Space"),
-            enter: label("Enter"),
-            shift: label("Shift"),
-            close: label("Close"),
-            accents: label("Accents"),
+            accents: "Accents".to_owned(),
         }
     }
 
@@ -692,12 +720,50 @@ mod tests {
     fn side_columns_are_reached_from_the_letters() {
         let mut osk = osk();
         while osk.move_selection(Direction::Left) {}
-        assert_eq!(selected_action(&osk), Action::CursorLeft);
+        // shift is two rows tall: the row of d and the one under it
+        assert_eq!(selected_action(&osk), Action::Shift);
+        assert!(osk.move_selection(Direction::Up));
+        assert_eq!(selected_action(&osk), Action::Tab);
         assert!(osk.move_selection(Direction::Up));
         assert_eq!(selected_action(&osk), Action::Symbols);
         assert!(osk.move_selection(Direction::Down));
         assert!(osk.move_selection(Direction::Down));
-        assert_eq!(selected_action(&osk), Action::Shift);
+        assert!(osk.move_selection(Direction::Down));
+        assert_eq!(selected_action(&osk), Action::Close);
+    }
+
+    #[test]
+    fn the_bottom_row_has_the_cursors_around_the_space_bar() {
+        let osk = osk();
+        let bottom: Vec<Action> = {
+            let mut keys: Vec<_> = osk
+                .keys
+                .iter()
+                .filter(|key| key.rect.1 > osk.height as f32 * 0.7)
+                .collect();
+            keys.sort_by(|a, b| a.rect.0.total_cmp(&b.rect.0));
+            keys.iter().map(|key| key.action).collect()
+        };
+        assert_eq!(
+            bottom,
+            [
+                Action::Close,
+                Action::CursorLeft,
+                Action::Space,
+                Action::CursorRight,
+                Action::Accents
+            ]
+        );
+    }
+
+    #[test]
+    fn the_overlay_key_closes_for_the_overlay() {
+        let mut osk = osk();
+        let key = osk.index_of(Action::Overlay).unwrap();
+        let pressed = osk.activate(key);
+        assert!(pressed.close && pressed.overlay);
+        let tab = osk.index_of(Action::Tab).unwrap();
+        assert_eq!(osk.activate(tab).taps[0].code, "KEY_TAB");
     }
 
     #[test]

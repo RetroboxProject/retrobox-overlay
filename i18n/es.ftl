@@ -51,9 +51,4 @@ audio-no-outputs = No se encontraron salidas de audio
 audio-loading = Cargando…
 help-audio = AUDIO
 # the on-screen keyboard's keys
-osk-delete = Borrar
-osk-space = Espacio
-osk-enter = Intro
-osk-shift = Mayús
-osk-close = Cerrar
 osk-accents = Acentos
