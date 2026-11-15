@@ -80,6 +80,7 @@ use crate::theme::MenuTheme;
 use crate::ui::audio::AudioMenu;
 use crate::ui::clock::Clock;
 use crate::ui::help::{Help, Prompt};
+use crate::ui::osk::{Action as OskAction, Direction, Osk};
 use crate::ui::panel::{MenuAction, MenuItem, Panel, StatusBar, Target};
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
@@ -156,6 +157,8 @@ pub struct Content {
     pub battery_percent: bool,
     /// Whether the menu takes the keyboard (and the focus) from the game.
     pub take_keyboard: bool,
+    /// Show the on-screen keyboard instead of the menu.
+    pub osk: bool,
     /// What the threads that read find (the volume, the display settings'
     /// primary screen), and how more threads send it.
     pub controls: Option<Channel<Msg>>,
@@ -172,6 +175,10 @@ struct State {
     content: Content,
     dim: Piece,
     panel: Option<(Panel, Piece)>,
+    /// The on-screen keyboard, instead of the panel and the clock.
+    osk: Option<(Osk, Piece)>,
+    /// Where a press went down on the on-screen keyboard.
+    osk_press: Option<OskPress>,
     clock: Option<(Clock, Piece)>,
     /// The help style, at this screen's size.
     help: Option<Help>,
@@ -204,6 +211,16 @@ struct State {
     /// The threads' findings, until the panel is there (then a source of
     /// the event loop).
     controls: Option<Channel<Msg>>,
+}
+
+/// Where a press went down, with the on-screen keyboard shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OskPress {
+    /// Outside the keyboard: closes it on release.
+    Outside,
+    /// On the keyboard's frame, between keys.
+    Frame,
+    Key(usize),
 }
 
 /// The button held on the panel (or a finger on it).
@@ -297,7 +314,9 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
     // focused fullscreen window above everything, and xfwm4 even shows it
     // outside its compositor (it asks to bypass it), where nothing can be
     // drawn over it. Taking the focus is what puts the overlay on top.
-    if content.config.take_keyboard == TakeKeyboard::Auto && display.x11().is_some() {
+    // (the on-screen keyboard cannot: what it types would go to itself)
+    if content.config.take_keyboard == TakeKeyboard::Auto && display.x11().is_some() && !content.osk
+    {
         content.take_keyboard = true;
     }
 
@@ -332,6 +351,8 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         content,
         dim,
         panel: None,
+        osk: None,
+        osk_press: None,
         clock: None,
         help: None,
         menu_help: None,
@@ -501,9 +522,21 @@ impl State {
     /// The dim: translucent black over the whole output, drawn straight into
     /// the buffer (no pixmap: it can be a 4K screen).
     fn draw_dim(&mut self) {
-        let alpha = (self.content.config.dim.clamp(0.0, 1.0) * 255.0).round() as u8;
-        self.dim
-            .set_opacity(&self.display, ease_out(self.progress()));
+        // the keyboard leaves the game as it is: its layer only catches clicks
+        let keyboard = self.content.osk;
+        let alpha = if keyboard {
+            0
+        } else {
+            (self.content.config.dim.clamp(0.0, 1.0) * 255.0).round() as u8
+        };
+        self.dim.set_opacity(
+            &self.display,
+            if keyboard {
+                1.0
+            } else {
+                ease_out(self.progress())
+            },
+        );
         // premultiplied black: only the alpha byte (B, G, R, A in memory)
         self.dim.fill(&mut self.display, [0, 0, 0, alpha]);
     }
@@ -511,6 +544,10 @@ impl State {
     /// Once the output size is known: create the panel and the clock.
     fn create_pieces(&mut self) {
         let (width, height) = self.dim.size;
+        if self.content.osk {
+            self.create_osk((width, height));
+            return;
+        }
         let config = &self.content.config;
         let mut panel = Panel::new(
             &self.content.theme,
@@ -585,9 +622,45 @@ impl State {
             .ok();
     }
 
+    /// The on-screen keyboard: at the bottom, hidden below the screen's edge;
+    /// it slides in (see animate), without a fade.
+    fn create_osk(&mut self, screen: (u32, u32)) {
+        let osk = Osk::new(&self.content.theme, screen);
+        let piece = self.display.create_piece(Spec {
+            anchor: Anchor::BOTTOM,
+            size: (osk.width, osk.height),
+            margin: [0, 0, -(osk.height as i32), 0],
+            keyboard: false,
+            fade: false,
+        });
+        self.osk = Some((osk, piece));
+        self.started = Some(Instant::now());
+        self.handle
+            .insert_source(Timer::from_duration(FRAME), |_, &mut (), state| {
+                state.animate()
+            })
+            .ok();
+    }
+
+    fn draw_osk(&mut self) {
+        if let Some((osk, piece)) = &mut self.osk {
+            if piece.size.1 == 0 {
+                return;
+            }
+            if let Some(pixmap) = osk.render(&mut self.content.fonts) {
+                piece.present(&mut self.display, &pixmap);
+            }
+        }
+    }
+
     /// One animation frame: opacities and the panel's position.
     fn animate(&mut self) -> TimeoutAction {
         let t = ease_out(self.progress());
+        if let Some((osk, piece)) = &mut self.osk {
+            let margin = (-(osk.height as f32) * (1.0 - t)).round() as i32;
+            piece.set_margin(&self.display, [0, 0, margin, 0]);
+            piece.commit();
+        }
         self.dim.set_opacity(&self.display, t);
         if let Some(help) = &self.menu_help {
             help.set_opacity(t);
@@ -1185,6 +1258,10 @@ impl State {
 
     /// A press on the menu.
     fn navigate(&mut self, nav: Nav) {
+        if self.osk.is_some() {
+            self.osk_navigate(nav);
+            return;
+        }
         match nav {
             Nav::Up | Nav::Down => {
                 let delta = if nav == Nav::Up { -1 } else { 1 };
@@ -1228,6 +1305,7 @@ impl State {
                 }
             }
             Nav::Audio => self.open_audio(),
+            Nav::Backspace | Nav::Space | Nav::Enter => {}
             // the shortcut that opened the overlay, again: back to the game
             Nav::Close => self.outcome = Some(Outcome::Back),
             // R1 (Page Down): to the buttons and sliders and back; L1
@@ -1243,6 +1321,111 @@ impl State {
                     self.draw_menu_help();
                 }
             }
+        }
+    }
+}
+
+impl State {
+    /// A press on the on-screen keyboard from a controller or the keyboard.
+    fn osk_navigate(&mut self, nav: Nav) {
+        let Some((osk, _)) = self.osk.as_mut() else {
+            return;
+        };
+        let key = match nav {
+            Nav::Up | Nav::Down | Nav::Left | Nav::Right => {
+                let direction = match nav {
+                    Nav::Up => Direction::Up,
+                    Nav::Down => Direction::Down,
+                    Nav::Left => Direction::Left,
+                    _ => Direction::Right,
+                };
+                if osk.move_selection(direction) {
+                    self.draw_osk();
+                }
+                return;
+            }
+            Nav::Confirm => Some(osk.selected()),
+            Nav::Backspace => osk.index_of(OskAction::Backspace),
+            Nav::Space => osk.index_of(OskAction::Space),
+            Nav::Enter => osk.index_of(OskAction::Enter),
+            // the shoulders move the cursor, the triggers are symbols and shift
+            Nav::ZoomOut => osk.index_of(OskAction::CursorLeft),
+            Nav::ZoomIn => osk.index_of(OskAction::CursorRight),
+            Nav::PrevPage => osk.index_of(OskAction::Symbols),
+            Nav::NextPage => osk.index_of(OskAction::Shift),
+            Nav::Options => osk.index_of(OskAction::Accents),
+            Nav::Back | Nav::Close => {
+                self.outcome = Some(Outcome::Back);
+                return;
+            }
+            Nav::Audio => None,
+        };
+        if let Some(key) = key {
+            self.osk_activate(key);
+        }
+    }
+
+    /// Press a key of the on-screen keyboard.
+    fn osk_activate(&mut self, key: usize) {
+        let Some((osk, _)) = self.osk.as_mut() else {
+            return;
+        };
+        let activation = osk.activate(key);
+        if let Some(tap) = activation.tap {
+            // the game keeps the focus: the key goes to it
+            self.content.emulator.type_key(tap.code, tap.shift);
+        }
+        if activation.redraw {
+            self.draw_osk();
+        }
+        if activation.close {
+            self.outcome = Some(Outcome::Back);
+        }
+    }
+
+    /// The pointer or a finger: a key is typed when released over the key it
+    /// went down on; pressing anywhere else (or the right button) closes
+    /// the keyboard.
+    fn osk_pointer(&mut self, event: &PointerInput) {
+        let Some((osk, piece)) = self.osk.as_mut() else {
+            return;
+        };
+        let on_keyboard = piece.is(&event.surface);
+        let key = if on_keyboard {
+            osk.key_at(event.position.0 as f32, event.position.1 as f32)
+        } else {
+            None
+        };
+        match event.kind {
+            PointerKind::Enter | PointerKind::Motion => {
+                if osk.hover(key) {
+                    self.draw_osk();
+                }
+            }
+            PointerKind::Leave => {
+                self.osk_press = None;
+                if osk.hover(None) {
+                    self.draw_osk();
+                }
+            }
+            PointerKind::Press(BTN_LEFT) => {
+                if let Some(key) = key {
+                    osk.select(key);
+                    self.draw_osk();
+                }
+                self.osk_press = Some(match key {
+                    Some(key) => OskPress::Key(key),
+                    None if on_keyboard => OskPress::Frame,
+                    None => OskPress::Outside,
+                });
+            }
+            PointerKind::Release(BTN_LEFT) => match self.osk_press.take() {
+                Some(OskPress::Outside) => self.outcome = Some(Outcome::Back),
+                Some(OskPress::Key(down)) if Some(down) == key => self.osk_activate(down),
+                _ => {}
+            },
+            PointerKind::Press(BTN_RIGHT) => self.outcome = Some(Outcome::Back),
+            _ => {}
         }
     }
 }
@@ -1276,6 +1459,9 @@ impl State {
         {
             piece.size = size;
             self.draw_clock();
+        } else if let Some((_, piece)) = self.osk.as_mut().filter(|(_, piece)| piece.is(surface)) {
+            piece.size = size;
+            self.draw_osk();
         } else {
             self.manual_configured(surface, size);
         }
@@ -1323,6 +1509,10 @@ impl State {
     /// Hovering an entry highlights it, a click opens it; a click anywhere else
     /// (or the right button) closes the overlay; the wheel moves the selection.
     fn pointer(&mut self, event: &PointerInput) {
+        if self.osk.is_some() {
+            self.osk_pointer(event);
+            return;
+        }
         if self.is_manual_surface(&event.surface) {
             self.manual_pointer(event);
             return;

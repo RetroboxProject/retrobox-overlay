@@ -42,6 +42,12 @@ pub enum Nav {
     Options,
     /// F2: the audio page, wherever the selection is.
     Audio,
+    /// The on-screen keyboard's keys on the face buttons: backspace (west),
+    /// space (north) and enter (Start). Only a controller in keyboard mode
+    /// (`Pad::keyboard_mode`) sends them.
+    Backspace,
+    Space,
+    Enter,
 }
 
 /// An input going down or coming back up: the manual moves and zooms while
@@ -76,6 +82,15 @@ const RELEASE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Polling interval while waiting for that release.
 const RELEASE_POLL: Duration = Duration::from_millis(10);
 
+/// What a controller drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// The menu.
+    Menu,
+    /// The on-screen keyboard.
+    Keyboard,
+}
+
 /// A grabbed controller.
 pub struct Pad {
     /// Where it was opened from; what tells the controllers apart.
@@ -91,6 +106,9 @@ pub struct Pad {
     swap_confirm: bool,
     /// Axis -> (centre, half range, last direction)
     axes: HashMap<AbsoluteAxisCode, (i32, i32, i32)>,
+    role: Role,
+    /// The analog triggers, in keyboard mode: axis -> (lowest, highest, down).
+    triggers: HashMap<AbsoluteAxisCode, (i32, i32, bool)>,
 }
 
 impl Pad {
@@ -133,9 +151,32 @@ impl Pad {
             stuck: AttributeSet::new(),
             swap_confirm,
             axes,
+            role: Role::Menu,
+            triggers: HashMap::new(),
         };
         pad.try_grab();
         Some(pad)
+    }
+
+    /// Read the controller for the on-screen keyboard: the face buttons
+    /// type, and the analog triggers (L2, R2) count as buttons, which pads
+    /// like Xbox's only have as axes.
+    pub fn keyboard_mode(&mut self) {
+        self.role = Role::Keyboard;
+        if let Ok(infos) = self.device.get_absinfo() {
+            for (axis, info) in infos {
+                if matches!(
+                    axis,
+                    AbsoluteAxisCode::ABS_Z
+                        | AbsoluteAxisCode::ABS_RZ
+                        | AbsoluteAxisCode::ABS_BRAKE
+                        | AbsoluteAxisCode::ABS_GAS
+                ) {
+                    self.triggers
+                        .insert(axis, (info.minimum(), info.maximum(), false));
+                }
+            }
+        }
     }
 
     /// The buttons down right now, leaving out the stuck ones.
@@ -225,6 +266,9 @@ impl Pad {
                         pressed: value == 1,
                     }));
                 }
+                EventSummary::AbsoluteAxis(_, axis, value) if self.triggers.contains_key(&axis) => {
+                    inputs.extend(self.trigger(axis, value));
+                }
                 EventSummary::AbsoluteAxis(_, axis, value) => inputs.extend(self.axis(axis, value)),
                 _ => {}
             }
@@ -238,6 +282,16 @@ impl Pad {
         } else {
             (KeyCode::BTN_SOUTH, KeyCode::BTN_EAST)
         };
+        if self.role == Role::Keyboard {
+            match code {
+                KeyCode::BTN_WEST => return Some(Nav::Backspace),
+                KeyCode::BTN_NORTH => return Some(Nav::Space),
+                KeyCode::BTN_START => return Some(Nav::Enter),
+                // the accents key
+                code if code == back => return Some(Nav::Options),
+                _ => {}
+            }
+        }
         match code {
             KeyCode::BTN_DPAD_UP => Some(Nav::Up),
             KeyCode::BTN_DPAD_DOWN => Some(Nav::Down),
@@ -256,6 +310,24 @@ impl Pad {
             code if code == back => Some(Nav::Back),
             _ => None,
         }
+    }
+
+    /// An analog trigger going past half way (or back): L2 and R2 pressed or
+    /// released.
+    fn trigger(&mut self, axis: AbsoluteAxisCode, value: i32) -> Option<Input> {
+        let (low, high, down) = self.triggers.get_mut(&axis)?;
+        let position = (value - *low) as f32 / (*high - *low).max(1) as f32;
+        let now = position >= 0.5;
+        if now == *down {
+            return None;
+        }
+        *down = now;
+        let nav = if matches!(axis, AbsoluteAxisCode::ABS_Z | AbsoluteAxisCode::ABS_BRAKE) {
+            Nav::PrevPage
+        } else {
+            Nav::NextPage
+        };
+        Some(Input { nav, pressed: now })
     }
 
     /// A stick or hat moving: the direction it left goes up, the one it

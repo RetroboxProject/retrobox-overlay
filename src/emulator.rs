@@ -26,6 +26,9 @@ const FOCUS_RETURN: Duration = Duration::from_millis(150);
 /// How long an answer may take (a chord is pressed in well under that).
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How long a key stays down when the on-screen keyboard types it.
+const KEY_HOLD: Duration = Duration::from_millis(12);
+
 /// What the menu can ask of the emulator, besides leaving the game.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EmuAction {
@@ -218,6 +221,37 @@ impl Emulator {
         self.ask(&Request::Action(action).line())
     }
 
+    /// Type a key on the launcher's virtual keyboard (`key down|up`
+    /// requests on one connection), with shift when asked; true when it
+    /// was typed. Keys still down when something fails are released.
+    pub fn type_key(&self, code: &str, shift: bool) -> bool {
+        let Some(control) = self.control.as_ref() else {
+            return false;
+        };
+        let typed = UnixStream::connect(&control.socket).and_then(|stream| {
+            stream.set_read_timeout(Some(ANSWER_TIMEOUT))?;
+            let mut keys = Keys {
+                reader: BufReader::new(stream.try_clone()?),
+                stream,
+                down: Vec::new(),
+            };
+            let result = keys.tap(code, shift);
+            keys.release();
+            result
+        });
+        match typed {
+            Ok(true) => true,
+            Ok(false) => {
+                log::warn!("the control channel did not type {code}");
+                false
+            }
+            Err(err) => {
+                log::error!("control channel {}: {err}", control.socket);
+                false
+            }
+        }
+    }
+
     /// Send one request; true when it was done.
     fn ask(&self, line: &str) -> bool {
         self.request(line).is_some()
@@ -246,6 +280,55 @@ impl Emulator {
             Err(err) => {
                 log::error!("control channel {}: {err}", control.socket);
                 None
+            }
+        }
+    }
+}
+
+/// A connection to the control channel that presses keys.
+struct Keys {
+    stream: UnixStream,
+    reader: BufReader<UnixStream>,
+    /// The keys pressed and not yet released.
+    down: Vec<String>,
+}
+
+impl Keys {
+    /// One `key` request; whether the launcher did it.
+    fn request(&mut self, state: &str, code: &str) -> std::io::Result<bool> {
+        self.stream
+            .write_all(format!("key {state} {code}\n").as_bytes())?;
+        let mut answer = String::new();
+        self.reader.read_line(&mut answer)?;
+        Ok(answer.trim() == "ok")
+    }
+
+    fn press(&mut self, code: &str) -> std::io::Result<bool> {
+        let done = self.request("down", code)?;
+        if done {
+            self.down.push(code.to_owned());
+        }
+        Ok(done)
+    }
+
+    /// Press a key (and shift, first) and release them in reverse order.
+    fn tap(&mut self, code: &str, shift: bool) -> std::io::Result<bool> {
+        if shift && !self.press("KEY_LEFTSHIFT")? {
+            return Ok(false);
+        }
+        if !self.press(code)? {
+            return Ok(false);
+        }
+        sleep(KEY_HOLD);
+        Ok(true)
+    }
+
+    /// Release what is down, last first (also after a failure).
+    fn release(&mut self) {
+        while let Some(code) = self.down.pop() {
+            if let Err(err) = self.request("up", &code) {
+                log::debug!("cannot release {code}: {err}");
+                return;
             }
         }
     }

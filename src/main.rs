@@ -48,7 +48,7 @@ use crate::ui::text::Fonts;
 const HELP: &str = "\
 retrobox-overlay: Retrobox's in-game menu
 
-Usage: retrobox-overlay [--daemon | --show [--pad DEVICE]... | --demo]
+Usage: retrobox-overlay [--daemon | --show [--pad DEVICE]... | --osk | --demo]
                         [--version] [--help]
 
 Without a mode, asks the daemon to open or close the overlay, or shows the
@@ -61,6 +61,9 @@ directory) when no daemon runs; started again while open, it closes it.
   --show         show the overlay (the daemon runs this)
   --pad DEVICE   a controller (evdev device) the overlay reads, besides the
                  game's own; repeatable
+  --osk          show the on-screen keyboard over the running game, if its
+                 emulator allows it (Retrobox's hotkeys run this); started
+                 again while open, it closes
   --from-pad     opened from a controller (see take_keyboard in overlay.ini)
   --demo         show it even without a running game (to try a theme)
   --version      print the version
@@ -94,6 +97,7 @@ fn main() -> ExitCode {
     // (blocked) until the event loop reads it, instead of killing the process.
     block_usr1();
     let demo = args.iter().any(|arg| arg == "--demo");
+    let osk = args.iter().any(|arg| arg == "--osk");
     let from_pad = args.iter().any(|arg| arg == "--from-pad");
     let pads: Vec<PathBuf> = args
         .windows(2)
@@ -106,6 +110,7 @@ fn main() -> ExitCode {
         let config = Config::load(&paths::config_dirs());
         daemon::run(&runtime_dir, config.hold)
     } else if !demo
+        && !osk
         && !args.iter().any(|arg| arg == "--show")
         && let Some(pid) = instance::daemon_pid(&runtime_dir)
     {
@@ -113,7 +118,7 @@ fn main() -> ExitCode {
         instance::close_running(Some(pid));
         Ok(())
     } else {
-        run(demo, from_pad, &pads, launched, log.as_ref())
+        run(demo, osk, from_pad, &pads, launched, log.as_ref())
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -135,6 +140,7 @@ fn block_usr1() {
 
 fn run(
     demo: bool,
+    osk: bool,
     from_pad: bool,
     extra_pads: &[PathBuf],
     launched: std::time::Instant,
@@ -170,6 +176,10 @@ fn run(
         return Ok(());
     }
 
+    if !osk_allowed(osk, demo, session.as_ref()) {
+        return Ok(());
+    }
+
     let theme_path = session
         .as_ref()
         .and_then(Session::menu_theme_path)
@@ -187,11 +197,7 @@ fn run(
         },
         |session| GameInfo::load(Path::new(&session.game_info), &session.rom),
     );
-    let subtitle = [info.developer.as_str(), info.release_year.as_str()]
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" · ");
+    let subtitle = subtitle_of(&info);
 
     let (emulator, states) = emulator_for(session.as_ref(), demo, &translator);
     let manual = manual_path(
@@ -206,14 +212,15 @@ fn run(
     );
 
     let (clock_formats, small_clock) = clock_formats(&config, &translator, theme.clock12h);
+    // the keyboard types on the game's window: it must keep the focus
     let (battery_percent, take_keyboard) = (
         config.system.battery_percent,
-        config.take_keyboard.take(from_pad),
+        !osk && config.take_keyboard.take(from_pad),
     );
 
     let fonts = theme_fonts(&theme, &language);
 
-    let pads = open_pads(session.as_ref(), extra_pads, theme.invert_buttons);
+    let pads = open_pads(session.as_ref(), extra_pads, theme.invert_buttons, osk);
 
     let (outcome, emulator, setters) = app::run(Content {
         config,
@@ -234,6 +241,7 @@ fn run(
         small_clock,
         battery_percent,
         take_keyboard,
+        osk,
         controls: Some(controls),
         screens,
     })?;
@@ -329,9 +337,33 @@ fn system_items(translator: &Translator, config: &Config) -> Vec<MenuItem> {
     items
 }
 
+/// The line under the game's name: its developer and year.
+fn subtitle_of(info: &GameInfo) -> String {
+    [info.developer.as_str(), info.release_year.as_str()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// Whether the on-screen keyboard may open (when it is what was asked for):
+/// over a running game whose emulator allows it.
+fn osk_allowed(osk: bool, demo: bool, session: Option<&Session>) -> bool {
+    let allowed = !osk || demo || session.is_some_and(|session| session.osk);
+    if !allowed {
+        log::info!("the on-screen keyboard is not available for this game");
+    }
+    allowed
+}
+
 /// The game's controllers and the ones the daemon passed (outside a game,
-/// every controller), each once.
-fn open_pads(session: Option<&Session>, extra: &[PathBuf], swap_confirm: bool) -> Vec<Pad> {
+/// every controller), each once; for the on-screen keyboard when `keyboard`.
+fn open_pads(
+    session: Option<&Session>,
+    extra: &[PathBuf],
+    swap_confirm: bool,
+    keyboard: bool,
+) -> Vec<Pad> {
     let mut seen = std::collections::HashSet::new();
     session
         .iter()
@@ -341,6 +373,12 @@ fn open_pads(session: Option<&Session>, extra: &[PathBuf], swap_confirm: bool) -
         .chain(extra.iter().cloned())
         .filter(|path| seen.insert(std::fs::canonicalize(path).unwrap_or_else(|_| path.clone())))
         .filter_map(|path| Pad::open(&path, swap_confirm))
+        .map(|mut pad| {
+            if keyboard {
+                pad.keyboard_mode();
+            }
+            pad
+        })
         .collect()
 }
 

@@ -72,6 +72,10 @@ pub struct Session {
     /// global, per system or per game).
     #[serde(default = "enabled")]
     pub overlay: bool,
+    /// Whether the on-screen keyboard may open over this game (the emulator
+    /// lists the `osk` feature, and the setting is not off).
+    #[serde(default)]
+    pub osk: bool,
 }
 
 const fn enabled() -> bool {
