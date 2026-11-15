@@ -110,6 +110,7 @@ pub struct Pad {
     /// Axis -> (centre, half range, last direction)
     axes: HashMap<AbsoluteAxisCode, (i32, i32, i32)>,
     role: Role,
+    faces: Faces,
     /// The analog triggers, in keyboard mode: axis -> (lowest, highest, down).
     triggers: HashMap<AbsoluteAxisCode, (i32, i32, bool)>,
 }
@@ -145,6 +146,10 @@ impl Pad {
                 }
             }
         }
+        let device_id = (
+            device.input_id().vendor(),
+            device.name().unwrap_or_default().to_lowercase(),
+        );
         let mut pad = Self {
             path: path.to_owned(),
             device,
@@ -155,6 +160,7 @@ impl Pad {
             swap_confirm,
             axes,
             role: Role::Menu,
+            faces: Faces::of(&device_id),
             triggers: HashMap::new(),
         };
         pad.try_grab();
@@ -297,9 +303,15 @@ impl Pad {
             };
         }
         if self.role == Role::Keyboard {
+            // by position: the left face button deletes, the top one is space
+            let (top, left) = if self.faces == Faces::Xbox {
+                (KeyCode::BTN_WEST, KeyCode::BTN_NORTH)
+            } else {
+                (KeyCode::BTN_NORTH, KeyCode::BTN_WEST)
+            };
             match code {
-                KeyCode::BTN_WEST => return Some(Nav::Backspace),
-                KeyCode::BTN_NORTH => return Some(Nav::Space),
+                code if code == left => return Some(Nav::Backspace),
+                code if code == top => return Some(Nav::Space),
                 KeyCode::BTN_START => return Some(Nav::Enter),
                 // the accents key
                 code if code == back => return Some(Nav::Options),
@@ -373,6 +385,28 @@ impl Pad {
             .into_iter()
             .chain(nav(direction).map(Input::press))
             .collect()
+    }
+}
+
+/// How Linux names a pad's face buttons: by position, as Sony and
+/// Nintendo pads do, or the Xbox way, which calls the left button
+/// `BTN_NORTH` and the top one `BTN_WEST`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Faces {
+    Standard,
+    Xbox,
+}
+
+impl Faces {
+    /// The layout of a pad from its vendor and lower-case name (8BitDo and
+    /// others in `XInput` mode say they are Xbox ones).
+    fn of((vendor, name): &(u16, String)) -> Self {
+        const MICROSOFT: u16 = 0x045e;
+        let xbox = *vendor == MICROSOFT
+            || ["xbox", "x-box", "xinput", "x360"]
+                .iter()
+                .any(|word| name.contains(word));
+        if xbox { Self::Xbox } else { Self::Standard }
     }
 }
 
