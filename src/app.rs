@@ -41,7 +41,7 @@ use smithay_client_toolkit::reexports::calloop::{
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{
-    KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
+    KeyEvent, KeyboardHandler, Keymap, Keysym, Modifiers, RawModifiers,
 };
 use smithay_client_toolkit::seat::pointer::{
     CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec,
@@ -80,6 +80,7 @@ use crate::theme::MenuTheme;
 use crate::ui::audio::AudioMenu;
 use crate::ui::clock::Clock;
 use crate::ui::help::{Help, Prompt};
+use crate::ui::layout::Layout;
 use crate::ui::osk::{Action as OskAction, Direction, Osk};
 use crate::ui::panel::{MenuAction, MenuItem, Panel, StatusBar, Target};
 use crate::ui::states::StatesMenu;
@@ -179,6 +180,8 @@ struct State {
     osk: Option<(Osk, Piece)>,
     /// Where a press went down on the on-screen keyboard.
     osk_press: Option<OskPress>,
+    /// The compositor's keymap, as a layout (Wayland).
+    keymap: Option<Layout>,
     clock: Option<(Clock, Piece)>,
     /// The help style, at this screen's size.
     help: Option<Help>,
@@ -353,6 +356,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         panel: None,
         osk: None,
         osk_press: None,
+        keymap: None,
         clock: None,
         help: None,
         menu_help: None,
@@ -625,7 +629,7 @@ impl State {
     /// The on-screen keyboard: at the bottom, hidden below the screen's edge;
     /// it slides in (see animate), without a fade.
     fn create_osk(&mut self, screen: (u32, u32)) {
-        let osk = Osk::new(&self.content.theme, screen);
+        let osk = Osk::new(&self.content.theme, screen, self.layout());
         let piece = self.display.create_piece(Spec {
             anchor: Anchor::BOTTOM,
             size: (osk.width, osk.height),
@@ -640,6 +644,16 @@ impl State {
                 state.animate()
             })
             .ok();
+    }
+
+    /// What the on-screen keyboard types: the layout `overlay.ini` names,
+    /// else the compositor's, else the system's.
+    fn layout(&self) -> Layout {
+        let config = &self.content.config.osk;
+        match &self.keymap {
+            Some(layout) if !config.is_set() => layout.clone(),
+            _ => Layout::load(config),
+        }
     }
 
     fn draw_osk(&mut self) {
@@ -1371,9 +1385,9 @@ impl State {
             return;
         };
         let activation = osk.activate(key);
-        if let Some(tap) = activation.tap {
-            // the game keeps the focus: the key goes to it
-            self.content.emulator.type_key(tap.code, tap.shift);
+        if !activation.taps.is_empty() {
+            // the game keeps the focus: the keys go to it
+            self.content.emulator.type_keys(&activation.taps);
         }
         if activation.redraw {
             self.draw_osk();
@@ -1882,6 +1896,24 @@ impl KeyboardHandler for State {
     ) {
         if let Some(nav) = key_nav(event.keysym) {
             self.key_release(nav);
+        }
+    }
+
+    fn update_keymap(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        keymap: Keymap<'_>,
+    ) {
+        self.keymap = Layout::from_keymap_text(keymap.as_string());
+        let layout = self.layout();
+        if self
+            .osk
+            .as_mut()
+            .is_some_and(|(osk, _)| osk.set_layout(layout))
+        {
+            self.draw_osk();
         }
     }
 

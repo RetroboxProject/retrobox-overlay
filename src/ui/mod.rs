@@ -4,6 +4,7 @@ pub mod audio;
 pub mod clock;
 pub mod help;
 pub mod icons;
+pub mod layout;
 pub mod osk;
 pub mod panel;
 pub mod states;

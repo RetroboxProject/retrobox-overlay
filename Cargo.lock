@@ -896,6 +896,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "x11rb",
+ "xkbcommon",
 ]
 
 [[package]]

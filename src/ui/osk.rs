@@ -3,9 +3,8 @@
 //! pointer) and typed on a virtual keyboard (see `Emulator::tap`).
 //!
 //! The keys are physical keys (evdev names), not characters: what a press
-//! types depends on the layout the game's window has. The labels here are a
-//! US layout's; the layout is the part that still has to come from the
-//! active xkb keymap.
+//! types depends on the layout the game's window has. The labels and what
+//! each key types come from the active xkb keymap (see `layout`).
 //!
 //! The grid follows the usual controller keyboards: the digits on top, three
 //! rows of letters, `LT` (symbols) and `RT` (shift) on the left, `X`
@@ -15,6 +14,7 @@
 use cosmic_text::Align;
 use tiny_skia::{Paint, PathBuilder, Pixmap, Stroke, Transform};
 
+use super::layout::{Layout, Page, Slot, Step};
 use super::text::{FontRef, Fonts, TextBox};
 use crate::theme::{MenuTheme, Rgba};
 
@@ -52,21 +52,15 @@ pub enum Action {
     Shift,
     Symbols,
     Close,
-    /// The accents page (not done yet: the key does nothing).
+    /// The accents page.
     Accents,
 }
 
-/// A key on the virtual keyboard to tap: its evdev name, with shift or not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Tap {
-    pub code: &'static str,
-    pub shift: bool,
-}
-
 /// What pressing a key came to.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Activation {
-    pub tap: Option<Tap>,
+    /// The keys to tap, in order (an accent is a dead key and a letter).
+    pub taps: Vec<Step>,
     pub close: bool,
     /// The keyboard looks different now (a layer, shift).
     pub redraw: bool,
@@ -77,143 +71,8 @@ pub struct Activation {
 enum Layer {
     Letters,
     Symbols,
+    Accents,
 }
-
-/// A character key: its evdev name, its label and whether it is typed with
-/// shift, on a layer.
-type Char = (&'static str, &'static str, bool);
-
-/// The 40 character keys, row by row, as `(evdev name, label, shift)`.
-const LETTERS: [Char; 40] = [
-    ("KEY_1", "1", false),
-    ("KEY_2", "2", false),
-    ("KEY_3", "3", false),
-    ("KEY_4", "4", false),
-    ("KEY_5", "5", false),
-    ("KEY_6", "6", false),
-    ("KEY_7", "7", false),
-    ("KEY_8", "8", false),
-    ("KEY_9", "9", false),
-    ("KEY_0", "0", false),
-    ("KEY_Q", "q", false),
-    ("KEY_W", "w", false),
-    ("KEY_E", "e", false),
-    ("KEY_R", "r", false),
-    ("KEY_T", "t", false),
-    ("KEY_Y", "y", false),
-    ("KEY_U", "u", false),
-    ("KEY_I", "i", false),
-    ("KEY_O", "o", false),
-    ("KEY_P", "p", false),
-    ("KEY_A", "a", false),
-    ("KEY_S", "s", false),
-    ("KEY_D", "d", false),
-    ("KEY_F", "f", false),
-    ("KEY_G", "g", false),
-    ("KEY_H", "h", false),
-    ("KEY_J", "j", false),
-    ("KEY_K", "k", false),
-    ("KEY_L", "l", false),
-    ("KEY_SEMICOLON", ";", false),
-    ("KEY_Z", "z", false),
-    ("KEY_X", "x", false),
-    ("KEY_C", "c", false),
-    ("KEY_V", "v", false),
-    ("KEY_B", "b", false),
-    ("KEY_N", "n", false),
-    ("KEY_M", "m", false),
-    ("KEY_COMMA", ",", false),
-    ("KEY_DOT", ".", false),
-    ("KEY_APOSTROPHE", "'", false),
-];
-
-/// The same keys with shift: capitals and the digits' symbols.
-const CAPITALS: [Char; 40] = [
-    ("KEY_1", "!", true),
-    ("KEY_2", "@", true),
-    ("KEY_3", "#", true),
-    ("KEY_4", "$", true),
-    ("KEY_5", "%", true),
-    ("KEY_6", "^", true),
-    ("KEY_7", "&", true),
-    ("KEY_8", "*", true),
-    ("KEY_9", "(", true),
-    ("KEY_0", ")", true),
-    ("KEY_Q", "Q", true),
-    ("KEY_W", "W", true),
-    ("KEY_E", "E", true),
-    ("KEY_R", "R", true),
-    ("KEY_T", "T", true),
-    ("KEY_Y", "Y", true),
-    ("KEY_U", "U", true),
-    ("KEY_I", "I", true),
-    ("KEY_O", "O", true),
-    ("KEY_P", "P", true),
-    ("KEY_A", "A", true),
-    ("KEY_S", "S", true),
-    ("KEY_D", "D", true),
-    ("KEY_F", "F", true),
-    ("KEY_G", "G", true),
-    ("KEY_H", "H", true),
-    ("KEY_J", "J", true),
-    ("KEY_K", "K", true),
-    ("KEY_L", "L", true),
-    ("KEY_SEMICOLON", ":", true),
-    ("KEY_Z", "Z", true),
-    ("KEY_X", "X", true),
-    ("KEY_C", "C", true),
-    ("KEY_V", "V", true),
-    ("KEY_B", "B", true),
-    ("KEY_N", "N", true),
-    ("KEY_M", "M", true),
-    ("KEY_COMMA", "<", true),
-    ("KEY_DOT", ">", true),
-    ("KEY_APOSTROPHE", "\"", true),
-];
-
-/// The symbols layer (`LT`).
-const SYMBOLS: [Char; 40] = [
-    ("KEY_1", "!", true),
-    ("KEY_2", "@", true),
-    ("KEY_3", "#", true),
-    ("KEY_4", "$", true),
-    ("KEY_5", "%", true),
-    ("KEY_6", "^", true),
-    ("KEY_7", "&", true),
-    ("KEY_8", "*", true),
-    ("KEY_9", "(", true),
-    ("KEY_0", ")", true),
-    ("KEY_LEFTBRACE", "[", false),
-    ("KEY_RIGHTBRACE", "]", false),
-    ("KEY_LEFTBRACE", "{", true),
-    ("KEY_RIGHTBRACE", "}", true),
-    ("KEY_BACKSLASH", "\\", false),
-    ("KEY_BACKSLASH", "|", true),
-    ("KEY_GRAVE", "`", false),
-    ("KEY_GRAVE", "~", true),
-    ("KEY_COMMA", "<", true),
-    ("KEY_DOT", ">", true),
-    ("KEY_MINUS", "-", false),
-    ("KEY_MINUS", "_", true),
-    ("KEY_EQUAL", "=", false),
-    ("KEY_EQUAL", "+", true),
-    ("KEY_SEMICOLON", ";", false),
-    ("KEY_SEMICOLON", ":", true),
-    ("KEY_APOSTROPHE", "'", false),
-    ("KEY_APOSTROPHE", "\"", true),
-    ("KEY_SLASH", "/", false),
-    ("KEY_SLASH", "?", true),
-    ("KEY_COMMA", ",", false),
-    ("KEY_DOT", ".", false),
-    ("KEY_1", "!", true),
-    ("KEY_SLASH", "?", true),
-    ("KEY_APOSTROPHE", "'", false),
-    ("KEY_APOSTROPHE", "\"", true),
-    ("KEY_MINUS", "-", false),
-    ("KEY_MINUS", "_", true),
-    ("KEY_SLASH", "/", false),
-    ("KEY_BACKSLASH", "\\", false),
-];
 
 /// A key: what it does, where it is (pixels in the keyboard's image) and
 /// the controller button that does it, when it has one.
@@ -257,6 +116,7 @@ pub struct Osk {
     keys: Vec<Key>,
     selected: usize,
     hovered: Option<usize>,
+    layout: Layout,
     layer: Layer,
     /// Shift is on for the next character.
     shift: bool,
@@ -272,7 +132,7 @@ pub struct Osk {
 
 impl Osk {
     /// A keyboard sized for a screen, in the theme's colours and font.
-    pub fn new(theme: &MenuTheme, screen: (u32, u32)) -> Self {
+    pub fn new(theme: &MenuTheme, screen: (u32, u32), layout: Layout) -> Self {
         let (screen_width, screen_height) = (screen.0 as f32, screen.1 as f32);
         // the key's width: the height limit, or the screen's width
         let unit = (screen_height * MAX_HEIGHT / (ROWS * ROW_PITCH + 2.0 * PADDING))
@@ -299,6 +159,7 @@ impl Osk {
             keys,
             selected,
             hovered: None,
+            layout,
             layer: Layer::Letters,
             shift: false,
             background: theme.background.center_color,
@@ -353,12 +214,26 @@ impl Osk {
         keys
     }
 
-    fn chars(&self) -> &'static [Char; 40] {
+    /// The page of characters on show.
+    fn page(&self) -> Page {
         match (self.layer, self.shift) {
-            (Layer::Symbols, _) => &SYMBOLS,
-            (Layer::Letters, true) => &CAPITALS,
-            (Layer::Letters, false) => &LETTERS,
+            (Layer::Symbols, _) => Page::Symbols,
+            (Layer::Accents, false) => Page::Accents,
+            (Layer::Accents, true) => Page::AccentCapitals,
+            (Layer::Letters, false) => Page::Letters,
+            (Layer::Letters, true) => Page::Capitals,
         }
+    }
+
+    fn slot(&self, slot: usize) -> &Slot {
+        &self.layout.page(self.page())[slot]
+    }
+
+    /// Change what the keys type (the compositor's keymap changed).
+    pub fn set_layout(&mut self, layout: Layout) -> bool {
+        let changed = self.layout != layout;
+        self.layout = layout;
+        changed
     }
 
     /// The key under a point of the keyboard's image.
@@ -422,19 +297,33 @@ impl Osk {
     /// Press a key.
     pub fn activate(&mut self, key: usize) -> Activation {
         let tap = |code| Activation {
-            tap: Some(Tap { code, shift: false }),
+            taps: vec![Step {
+                code,
+                shift: false,
+                altgr: false,
+            }],
             ..Activation::default()
+        };
+        // a layer key goes back to the letters when pressed again
+        let toggle = |osk: &mut Self, layer| {
+            osk.layer = if osk.layer == layer {
+                Layer::Letters
+            } else {
+                layer
+            };
+            osk.shift = false;
+            Activation {
+                redraw: true,
+                ..Activation::default()
+            }
         };
         match self.keys[key].action {
             Action::Char(slot) => {
-                let (code, _, shifted) = self.chars()[slot];
+                let taps = self.slot(slot).steps.clone();
                 // shift is for one character
                 let redraw = std::mem::take(&mut self.shift);
                 Activation {
-                    tap: Some(Tap {
-                        code,
-                        shift: shifted,
-                    }),
+                    taps,
                     redraw,
                     ..Activation::default()
                 }
@@ -451,29 +340,19 @@ impl Osk {
                     ..Activation::default()
                 }
             }
-            Action::Symbols => {
-                self.layer = match self.layer {
-                    Layer::Letters => Layer::Symbols,
-                    Layer::Symbols => Layer::Letters,
-                };
-                self.shift = false;
-                Activation {
-                    redraw: true,
-                    ..Activation::default()
-                }
-            }
+            Action::Symbols => toggle(self, Layer::Symbols),
+            Action::Accents => toggle(self, Layer::Accents),
             Action::Close => Activation {
                 close: true,
                 ..Activation::default()
             },
-            Action::Accents => Activation::default(),
         }
     }
 
     /// What a key shows.
-    fn label(&self, action: Action) -> &'static str {
+    fn label(&self, action: Action) -> &str {
         match action {
-            Action::Char(slot) => self.chars()[slot].1,
+            Action::Char(slot) => &self.slot(slot).label,
             Action::Backspace => "Del",
             Action::Space => "Space",
             Action::Enter => "Enter",
@@ -491,6 +370,7 @@ impl Osk {
         match action {
             Action::Shift => self.shift,
             Action::Symbols => self.layer == Layer::Symbols,
+            Action::Accents => self.layer == Layer::Accents,
             _ => false,
         }
     }
@@ -519,8 +399,9 @@ impl Osk {
             } else {
                 (self.text_color.with_alpha(alpha), self.text_color)
             };
-            // what does nothing yet is dimmed
-            let text = if key.action == Action::Accents {
+            // a character this layout cannot type is left blank
+            let text = if matches!(key.action, Action::Char(slot) if self.slot(slot).steps.is_empty())
+            {
                 text.with_alpha(0x60)
             } else {
                 text
@@ -635,7 +516,7 @@ mod tests {
     use super::*;
 
     fn osk() -> Osk {
-        Osk::new(&MenuTheme::default(), (1920, 1080))
+        Osk::new(&MenuTheme::default(), (1920, 1080), Layout::fallback())
     }
 
     fn selected_action(osk: &Osk) -> Action {
@@ -649,7 +530,7 @@ mod tests {
         let Action::Char(slot) = selected_action(&osk) else {
             panic!("a character key is selected");
         };
-        assert_eq!(LETTERS[slot].1, "d");
+        assert_eq!(osk.slot(slot).label, "d");
     }
 
     #[test]
@@ -695,15 +576,16 @@ mod tests {
             .unwrap();
         let typed = osk.activate(key);
         assert_eq!(
-            typed.tap,
-            Some(Tap {
+            typed.taps,
+            vec![Step {
                 code: "KEY_Q",
-                shift: true
-            })
+                shift: true,
+                altgr: false
+            }]
         );
         assert!(typed.redraw);
         let again = osk.activate(key);
-        assert_eq!(again.tap.map(|tap| tap.shift), Some(false));
+        assert_eq!(again.taps.first().map(|tap| tap.shift), Some(false));
         assert!(!again.redraw);
     }
 

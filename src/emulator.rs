@@ -13,6 +13,7 @@
 //! channel says it may press keys (`focus`), the overlay asks after it is
 //! gone and the focus is back with the game.
 
+use crate::ui::layout::Step;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::thread::sleep;
@@ -221,10 +222,11 @@ impl Emulator {
         self.ask(&Request::Action(action).line())
     }
 
-    /// Type a key on the launcher's virtual keyboard (`key down|up`
-    /// requests on one connection), with shift when asked; true when it
-    /// was typed. Keys still down when something fails are released.
-    pub fn type_key(&self, code: &str, shift: bool) -> bool {
+    /// Type keys on the launcher's virtual keyboard (`key down|up`
+    /// requests on one connection), each with its modifiers and released
+    /// before the next; true when all were typed. Keys still down when
+    /// something fails are released.
+    pub fn type_keys(&self, steps: &[Step]) -> bool {
         let Some(control) = self.control.as_ref() else {
             return false;
         };
@@ -235,14 +237,20 @@ impl Emulator {
                 stream,
                 down: Vec::new(),
             };
-            let result = keys.tap(code, shift);
-            keys.release();
+            let mut result = Ok(true);
+            for step in steps {
+                result = keys.tap(*step);
+                keys.release();
+                if !matches!(result, Ok(true)) {
+                    break;
+                }
+            }
             result
         });
         match typed {
             Ok(true) => true,
             Ok(false) => {
-                log::warn!("the control channel did not type {code}");
+                log::warn!("the control channel did not type {steps:?}");
                 false
             }
             Err(err) => {
@@ -311,12 +319,14 @@ impl Keys {
         Ok(done)
     }
 
-    /// Press a key (and shift, first) and release them in reverse order.
-    fn tap(&mut self, code: &str, shift: bool) -> std::io::Result<bool> {
-        if shift && !self.press("KEY_LEFTSHIFT")? {
-            return Ok(false);
+    /// Press a key (its modifiers first) and hold it a moment.
+    fn tap(&mut self, step: Step) -> std::io::Result<bool> {
+        for (wanted, modifier) in [(step.shift, "KEY_LEFTSHIFT"), (step.altgr, "KEY_RIGHTALT")] {
+            if wanted && !self.press(modifier)? {
+                return Ok(false);
+            }
         }
-        if !self.press(code)? {
+        if !self.press(step.code)? {
             return Ok(false);
         }
         sleep(KEY_HOLD);

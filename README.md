@@ -133,7 +133,10 @@ only while it is shown.
   focus: the game keeps it, and the keys are typed on the launcher's virtual keyboard through the
   control channel (`key down|up`), so the overlay and the keyboard are never open together (they
   share `overlay.lock`: starting either while the other is open closes it). The keys are physical
-  keys with a US layout's labels; the accents page and the active layout still have to be done.
+  keys, labelled and typed from the active xkb keymap (the compositor's on Wayland; else the
+  `[osk]` names in `overlay.ini`, `XKB_DEFAULT_*` or `/etc/default/keyboard`; else US): the
+  symbols page holds what the layout types with shift and AltGr, and the accents page (A) the
+  accented letters it can type, directly or as a dead key and a letter.
 * **Leaving the game** runs `retrobox-emukill`.
 * **Outside games** (in EmulationStation) the same hold opens the system's menu, like the
   Switch's quick settings: *Sleep mode* (`systemctl suspend`; `standby` in `[system]`), and the

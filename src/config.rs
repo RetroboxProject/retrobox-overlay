@@ -95,8 +95,30 @@ pub struct Config {
     /// scaled buffers wrong.
     pub compositor_scaling: bool,
     pub system: SystemConfig,
+    pub osk: OskConfig,
     /// How much taller than a line of text the menu's rows are (fingers).
     pub row_scale: f32,
+}
+
+/// The keyboard layout of the on-screen keyboard (xkb names), when
+/// `overlay.ini` sets it: else the compositor's, the environment's or the
+/// system's.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OskConfig {
+    pub model: Option<String>,
+    pub layout: Option<String>,
+    pub variant: Option<String>,
+    pub options: Option<String>,
+}
+
+impl OskConfig {
+    /// Whether any name is set.
+    pub const fn is_set(&self) -> bool {
+        self.model.is_some()
+            || self.layout.is_some()
+            || self.variant.is_some()
+            || self.options.is_some()
+    }
 }
 
 /// Whether the overlay takes the keyboard (and with it the focus) from the
@@ -159,6 +181,7 @@ impl Default for Config {
                 color: Rgba(0xFFFF_FFFF),
             },
             compositor_scaling: true,
+            osk: OskConfig::default(),
             system: SystemConfig {
                 battery_percent: true,
                 standby: true,
@@ -290,6 +313,25 @@ impl Config {
                 "overlay" => self.compositor_scaling = false,
                 other => log::warn!("overlay.ini: unknown manual scaling {other:?}"),
             }
+        }
+        self.apply_osk(ini);
+    }
+
+    fn apply_osk(&mut self, ini: &Ini) {
+        if let Some(section) = ini.section(Some("osk")) {
+            let name = |key| {
+                section
+                    .get(key)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+            };
+            self.osk = OskConfig {
+                model: name("model"),
+                layout: name("layout"),
+                variant: name("variant"),
+                options: name("options"),
+            };
         }
     }
 }
