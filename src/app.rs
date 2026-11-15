@@ -341,7 +341,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         content.take_keyboard = true;
     }
 
-    // SIGUSR1: the overlay started again (the hotkey, Shift+F7) closes this
+    // SIGUSR1: the overlay started again (the hotkey, a keyboard shortcut) closes this
     // one, as being stopped does
     let signals = Signals::new(&[Signal::SIGUSR1, Signal::SIGTERM, Signal::SIGINT])?;
     handle

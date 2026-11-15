@@ -128,7 +128,7 @@ impl OskConfig {
 /// cannot tell another window taking the focus, so it stays until closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TakeKeyboard {
-    /// Only when opened from the keyboard (Shift+F7, or by hand).
+    /// Only when opened from the keyboard (Ctrl+Shift+O, Ctrl+Shift+O, or by hand).
     Auto,
     Always,
     Never,

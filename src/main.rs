@@ -1,7 +1,7 @@
 //! retrobox-overlay: Retrobox's in-game menu.
 //!
 //! `--daemon` runs for the whole Retrobox session and opens it when the
-//! dedicated hotkey (Home/Guide) is held, or on Shift+F7 (see `daemon.rs`); `--show`
+//! dedicated hotkey (Home/Guide) is held, or on Ctrl+Shift+O or Shift+F7 (see `daemon.rs`); `--show`
 //! is the overlay itself: a side menu styled like EmulationStation's over
 //! the dimmed game, with a clock. Without a mode, it asks the daemon to open
 //! or close the overlay, or shows it itself when no daemon runs; started
@@ -62,7 +62,8 @@ overlay over the running game itself (see session.json in Retrobox's runtime
 directory) when no daemon runs; started again while open, it closes it.
 
   --daemon       open the overlay when a controller's Home/Guide
-                 button is held, or on Shift+F7, until stopped
+                 button is held, or on Ctrl+Shift+O or Shift+F7,
+                 until stopped
                  (Retrobox runs it)
   --show         show the overlay (the daemon runs this)
   --pad DEVICE   a controller (evdev device) the overlay reads, besides the
@@ -85,7 +86,8 @@ directory) when no daemon runs; started again while open, it closes it.
                  12 no screen. FILE is the file the installation leaves
                  (checked after the command works), PNG the background.
   --held         exit with status 0 if a controller has L1 and R1 held down,
-                 else 1 (how a game's start asks for a reinstall)
+                 or a keyboard Ctrl and Shift, else 1 (how a game's start
+                 asks for a reinstall)
 
 The game's manual (a PDF scraped by EmulationStation) is shown with
 poppler's pdftoppm and pdfinfo.
@@ -100,7 +102,7 @@ fn main() -> ExitCode {
     // come after its own and are none of the overlay's
     match args.first().map(String::as_str) {
         Some("--held") => {
-            return if input::shoulders_held() {
+            return if input::reinstall_held() {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE

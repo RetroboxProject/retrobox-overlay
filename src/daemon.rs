@@ -11,7 +11,8 @@
 //!   controllers with a dedicated one (Home/Guide, `BTN_MODE`). Where the
 //!   hotkey is a button the game uses (Select, as in EmulationStation),
 //!   holding it opens nothing;
-//! * Shift+F7 is pressed on a keyboard.
+//! * Ctrl+Shift+O (or Shift+F7, where the function keys need Fn) is pressed on
+//!   a keyboard.
 //!
 //! Any other button, the d-pad or a stick pushed while those are held cancels
 //! the hold until everything is released again, so the hotkey's own
@@ -152,8 +153,54 @@ fn is_pad_button(code: KeyCode) -> bool {
 /// A watched device.
 enum Watched {
     Pad(Hold),
-    /// A keyboard, with whether a Shift is down.
-    Keyboard(bool),
+    /// A keyboard, with the modifiers that are down.
+    Keyboard(Modifiers),
+}
+
+/// Which Shift and Ctrl keys are down (each side on its own: both may be
+/// held and one let go).
+#[derive(Debug, Clone, Copy, Default)]
+struct Modifiers(u8);
+
+impl Modifiers {
+    const fn bit(code: KeyCode) -> u8 {
+        match code {
+            KeyCode::KEY_LEFTSHIFT => 1,
+            KeyCode::KEY_RIGHTSHIFT => 2,
+            KeyCode::KEY_LEFTCTRL => 4,
+            KeyCode::KEY_RIGHTCTRL => 8,
+            _ => 0,
+        }
+    }
+
+    /// A key went down or up (only the modifiers count).
+    fn update(&mut self, code: KeyCode, down: bool) {
+        if down {
+            self.0 |= Self::bit(code);
+        } else {
+            self.0 &= !Self::bit(code);
+        }
+    }
+
+    const fn shift(self) -> bool {
+        self.0 & 0b11 != 0
+    }
+
+    const fn ctrl(self) -> bool {
+        self.0 & 0b1100 != 0
+    }
+
+    /// Whether pressing `code` now (`value` 1: a press, not a repeat) is
+    /// the keyboard shortcut of the overlay: Ctrl+Shift+O, or Shift+F7.
+    fn opens_overlay(self, code: KeyCode, value: i32) -> bool {
+        value == 1
+            && self.shift()
+            && match code {
+                KeyCode::KEY_F7 => true,
+                KeyCode::KEY_O => self.ctrl(),
+                _ => false,
+            }
+    }
 }
 
 struct Input {
@@ -309,7 +356,7 @@ impl State {
             Some(keys)
                 if keys.contains(KeyCode::KEY_F7) && keys.contains(KeyCode::KEY_LEFTSHIFT) =>
             {
-                Watched::Keyboard(false)
+                Watched::Keyboard(Modifiers::default())
             }
             _ => return,
         };
@@ -396,11 +443,10 @@ impl State {
                 return;
             };
             match (&mut input.watched, event.destructure()) {
-                (Watched::Keyboard(shift), EventSummary::Key(_, code, value)) => {
-                    if matches!(code, KeyCode::KEY_LEFTSHIFT | KeyCode::KEY_RIGHTSHIFT) {
-                        *shift = value != 0;
-                    } else if code == KeyCode::KEY_F7 && value == 1 && *shift {
-                        log::info!("Shift+F7");
+                (Watched::Keyboard(modifiers), EventSummary::Key(_, code, value)) => {
+                    modifiers.update(code, value != 0);
+                    if modifiers.opens_overlay(code, value) {
+                        log::info!("keyboard shortcut");
                         self.toggle(None);
                     }
                 }
@@ -585,6 +631,35 @@ mod tests {
 
     fn held(codes: &[KeyCode]) -> HashSet<KeyCode> {
         codes.iter().copied().collect()
+    }
+
+    fn pressed(codes: &[KeyCode]) -> Modifiers {
+        let mut modifiers = Modifiers::default();
+        for &code in codes {
+            modifiers.update(code, true);
+        }
+        modifiers
+    }
+
+    #[test]
+    fn the_keyboard_shortcuts_open_the_overlay() {
+        let shift_ctrl = pressed(&[KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_RIGHTCTRL]);
+        assert!(shift_ctrl.opens_overlay(KeyCode::KEY_O, 1));
+        assert!(!shift_ctrl.opens_overlay(KeyCode::KEY_O, 2), "a repeat");
+        assert!(!shift_ctrl.opens_overlay(KeyCode::KEY_P, 1));
+        assert!(pressed(&[KeyCode::KEY_RIGHTSHIFT]).opens_overlay(KeyCode::KEY_F7, 1));
+        assert!(!pressed(&[KeyCode::KEY_RIGHTSHIFT]).opens_overlay(KeyCode::KEY_O, 1));
+        assert!(!pressed(&[KeyCode::KEY_LEFTCTRL]).opens_overlay(KeyCode::KEY_O, 1));
+        assert!(!pressed(&[]).opens_overlay(KeyCode::KEY_F7, 1));
+    }
+
+    #[test]
+    fn letting_go_of_one_shift_keeps_the_other() {
+        let mut modifiers = pressed(&[KeyCode::KEY_LEFTSHIFT, KeyCode::KEY_RIGHTSHIFT]);
+        modifiers.update(KeyCode::KEY_LEFTSHIFT, false);
+        assert!(modifiers.shift());
+        modifiers.update(KeyCode::KEY_RIGHTSHIFT, false);
+        assert!(!modifiers.shift());
     }
 
     #[test]

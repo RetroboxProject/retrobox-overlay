@@ -2,7 +2,7 @@
 
 The in-game menu of [Retrobox](https://github.com/RetroboxProject/retrobox-core). Hold the
 controller's Home/Guide button for a moment, press Hotkey+B (Nintendo's B, the south button)
-or press Shift+F7, while playing: a
+or press Ctrl+Shift+O (or Shift+F7), while playing: a
 side menu slides in over the dimmed game, drawn with the menu style of the active
 EmulationStation theme, with a clock and the date in the top corner of the other side.
 
@@ -16,7 +16,8 @@ only while it is shown.
   It reads every controller and keyboard (evdev, without grabbing them: EmulationStation and
   the games get every input as before) and opens the overlay (`retrobox-overlay --show`, a
   process of its own) when a controller's dedicated hotkey (Home/Guide) is held alone for
-  `hold_ms` (750 ms), or on Shift+F7. A controller without a Home/Guide button has Select as
+  `hold_ms` (750 ms), or on Ctrl+Shift+O (Shift+F7 too, for keyboards whose function keys need
+  Fn). A controller without a Home/Guide button has Select as
   its hotkey, as in EmulationStation, and Select belongs to the game: holding it opens nothing
   there. Hotkey+B, pressing B while the hotkey is held, opens it at once on every controller,
   Home/Guide or Select alike. Any other button, the d-pad or a stick
@@ -96,7 +97,7 @@ only while it is shown.
   emulators slow down, or lower their frame rate, when they lose it. The controller is all the
   menu needs; the mouse and touch work too. On X11 it always takes the focus: window managers
   keep a focused fullscreen window above everything (xfwm4 even shows it outside its
-  compositor), so the overlay would open behind the game. Opened from the keyboard (Shift+F7)
+  compositor), so the overlay would open behind the game. Opened from the keyboard (Ctrl+Shift+O)
   it takes the keyboard, on demand and not exclusively: when the compositor gives it to another window
   (Alt+Tab, a click elsewhere), the overlay goes away, like Steam's (on X11, when the focus
   moves to another window). `take_keyboard = yes` always takes it, `no` never does.
@@ -231,9 +232,10 @@ only while it is shown.
   a failure), `--reinstall` offers to install again what is installed (to update it).
   Exit status: 0 done, 10 declined or cancelled (a download is cancelled with Back), 11 failed
   (the output stays on screen until the user closes it), 12 no screen could be opened.
-  `retrobox-overlay --held` exits with 0 while a controller has L1 and R1 held down (read
-  from the kernel, nothing grabbed): holding them while a game loads is how the launcher is
-  asked to offer the emulator's installation again.
+  `retrobox-overlay --held` exits with 0 while a controller has L1 and R1 held down, or a
+  keyboard Ctrl and Shift (read from the kernel, nothing grabbed; keyboards need the `input`
+  group): holding them while a game loads is how the launcher is asked to offer the
+  emulator's installation again.
 
 ## Requirements
 
