@@ -1352,7 +1352,8 @@ impl Panel {
             let label = row.label.to_uppercase();
             match row.kind {
                 RowKind::Header => {
-                    // a band across the panel, its name in the middle
+                    // a band across the panel, its name on the left, bigger than the
+                    // small text and in the entries' colour
                     fill(
                         pixmap,
                         0.0,
@@ -1361,7 +1362,7 @@ impl Panel {
                         row_height,
                         self.text.style.separator_color,
                     );
-                    let (font, label) = fonts.fit(&self.small.font, &label, inner, 0.7);
+                    let (font, label) = fonts.fit(&self.text.font.bold(), &label, inner, 0.7);
                     fonts.draw(
                         pixmap,
                         &font,
@@ -1371,9 +1372,9 @@ impl Panel {
                             y,
                             width: inner,
                             height: row_height,
-                            align: Align::Center,
+                            align: Align::Left,
                         },
-                        self.small.style.color,
+                        self.text.style.color,
                     );
                 }
                 RowKind::Choice { checked, enabled } => {

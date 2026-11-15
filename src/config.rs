@@ -4,7 +4,7 @@
 //! ```ini
 //! [overlay]
 //! side = right            ; right | left
-//! dim = 0.6               ; opacity of the black layer over the game
+//! dim = 0.75              ; opacity of the black layer over the game
 //! animation_ms = 150
 //! hold_ms = 750           ; how long the hotkey is held to open it
 //! take_keyboard = auto    ; auto (not when opened from a controller) | yes | no
@@ -144,7 +144,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             side: Side::Right,
-            dim: 0.6,
+            dim: 0.75,
             take_keyboard: TakeKeyboard::Auto,
             icons: true,
             animation_ms: 150,

@@ -18,8 +18,16 @@ use tiny_skia::Pixmap;
 
 use crate::theme::Rgba;
 
-/// Fonts with the scripts the overlay's languages need (Latin, Cyrillic).
+/// Fonts with the scripts the overlay's languages need (Latin, Cyrillic), the
+/// first one that exists being the default: Ubuntu Condensed, as
+/// EmulationStation's own (its resource first, else the distribution's).
 const FALLBACK_FONTS: &[&str] = &[
+    "/opt/retrobox/frontend/resources/ubuntu_condensed.ttf",
+    "/usr/share/fonts/truetype/ubuntu/UbuntuCondensed-Regular.ttf",
+    "/usr/share/fonts/truetype/ubuntu/Ubuntu-C.ttf",
+    "/usr/share/fonts/ubuntu/UbuntuCondensed-Regular.ttf",
+    "/usr/share/fonts/ubuntu-fonts/UbuntuCondensed-Regular.ttf",
+    "/usr/share/fonts/ubuntu/Ubuntu-C.ttf",
     "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
     "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
     "/usr/share/fonts/noto/NotoSans-Regular.ttf",
