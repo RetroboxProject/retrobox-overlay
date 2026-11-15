@@ -11,9 +11,7 @@
 use std::path::Path;
 
 use cosmic_text::Align;
-use tiny_skia::{
-    FilterQuality, Paint, PathBuilder, Pixmap, PixmapPaint, Rect as SkiaRect, Stroke, Transform,
-};
+use tiny_skia::{FilterQuality, Paint, Pixmap, PixmapPaint, Rect as SkiaRect, Stroke, Transform};
 
 use super::help::{Help, Prompt};
 use super::panel::rounded_rect;
@@ -185,22 +183,17 @@ fn fill_rounded(pixmap: &mut Pixmap, area: Rect, radius: f32, color: Rgba) {
     }
 }
 
-/// The outline of a rectangle.
-fn outline(pixmap: &mut Pixmap, area: Rect, width: f32, color: Rgba) {
-    if let Some(rect) = SkiaRect::from_xywh(area.x, area.y, area.width, area.height) {
+/// The outline of a rectangle with rounded corners.
+fn outline(pixmap: &mut Pixmap, area: Rect, radius: f32, width: f32, color: Rgba) {
+    if let Some(path) = rounded_rect(area.x, area.y, area.width, area.height, radius) {
         let mut paint = Paint::default();
         paint.set_color(color.to_color());
+        paint.anti_alias = true;
         let stroke = Stroke {
             width,
             ..Stroke::default()
         };
-        pixmap.stroke_path(
-            &PathBuilder::from_rect(rect),
-            &paint,
-            &stroke,
-            Transform::identity(),
-            None,
-        );
+        pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
     }
 }
 
@@ -474,8 +467,9 @@ impl TaskUi {
             // as in ES: the chosen one (controller, keyboard, or under the
             // pointer) is filled, the others have a border
             let chosen = frame.focus == Some(index) || frame.hover == Some(index);
+            let corner = self.radius * 0.6;
             if chosen {
-                fill(pixmap, rect, self.text.selector_color);
+                fill_rounded(pixmap, rect, corner, self.text.selector_color);
             } else {
                 let border = self.line_width * 1.5;
                 outline(
@@ -486,6 +480,7 @@ impl TaskUi {
                         width: rect.width - border,
                         height: rect.height - border,
                     },
+                    corner,
                     border,
                     self.text.color,
                 );
