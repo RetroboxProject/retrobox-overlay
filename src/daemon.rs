@@ -6,11 +6,10 @@
 //! the overlay, as a process of its own (`--show`), when
 //!
 //! * the hotkey is held alone for `hold_ms` (750 ms by default), on
-//!   controllers with a dedicated one (Home/Guide, `BTN_MODE`);
-//! * on controllers without one (the hotkey is Select, as in
-//!   EmulationStation, and Select alone belongs to the game), Select and A
-//!   (Nintendo's A: the right face button, `BTN_EAST`) are held together for
-//!   as long;
+//!   controllers with a dedicated one (Home/Guide, `BTN_MODE`). On controllers
+//!   without one the hotkey is a button the game uses (Select, as in
+//!   EmulationStation), so holding it opens nothing: Hotkey+B asks for the
+//!   overlay (`retrobox-overlay`, run by gamepadly), as it does everywhere;
 //! * Shift+F7 is pressed on a keyboard.
 //!
 //! Any other button, the d-pad or a stick pushed while those are held cancels
@@ -56,20 +55,12 @@ const STICK_THRESHOLD: f32 = 0.5;
 enum Chord {
     /// The dedicated hotkey alone.
     Hotkey,
-    /// Select (the hotkey without a dedicated one) and A.
-    SelectA,
 }
 
 /// What `held` makes of a controller's buttons.
 fn chord_of(held: &HashSet<KeyCode>, hotkey: KeyCode, dedicated: bool) -> Option<Chord> {
-    let only = |codes: &[KeyCode]| {
-        held.len() == codes.len() && codes.iter().all(|code| held.contains(code))
-    };
-    if dedicated {
-        only(&[hotkey]).then_some(Chord::Hotkey)
-    } else {
-        only(&[hotkey, KeyCode::BTN_EAST]).then_some(Chord::SelectA)
-    }
+    // a hotkey that is also a game button (Select) is never held to open it
+    (dedicated && held.len() == 1 && held.contains(&hotkey)).then_some(Chord::Hotkey)
 }
 
 /// The hold of one controller.
@@ -338,7 +329,7 @@ impl State {
             device.name().unwrap_or("?"),
             match &watched {
                 Watched::Pad(hold) if hold.dedicated => "controller, hold Home/Guide",
-                Watched::Pad(_) => "controller, hold Select+A",
+                Watched::Pad(_) => "controller, hotkey is a game button: no hold",
                 Watched::Keyboard(_) => "keyboard",
             }
         );
@@ -593,12 +584,12 @@ mod tests {
             chord_of(&held(&[mode, KeyCode::BTN_START]), mode, true),
             None
         );
-        // Select alone is the game's: only Select+A
+        // Select is the game's: holding it, alone or with A, opens nothing
         let select = KeyCode::BTN_SELECT;
         assert_eq!(chord_of(&held(&[select]), select, false), None);
         assert_eq!(
             chord_of(&held(&[select, KeyCode::BTN_EAST]), select, false),
-            Some(Chord::SelectA)
+            None
         );
         assert_eq!(chord_of(&held(&[KeyCode::BTN_EAST]), select, false), None);
     }

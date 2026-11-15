@@ -1,8 +1,8 @@
 # retrobox-overlay
 
 The in-game menu of [Retrobox](https://github.com/RetroboxProject/retrobox-core). Hold the
-controller's hotkey (Home/Guide; Select+A on controllers without one) for a moment, or press
-Shift+F7, while playing: a
+controller's Home/Guide button for a moment, press Hotkey+B (Nintendo's B, the south button)
+or press Shift+F7, while playing: a
 side menu slides in over the dimmed game, drawn with the menu style of the active
 EmulationStation theme, with a clock and the date in the top corner of the other side.
 
@@ -16,9 +16,10 @@ only while it is shown.
   It reads every controller and keyboard (evdev, without grabbing them: EmulationStation and
   the games get every input as before) and opens the overlay (`retrobox-overlay --show`, a
   process of its own) when a controller's dedicated hotkey (Home/Guide) is held alone for
-  `hold_ms` (750 ms), when Select and A (Nintendo's A: the right face button) are held
-  together as long on a controller without one (its hotkey is Select, as in
-  EmulationStation, and Select alone belongs to the game), or on Shift+F7. Any other button, the d-pad or a stick
+  `hold_ms` (750 ms), or on Shift+F7. A controller without a Home/Guide button has Select as
+  its hotkey, as in EmulationStation, and Select belongs to the game: holding it opens nothing
+  there. Hotkey+B opens it on every controller (retrobox-core's hotkeys table binds it to
+  `retrobox-overlay`, which asks the daemon, see below). Any other button, the d-pad or a stick
   pushed meanwhile cancels the hold until everything is released, so the hotkey's own
   combinations never open it. A hold is used rather than a press because the hotkey is also
   the modifier of every Hotkey+… combination: a press alone could not be told apart from the

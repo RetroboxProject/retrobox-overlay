@@ -87,7 +87,7 @@ pub struct Config {
     pub take_keyboard: TakeKeyboard,
     pub icons: bool,
     pub animation_ms: u64,
-    /// How long the hotkey (or Select+A) is held to open the overlay.
+    /// How long the dedicated hotkey (Home/Guide) is held to open the overlay.
     pub hold: Duration,
     pub clock: ClockConfig,
     /// Whether the compositor scales and crops the manual's page

@@ -1,7 +1,7 @@
 //! retrobox-overlay: Retrobox's in-game menu.
 //!
 //! `--daemon` runs for the whole Retrobox session and opens it when the
-//! hotkey (or Select+A) is held, or on Shift+F7 (see `daemon.rs`); `--show`
+//! dedicated hotkey (Home/Guide) is held, or on Shift+F7 (see `daemon.rs`); `--show`
 //! is the overlay itself: a side menu styled like EmulationStation's over
 //! the dimmed game, with a clock. Without a mode, it asks the daemon to open
 //! or close the overlay, or shows it itself when no daemon runs; started
@@ -56,8 +56,8 @@ Without a mode, asks the daemon to open or close the overlay, or shows the
 overlay over the running game itself (see session.json in Retrobox's runtime
 directory) when no daemon runs; started again while open, it closes it.
 
-  --daemon       open the overlay when a controller's hotkey (Select+A
-                 without one) is held, or on Shift+F7, until stopped
+  --daemon       open the overlay when a controller's Home/Guide
+                 button is held, or on Shift+F7, until stopped
                  (Retrobox runs it)
   --show         show the overlay (the daemon runs this)
   --pad DEVICE   a controller (evdev device) the overlay reads, besides the
