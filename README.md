@@ -18,9 +18,9 @@ only while it is shown.
   process of its own) when a controller's dedicated hotkey (Home/Guide) is held alone for
   `hold_ms` (750 ms), or on Shift+F7. A controller without a Home/Guide button has Select as
   its hotkey, as in EmulationStation, and Select belongs to the game: holding it opens nothing
-  there. Hotkey+B opens it on every controller (retrobox-core's hotkeys table binds it to
-  `retrobox-overlay`, which asks the daemon, see below). Any other button, the d-pad or a stick
-  pushed meanwhile cancels the hold until everything is released, so the hotkey's own
+  there. Hotkey+B, pressing B while the hotkey is held, opens it at once on every controller,
+  Home/Guide or Select alike. Any other button, the d-pad or a stick
+  pushed meanwhile cancels the hold until everything is released, so the hotkey's other
   combinations never open it. A hold is used rather than a press because the hotkey is also
   the modifier of every Hotkey+… combination: a press alone could not be told apart from the
   start of one. `retrobox-overlay` started on its own asks the daemon to open or close the

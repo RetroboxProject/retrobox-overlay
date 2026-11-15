@@ -5,11 +5,12 @@
 //! them: EmulationStation and the games keep getting every input) and opens
 //! the overlay, as a process of its own (`--show`), when
 //!
+//! * B (Nintendo's B, the south button) is pressed while the hotkey is held,
+//!   on any controller: Hotkey+B opens it at once;
 //! * the hotkey is held alone for `hold_ms` (750 ms by default), on
-//!   controllers with a dedicated one (Home/Guide, `BTN_MODE`). On controllers
-//!   without one the hotkey is a button the game uses (Select, as in
-//!   EmulationStation), so holding it opens nothing: Hotkey+B asks for the
-//!   overlay (`retrobox-overlay`, run by gamepadly), as it does everywhere;
+//!   controllers with a dedicated one (Home/Guide, `BTN_MODE`). Where the
+//!   hotkey is a button the game uses (Select, as in EmulationStation),
+//!   holding it opens nothing;
 //! * Shift+F7 is pressed on a keyboard.
 //!
 //! Any other button, the d-pad or a stick pushed while those are held cancels
@@ -53,12 +54,18 @@ const STICK_THRESHOLD: f32 = 0.5;
 /// Which held buttons open the overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Chord {
-    /// The dedicated hotkey alone.
+    /// The dedicated hotkey alone, held for a moment.
     Hotkey,
+    /// The hotkey and B (Nintendo's B: the south button, Xbox's A), on any
+    /// controller: opens it at once, when B goes down with the hotkey already held.
+    HotkeyB,
 }
 
 /// What `held` makes of a controller's buttons.
 fn chord_of(held: &HashSet<KeyCode>, hotkey: KeyCode, dedicated: bool) -> Option<Chord> {
+    if held.len() == 2 && held.contains(&hotkey) && held.contains(&KeyCode::BTN_SOUTH) {
+        return Some(Chord::HotkeyB);
+    }
     // a hotkey that is also a game button (Select) is never held to open it
     (dedicated && held.len() == 1 && held.contains(&hotkey)).then_some(Chord::Hotkey)
 }
@@ -433,7 +440,9 @@ impl State {
         }
         let chord = (!hold.blocked)
             .then(|| chord_of(&hold.held, hold.hotkey, hold.dedicated))
-            .flatten();
+            .flatten()
+            // B pressed first, then the hotkey, is not Hotkey+B
+            .filter(|chord| *chord != Chord::HotkeyB || (pressed && code == KeyCode::BTN_SOUTH));
         let armed = hold.armed.map(|(chord, _)| chord);
         if chord == armed {
             return;
@@ -449,6 +458,12 @@ impl State {
             }
             return;
         };
+        if chord == Chord::HotkeyB {
+            hold.blocked = true;
+            log::info!("{chord:?} on {}", path.display());
+            self.toggle(Some(path));
+            return;
+        }
         let target = path.to_owned();
         let timer =
             self.handle
@@ -577,21 +592,21 @@ mod tests {
         let mode = KeyCode::BTN_MODE;
         assert_eq!(chord_of(&held(&[mode]), mode, true), Some(Chord::Hotkey));
         assert_eq!(
-            chord_of(&held(&[mode, KeyCode::BTN_EAST]), mode, true),
-            None
+            chord_of(&held(&[mode, KeyCode::BTN_SOUTH]), mode, true),
+            Some(Chord::HotkeyB)
         );
         assert_eq!(
             chord_of(&held(&[mode, KeyCode::BTN_START]), mode, true),
             None
         );
-        // Select is the game's: holding it, alone or with A, opens nothing
+        // Select is the game's: holding it alone opens nothing, Select+A does
         let select = KeyCode::BTN_SELECT;
         assert_eq!(chord_of(&held(&[select]), select, false), None);
         assert_eq!(
-            chord_of(&held(&[select, KeyCode::BTN_EAST]), select, false),
-            None
+            chord_of(&held(&[select, KeyCode::BTN_SOUTH]), select, false),
+            Some(Chord::HotkeyB)
         );
-        assert_eq!(chord_of(&held(&[KeyCode::BTN_EAST]), select, false), None);
+        assert_eq!(chord_of(&held(&[KeyCode::BTN_SOUTH]), select, false), None);
     }
 
     #[test]
