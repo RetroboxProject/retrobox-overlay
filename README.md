@@ -215,8 +215,9 @@ only while it is shown.
   picture holds the question (in capitals, like EmulationStation's dialogs), the buttons
   (controller, keyboard, mouse or touch; the chosen one filled, the one under the pointer
   outlined) and the installer's output, with the help prompts below it. The question alone
-  makes a small window, which grows once the installer runs. The output runs in a
-  pseudo-terminal: what asks for something, such as sudo's password,
+  makes a small window, which grows once the installer runs. The output is white on
+  black, in a fixed-width font, at least 80 columns wide (the font shrinks to fit them), and runs
+  in a pseudo-terminal: what asks for something, such as sudo's password,
   gets the keyboard's keys, as in any terminal. Page Up/Down and the wheel scroll the output;
   a selection made with the pointer is copied when it ends (Ctrl+Shift+C copies it, or all
   the output; Ctrl+Shift+A selects it all), with `wl-copy`, `xclip` or `xsel`. The full output

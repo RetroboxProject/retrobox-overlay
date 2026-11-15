@@ -43,16 +43,21 @@ const BUTTON_SIZE: f32 = 0.042;
 const TERMINAL_SIZE: f32 = 0.027;
 /// A line's height, relative to its font's size.
 const LINE_SPACING: f32 = 1.35;
-/// The width of an average letter, relative to the font's size (the
-/// terminal wraps by columns of this width, the font being proportional).
-const LETTER_WIDTH: f32 = 0.6;
+/// The least letters per row of the output box: the font shrinks to fit
+/// them, as a terminal's own default.
+const MIN_COLUMNS: usize = 80;
+/// What the output box shows: white on black, whatever the theme.
+const TERMINAL_BACKGROUND: Rgba = Rgba(0x0000_00FF);
+const TERMINAL_TEXT: Rgba = Rgba(0xFFFF_FFFF);
+const TERMINAL_SELECTION: Rgba = Rgba(0x4D78_CCFF);
+/// The space over the first row of the output box, relative to a row.
+const TERMINAL_TOP: f32 = 0.25;
 /// How opaque the window is.
 const WINDOW_OPACITY: u8 = 0xF4;
 /// When there is no picture.
 const PLAIN_BACKGROUND: Rgba = Rgba(0x2020_20FF);
-/// The terminal box's tint, and the selection's.
-const BOX_OPACITY: u8 = 0x1c;
-const SELECTION_OPACITY: u8 = 0x80;
+/// The selection's opacity.
+const SELECTION_OPACITY: u8 = 0x90;
 
 /// A rectangle on the screen.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -227,7 +232,12 @@ fn cover(pixmap: &mut Pixmap, picture: &Pixmap) {
 }
 
 impl TaskUi {
-    pub fn new(theme: &MenuTheme, size: (u32, u32), background: Option<&Path>) -> Option<Self> {
+    pub fn new(
+        theme: &MenuTheme,
+        fonts: &mut Fonts,
+        size: (u32, u32),
+        background: Option<&Path>,
+    ) -> Option<Self> {
         let (width, height) = (size.0 as f32, size.1 as f32);
         let smaller = width.min(height);
         let mut base = Pixmap::new(size.0, size.1)?;
@@ -241,7 +251,6 @@ impl TaskUi {
         let padding = smaller * PADDING;
         let message_font = font(&theme.text.font.path, smaller * MESSAGE_SIZE);
         let button_font = font(&theme.text.font.path, smaller * BUTTON_SIZE);
-        let terminal_font = font(&theme.text_small.font.path, smaller * TERMINAL_SIZE);
         let help = Help::new(theme, size);
         // the help goes where the theme puts it: the windows stay above it
         let room = (help.place(1).1 as f32 - padding * 0.6).min(height * 0.96);
@@ -272,8 +281,16 @@ impl TaskUi {
             message_height,
             button_height,
         );
+        // a fixed-width font small enough for the least columns: they are
+        // then exact, and so is where a click lands
+        let advance = fonts.measure(&FontRef::monospace(100.0, 100.0), "M") / 100.0;
+        let advance = if advance > 0.0 { advance } else { 0.6 };
+        let fits = full.terminal.width / ((MIN_COLUMNS + 2) as f32 * advance);
+        let terminal_size = (smaller * TERMINAL_SIZE).min(fits).floor().max(1.0);
+        let terminal_font =
+            FontRef::monospace(terminal_size, (terminal_size * LINE_SPACING).round());
         let cell = (
-            (terminal_font.size * LETTER_WIDTH).max(1.0),
+            (fonts.measure(&terminal_font, "MMMMMMMMMM") / 10.0).max(1.0),
             terminal_font.line_height,
         );
         Some(Self {
@@ -298,7 +315,13 @@ impl TaskUi {
 
     /// The letters per row of the output box (and of the pseudo-terminal).
     pub fn columns(&self) -> usize {
-        (((self.terminal.width - self.inset() * 2.0) / self.cell.0).floor() as usize).max(20)
+        (((self.terminal.width - self.inset() * 2.0) / self.cell.0).floor() as usize)
+            .max(MIN_COLUMNS)
+    }
+
+    /// The space over the first row and under the last one.
+    fn top_gap(&self) -> f32 {
+        self.cell.1 * TERMINAL_TOP
     }
 
     /// The space between the box's edge and its text.
@@ -317,7 +340,7 @@ impl TaskUi {
 
     /// The rows the output box shows.
     pub fn visible_rows(&self) -> usize {
-        ((self.terminal.height / self.cell.1).floor() as usize).max(1)
+        (((self.terminal.height - self.top_gap() * 2.0) / self.cell.1).floor() as usize).max(1)
     }
 
     /// The help prompts' icon names of confirm and back.
@@ -357,7 +380,9 @@ impl TaskUi {
         (x, y): (f32, f32),
     ) -> Option<Position> {
         let (rows, _) = self.rows(terminal, scroll);
-        let index = ((y - self.terminal.y) / self.cell.1).floor().max(0.0) as usize;
+        let index = ((y - self.terminal.y - self.top_gap()) / self.cell.1)
+            .floor()
+            .max(0.0) as usize;
         let row = rows.get(index.min(rows.len().saturating_sub(1)))?;
         let text = &terminal.line(row.line)[row.start..row.end];
         let offset = x - self.terminal.x - self.inset();
@@ -484,16 +509,11 @@ impl TaskUi {
         scroll: usize,
     ) {
         let area = self.terminal;
-        fill_rounded(
-            pixmap,
-            area,
-            self.radius * 0.6,
-            self.text.color.with_alpha(BOX_OPACITY),
-        );
+        fill_rounded(pixmap, area, self.radius * 0.6, TERMINAL_BACKGROUND);
         let (rows, _) = self.rows(terminal, scroll);
         let selection = terminal.selection();
         for (index, row) in rows.iter().enumerate() {
-            let top = area.y + index as f32 * self.cell.1;
+            let top = area.y + self.top_gap() + index as f32 * self.cell.1;
             let text: String = terminal.line(row.line)[row.start..row.end].iter().collect();
             if let Some((start, end)) = selection
                 && let Some((from, to)) = selected_span(row, start, end)
@@ -513,7 +533,7 @@ impl TaskUi {
                         width: (right - left).max(self.cell.0 / 2.0),
                         height: self.cell.1,
                     },
-                    self.text.selector_color.with_alpha(SELECTION_OPACITY),
+                    TERMINAL_SELECTION.with_alpha(SELECTION_OPACITY),
                 );
             }
             fonts.draw(
@@ -527,7 +547,7 @@ impl TaskUi {
                     height: self.cell.1,
                     align: Align::Left,
                 },
-                self.text.color,
+                TERMINAL_TEXT,
             );
         }
     }

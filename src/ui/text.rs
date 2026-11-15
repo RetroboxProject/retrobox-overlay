@@ -38,6 +38,24 @@ const FALLBACK_FONTS: &[&str] = &[
     "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
 ];
 
+/// Fixed-width fonts for terminals, the first one that exists being used.
+const MONOSPACE_FONTS: &[&str] = &[
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+    "/usr/share/fonts/google-noto/NotoSansMono-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
+    "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
+    "/usr/share/fonts/ubuntu/UbuntuMono-R.ttf",
+];
+
+/// The path a `FontRef::monospace` carries: not a file, the key of the
+/// fixed-width font that was found.
+const MONOSPACE_KEY: &str = "monospace";
+
 /// A font at a size, in pixels.
 #[derive(Debug, Clone)]
 pub struct FontRef {
@@ -48,6 +66,16 @@ pub struct FontRef {
 }
 
 impl FontRef {
+    /// The fixed-width font (the default one when the system has none).
+    pub fn monospace(size: f32, line_height: f32) -> Self {
+        Self {
+            path: PathBuf::from(MONOSPACE_KEY),
+            size,
+            line_height,
+            bold: false,
+        }
+    }
+
     /// The same font, bold.
     pub fn bold(&self) -> Self {
         Self {
@@ -138,6 +166,15 @@ impl Fonts {
         }
         if default_family.is_none() {
             db.load_system_fonts();
+        }
+        if let Some(path) = MONOSPACE_FONTS
+            .iter()
+            .map(Path::new)
+            .find(|path| path.exists())
+            && db.load_font_file(path).is_ok()
+            && let Some(family) = family_of(&db, path)
+        {
+            families.insert(PathBuf::from(MONOSPACE_KEY), family);
         }
         if let Some(family) = &default_family {
             db.set_sans_serif_family(family.clone());

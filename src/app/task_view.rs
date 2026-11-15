@@ -162,6 +162,7 @@ impl State {
         };
         let Some(ui) = TaskUi::new(
             &self.content.theme,
+            &mut self.content.fonts,
             self.dim.size,
             task.options.background.as_deref(),
         ) else {
