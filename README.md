@@ -213,8 +213,8 @@ only while it is shown.
   it works before EmulationStation is up and leaves nothing resident. A rounded window in
   the menu's colours (EmulationStation's defaults without its theme) over Retrobox's background
   picture holds the question (in capitals, like EmulationStation's dialogs), the buttons
-  (controller, keyboard, mouse or touch; the chosen one filled, the one under the pointer
-  outlined) and the installer's output, with the help prompts below it. The question alone
+  (controller, keyboard, mouse or touch; the chosen one, or the one under the pointer, filled,
+  the others with a border, as in EmulationStation) and the installer's output, with the help prompts below it. The question alone
   makes a small window, which grows once the installer runs. The output is white on
   black, in a fixed-width font, at least 80 columns wide (the font shrinks to fit them), and runs
   in a pseudo-terminal: what asks for something, such as sudo's password,

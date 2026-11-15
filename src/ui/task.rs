@@ -471,13 +471,24 @@ impl TaskUi {
                 width,
                 height: row.height,
             };
-            // the chosen one (controller, keyboard) is filled, as in ES; the
-            // one under the pointer is outlined
-            let chosen = frame.focus == Some(index);
+            // as in ES: the chosen one (controller, keyboard, or under the
+            // pointer) is filled, the others have a border
+            let chosen = frame.focus == Some(index) || frame.hover == Some(index);
             if chosen {
                 fill(pixmap, rect, self.text.selector_color);
-            } else if frame.hover == Some(index) {
-                outline(pixmap, rect, self.line_width, self.text.color);
+            } else {
+                let border = self.line_width * 1.5;
+                outline(
+                    pixmap,
+                    Rect {
+                        x: rect.x + border / 2.0,
+                        y: rect.y + border / 2.0,
+                        width: rect.width - border,
+                        height: rect.height - border,
+                    },
+                    border,
+                    self.text.color,
+                );
             }
             fonts.draw(
                 pixmap,
