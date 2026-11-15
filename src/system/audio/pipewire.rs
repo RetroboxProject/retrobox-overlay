@@ -425,7 +425,7 @@ mod tests {
                 devices: true
             }
         );
-        assert!(graph.snapshot().outputs.is_empty());
+        assert_eq!(graph.snapshot().outputs.len(), 0);
         let moved = graph.update(Update::Default(Some("other".into())));
         assert!(moved.volume && moved.devices);
         assert_eq!(
