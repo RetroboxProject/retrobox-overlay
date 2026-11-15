@@ -33,6 +33,8 @@ const ROW_PITCH: f32 = 0.74;
 /// The space around the grid, and between keys, relative to a key's width.
 const PADDING: f32 = 0.15;
 const GAP: f32 = 0.1;
+/// The radius of the keyboard's own corners, in key units.
+const WINDOW_RADIUS: f32 = 0.2;
 /// The keyboard's height, relative to the screen's.
 const MAX_HEIGHT: f32 = 0.4;
 /// Key caps: the opacity of the text colour over the background, normal,
@@ -547,7 +549,29 @@ impl Osk {
                 self.draw_badge(&mut pixmap, fonts, badge, key.rect, (text, selected));
             }
         }
+        self.round_top_corners(&mut pixmap);
         Some(pixmap)
+    }
+
+    /// Round the keyboard's top corners (its bottom ones are past the
+    /// screen's edge), a little more than the keys': what is outside is
+    /// transparent.
+    fn round_top_corners(&self, pixmap: &mut Pixmap) {
+        let radius = self.unit * WINDOW_RADIUS;
+        let (width, height) = (self.width as f32, self.height as f32);
+        // the path goes below the canvas: only its top corners show
+        let Some(path) = rounded_rect(0.0, 0.0, width, height + radius, radius) else {
+            return;
+        };
+        if let Some(mut mask) = tiny_skia::Mask::new(self.width, self.height) {
+            mask.fill_path(
+                &path,
+                tiny_skia::FillRule::Winding,
+                true,
+                Transform::identity(),
+            );
+            pixmap.apply_mask(&mask);
+        }
     }
 
     /// The controller button that does a key, in a small outlined box under

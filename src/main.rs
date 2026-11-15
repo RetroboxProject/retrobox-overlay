@@ -166,10 +166,10 @@ fn run(
     // what takes a program to read is read from now on, while the rest loads
     let (sender, controls) = calloop::channel::channel();
     let screens = system::brightness::Screens::scan();
-    if screens.ambiguous() && system::brightness::primary_known() {
-        system::read_primary(sender.clone());
+    // (the keyboard has no sliders: none of it)
+    if !osk {
+        read_controls(&screens, sender);
     }
-    system::read_volume(sender);
 
     let session = Session::load(&runtime_dir);
     if session.as_ref().is_some_and(|session| !session.overlay) && !demo {
@@ -191,7 +191,7 @@ fn run(
     let translator = Translator::new(&language);
 
     let in_game = session.is_some() || demo;
-    let info = session.as_ref().map_or_else(
+    let info = session.as_ref().filter(|_| !osk).map_or_else(
         || GameInfo {
             name: "Retrobox".into(),
             ..GameInfo::default()
@@ -201,10 +201,12 @@ fn run(
     let subtitle = subtitle_of(&info);
 
     let (emulator, states) = emulator_for(session.as_ref(), demo, &translator);
+    // (opening a manual runs a program: not for the keyboard, which has none)
     let manual = manual_path(
         &info.manual,
         session.as_ref().map(|session| session.rom.as_str()),
     )
+    .filter(|_| !osk)
     .and_then(|path| Manual::open(&path));
     let (items, buttons) = menus(
         &translator,
@@ -219,9 +221,7 @@ fn run(
         !osk && config.take_keyboard.take(from_pad),
     );
 
-    let fonts = theme_fonts(&theme, &language);
-
-    let pads = open_pads(session.as_ref(), extra_pads, theme.invert_buttons, osk);
+    let (fonts, pads) = load_fonts_and_pads(&theme, &language, session.as_ref(), extra_pads, osk);
 
     let (outcome, emulator, setters) = app::run(Content {
         config,
@@ -266,6 +266,33 @@ fn run(
     // the last slider change is applied before leaving
     drop(setters);
     Ok(())
+}
+
+/// Start reading the sliders' values (the volume, the primary screen).
+fn read_controls(
+    screens: &system::brightness::Screens,
+    sender: calloop::channel::Sender<system::Msg>,
+) {
+    if screens.ambiguous() && system::brightness::primary_known() {
+        system::read_primary(sender.clone());
+    }
+    system::read_volume(sender);
+}
+
+/// The fonts and the controllers: finding and grabbing the controllers and
+/// the keyboards takes as long as loading the fonts, so both at once.
+fn load_fonts_and_pads(
+    theme: &MenuTheme,
+    language: &str,
+    session: Option<&Session>,
+    extra_pads: &[PathBuf],
+    osk: bool,
+) -> (Fonts, Vec<Pad>) {
+    std::thread::scope(|scope| {
+        let pads = scope.spawn(|| open_pads(session, extra_pads, theme.invert_buttons, osk));
+        let fonts = theme_fonts(theme, language);
+        (fonts, pads.join().unwrap_or_default())
+    })
 }
 
 /// Start the overlay again, as the pad's hotkey does (the on-screen keyboard

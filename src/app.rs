@@ -677,6 +677,12 @@ impl State {
                 return;
             }
             if let Some(pixmap) = osk.render(&mut self.content.fonts) {
+                if !piece.has_content() {
+                    log::info!(
+                        "keyboard shown {} ms after start",
+                        self.content.launched.elapsed().as_millis()
+                    );
+                }
                 piece.present(&mut self.display, &pixmap);
             }
         }
