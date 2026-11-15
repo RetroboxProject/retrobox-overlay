@@ -334,7 +334,15 @@ pub fn set_default(id: &str) -> bool {
 }
 
 /// Switch a device (its id) to a profile (its index); true when done.
+///
+/// The profile is also asked to be remembered (`save`, as `PulseAudio`
+/// clients such as pavucontrol do): without it `WirePlumber` may put the
+/// device's best profile back at the next change, such as a jack being
+/// plugged. `pw-cli` has no say in whether it worked (it exits well whatever
+/// happens), so `wpctl`, which does, asks for the same.
 pub fn set_profile(device: &str, index: &str) -> bool {
+    let param = format!("{{ \"index\": {index}, \"save\": true }}");
+    run("pw-cli", &["set-param", device, "Profile", &param]);
     run("wpctl", &["set-profile", device, index])
 }
 

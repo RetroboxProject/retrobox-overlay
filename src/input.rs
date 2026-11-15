@@ -249,7 +249,9 @@ impl Pad {
             KeyCode::BTN_TR2 => Some(Nav::NextPage),
             KeyCode::BTN_MODE => Some(Nav::Close),
             KeyCode::BTN_START => Some(Nav::Confirm),
-            KeyCode::BTN_NORTH => Some(Nav::Options),
+            // the top button: north on Nintendo and PlayStation pads, west on
+            // Xbox ones (their Y), whose X is north
+            KeyCode::BTN_NORTH | KeyCode::BTN_WEST => Some(Nav::Options),
             code if code == confirm => Some(Nav::Confirm),
             code if code == back => Some(Nav::Back),
             _ => None,

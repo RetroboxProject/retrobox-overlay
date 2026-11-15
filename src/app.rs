@@ -948,6 +948,7 @@ impl State {
     /// how its card is used.
     fn open_audio(&mut self) {
         let Some(hub) = self.audio.as_ref().filter(|hub| hub.lists_devices()) else {
+            log::info!("the audio page is not available: no way to follow the sound server");
             return;
         };
         let Some((panel, _)) = self.panel.as_mut() else {

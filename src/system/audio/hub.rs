@@ -279,6 +279,10 @@ impl Service {
                         Ok(first) => first,
                         Err(RecvTimeoutError::Timeout) => {
                             // it did not come: what there is is what there is
+                            log::warn!(
+                                "{:?} was done but did not hold: something else changed it back",
+                                self.settling.as_ref().map(|settling| &settling.action)
+                            );
                             self.settling = None;
                             if self.wanted {
                                 self.publish(true);
@@ -349,6 +353,7 @@ impl Service {
     }
 
     fn perform(&self, action: &Action) -> bool {
+        log::info!("audio: {action:?}");
         let done = match (self.backend, action) {
             (Backend::PipeWire, Action::SetDefault(id)) => pipewire::set_default(id),
             (Backend::PipeWire, Action::SetProfile { card, profile }) => {
