@@ -201,7 +201,6 @@ fn run(
     let subtitle = subtitle_of(&info);
 
     let (emulator, states) = emulator_for(session.as_ref(), demo, &translator);
-    // (opening a manual runs a program: not for the keyboard, which has none)
     let manual = manual_path(
         &info.manual,
         session.as_ref().map(|session| session.rom.as_str()),
@@ -223,6 +222,7 @@ fn run(
 
     let (fonts, pads) = load_fonts_and_pads(&theme, &language, session.as_ref(), extra_pads, osk);
 
+    log::info!("ready to show after {} ms", launched.elapsed().as_millis());
     let (outcome, emulator, setters) = app::run(Content {
         config,
         theme,

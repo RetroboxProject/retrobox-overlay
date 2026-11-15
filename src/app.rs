@@ -307,6 +307,7 @@ enum PointerKind {
 /// else on X11 (an X11 session, or `XWayland` where the compositor has no
 /// layer-shell).
 pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
+    let state_launched = content.launched;
     let mut event_loop: EventLoop<'static, State> =
         EventLoop::try_new().context("cannot create the event loop")?;
     let handle = event_loop.handle();
@@ -354,6 +355,10 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
     {
         grab_keyboard(&handle, window)?;
     }
+    log::info!(
+        "display connected {} ms after start",
+        state_launched.elapsed().as_millis()
+    );
     let mut state = State {
         display,
         focused: false,
@@ -644,7 +649,15 @@ impl State {
         let labels = Labels {
             accents: self.content.translator.text("osk-accents"),
         };
+        log::info!(
+            "output known {} ms after start",
+            self.content.launched.elapsed().as_millis()
+        );
         let osk = Osk::new(&self.content.theme, screen, self.layout(), labels);
+        log::info!(
+            "keyboard built {} ms after start",
+            self.content.launched.elapsed().as_millis()
+        );
         let piece = self.display.create_piece(Spec {
             anchor: Anchor::BOTTOM,
             size: (osk.width, osk.height),
