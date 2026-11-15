@@ -108,7 +108,6 @@ fn main() -> ExitCode {
     let runtime_dir = paths::runtime_dir();
 
     let result = if daemon {
-        log::info!("theme read after {} ms", launched.elapsed().as_millis());
         let config = Config::load(&paths::config_dirs());
         daemon::run(&runtime_dir, config.hold)
     } else if !demo
@@ -173,12 +172,7 @@ fn run(
     }
 
     let session = Session::load(&runtime_dir);
-    if session.as_ref().is_some_and(|session| !session.overlay) && !demo {
-        log::info!("the overlay is turned off for this game");
-        return Ok(());
-    }
-
-    if !osk_allowed(osk, demo, session.as_ref()) {
+    if !overlay_allowed(demo, osk, session.as_ref()) {
         return Ok(());
     }
 
@@ -192,13 +186,7 @@ fn run(
     let translator = Translator::new(&language);
 
     let in_game = session.is_some() || demo;
-    let info = session.as_ref().filter(|_| !osk).map_or_else(
-        || GameInfo {
-            name: "Retrobox".into(),
-            ..GameInfo::default()
-        },
-        |session| GameInfo::load(Path::new(&session.game_info), &session.rom),
-    );
+    let info = game_info(session.as_ref().filter(|_| !osk));
     let subtitle = subtitle_of(&info);
 
     let (emulator, states) = emulator_for(session.as_ref(), demo, &translator);
@@ -221,9 +209,15 @@ fn run(
         !osk && config.take_keyboard.take(from_pad),
     );
 
-    let (fonts, pads) = load_fonts_and_pads(&theme, &language, session.as_ref(), extra_pads, osk);
+    let new_pads = open_pads_later(
+        session.as_ref(),
+        extra_pads,
+        theme.invert_buttons,
+        osk,
+        launched,
+    );
+    let fonts = theme_fonts(&theme, &language);
 
-    log::info!("ready to show after {} ms", launched.elapsed().as_millis());
     let (outcome, emulator, setters) = app::run(Content {
         config,
         theme,
@@ -234,7 +228,8 @@ fn run(
         buttons,
         clock_formats,
         locale: translator.locale(),
-        pads,
+        pads: Vec::new(),
+        new_pads: Some(new_pads),
         emulator,
         states,
         manual,
@@ -280,26 +275,48 @@ fn read_controls(
     system::read_volume(sender);
 }
 
-/// The fonts and the controllers: finding and grabbing the controllers and
-/// the keyboards takes as long as loading the fonts, so both at once.
-fn load_fonts_and_pads(
-    theme: &MenuTheme,
-    language: &str,
+/// Whether the game lets this overlay open (see `osk_allowed`).
+fn overlay_allowed(demo: bool, osk: bool, session: Option<&Session>) -> bool {
+    if session.is_some_and(|session| !session.overlay) && !demo {
+        log::info!("the overlay is turned off for this game");
+        return false;
+    }
+    osk_allowed(osk, demo, session)
+}
+
+/// What the game's info file says, else just "Retrobox".
+fn game_info(session: Option<&Session>) -> GameInfo {
+    session.map_or_else(
+        || GameInfo {
+            name: "Retrobox".into(),
+            ..GameInfo::default()
+        },
+        |session| GameInfo::load(Path::new(&session.game_info), &session.rom),
+    )
+}
+
+/// Find and grab the controllers (and the keyboards, for the on-screen
+/// keyboard) on a thread of their own, which takes longer than showing the
+/// overlay: they are sent when ready.
+fn open_pads_later(
     session: Option<&Session>,
     extra_pads: &[PathBuf],
+    swap_confirm: bool,
     osk: bool,
-) -> (Fonts, Vec<Pad>) {
-    std::thread::scope(|scope| {
-        let start = std::time::Instant::now();
-        let pads = scope.spawn(move || {
-            let pads = open_pads(session, extra_pads, theme.invert_buttons, osk);
-            log::info!("controllers opened in {} ms", start.elapsed().as_millis());
-            pads
-        });
-        let fonts = theme_fonts(theme, language);
-        log::info!("fonts loaded in {} ms", start.elapsed().as_millis());
-        (fonts, pads.join().unwrap_or_default())
-    })
+    launched: std::time::Instant,
+) -> calloop::channel::Channel<Vec<Pad>> {
+    let (sender, channel) = calloop::channel::channel();
+    let session = session.cloned();
+    let extra_pads = extra_pads.to_vec();
+    std::thread::spawn(move || {
+        let pads = open_pads(session.as_ref(), &extra_pads, swap_confirm, osk);
+        log::info!(
+            "controllers opened {} ms after start",
+            launched.elapsed().as_millis()
+        );
+        sender.send(pads).ok();
+    });
+    channel
 }
 
 /// Start the overlay again, as the pad's hotkey does (the on-screen keyboard

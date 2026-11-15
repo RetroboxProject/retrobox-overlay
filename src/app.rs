@@ -145,6 +145,9 @@ pub struct Content {
     pub clock_formats: (String, String),
     pub locale: chrono::Locale,
     pub pads: Vec<Pad>,
+    /// The controllers, once they are found: they take longer than the
+    /// overlay to show.
+    pub new_pads: Option<Channel<Vec<Pad>>>,
     pub emulator: Emulator,
     /// The save and load pages, when the emulator's states can be managed.
     pub states: Option<StatesMenu>,
@@ -307,7 +310,6 @@ enum PointerKind {
 /// else on X11 (an X11 session, or `XWayland` where the compositor has no
 /// layer-shell).
 pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
-    let state_launched = content.launched;
     let mut event_loop: EventLoop<'static, State> =
         EventLoop::try_new().context("cannot create the event loop")?;
     let handle = event_loop.handle();
@@ -340,7 +342,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         })
         .map_err(|err| anyhow!("cannot watch signals: {}", err.error))?;
 
-    watch_controllers(&handle, &content.pads)?;
+    wait_for_pads(&handle, content.new_pads.take())?;
 
     // the dim comes first: its size is the screen's, which the rest is sized from
     let dim = display.create_piece(Spec {
@@ -355,10 +357,6 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
     {
         grab_keyboard(&handle, window)?;
     }
-    log::info!(
-        "display connected {} ms after start",
-        state_launched.elapsed().as_millis()
-    );
     let mut state = State {
         display,
         focused: false,
@@ -449,43 +447,46 @@ fn connect_x11(handle: &LoopHandle<'static, State>) -> Result<Display> {
     Ok(Display::X11(x11))
 }
 
-/// Read the controllers' events, and grab them all once `GRAB_WAIT` has
-/// passed (one whose buttons are not all up yet is grabbed by then anyway).
-fn watch_controllers(handle: &LoopHandle<'static, State>, pads: &[Pad]) -> Result<()> {
-    for pad in pads {
-        let fd = pad.device.as_fd().try_clone_to_owned()?;
-        let path = pad.path.clone();
-        handle
-            .insert_source(
-                Generic::new(fd, Interest::READ, Mode::Level),
-                move |_, _, state| {
-                    let Some(pad) = state.content.pads.iter_mut().find(|pad| pad.path == path)
-                    else {
-                        return Ok(PostAction::Remove);
-                    };
-                    let inputs = pad.read();
-                    if pad.is_gone() {
-                        // Close both descriptors of the controller right now
-                        // (the pad's, and this source's, which `Remove` drops):
-                        // holding a gone device open until the overlay closes
-                        // is what lets its driver unload under it, and also
-                        // makes this level-triggered source fire non-stop.
-                        state.content.pads.retain(|pad| pad.path != path);
-                        return Ok(PostAction::Remove);
-                    }
-                    for input in inputs {
-                        state.pad_input(input);
-                    }
-                    Ok(PostAction::Continue)
-                },
-            )
-            .map_err(|err| anyhow!("cannot watch a controller: {}", err.error))?;
-    }
+/// Read a controller's events, and grab it once `GRAB_WAIT` has passed
+/// (one whose buttons are not all up yet is grabbed by then anyway).
+fn watch_pad(handle: &LoopHandle<'static, State>, pad: &Pad) -> Result<()> {
+    let fd = pad.device.as_fd().try_clone_to_owned()?;
+    let path = pad.path.clone();
+    let grab_path = pad.path.clone();
     handle
         .insert_source(
-            Timer::from_duration(input::GRAB_WAIT),
-            |_, &mut (), state| {
-                for pad in &mut state.content.pads {
+            Generic::new(fd, Interest::READ, Mode::Level),
+            move |_, _, state| {
+                let Some(pad) = state.content.pads.iter_mut().find(|pad| pad.path == path) else {
+                    return Ok(PostAction::Remove);
+                };
+                let inputs = pad.read();
+                if pad.is_gone() {
+                    // Close both descriptors of the controller right now
+                    // (the pad's, and this source's, which `Remove` drops):
+                    // holding a gone device open until the overlay closes
+                    // is what lets its driver unload under it, and also
+                    // makes this level-triggered source fire non-stop.
+                    state.content.pads.retain(|pad| pad.path != path);
+                    return Ok(PostAction::Remove);
+                }
+                for input in inputs {
+                    state.pad_input(input);
+                }
+                Ok(PostAction::Continue)
+            },
+        )
+        .map_err(|err| anyhow!("cannot watch a controller: {}", err.error))?;
+    handle
+        .insert_source(
+            Timer::from_duration(input::GRAB_WAIT.saturating_sub(pad.age())),
+            move |_, &mut (), state| {
+                if let Some(pad) = state
+                    .content
+                    .pads
+                    .iter_mut()
+                    .find(|pad| pad.path == grab_path)
+                {
                     pad.try_grab();
                 }
                 TimeoutAction::Drop
@@ -493,6 +494,33 @@ fn watch_controllers(handle: &LoopHandle<'static, State>, pads: &[Pad]) -> Resul
         )
         .map_err(|err| anyhow!("cannot start a timer: {}", err.error))?;
     Ok(())
+}
+
+/// Take the controllers when they are found (see `add_pads`).
+fn wait_for_pads(
+    handle: &LoopHandle<'static, State>,
+    pads: Option<Channel<Vec<Pad>>>,
+) -> Result<()> {
+    if let Some(pads) = pads {
+        handle
+            .insert_source(pads, |event, &mut (), state| {
+                if let channel::Event::Msg(pads) = event {
+                    add_pads(state, pads);
+                }
+            })
+            .map_err(|err| anyhow!("cannot wait for the controllers: {}", err.error))?;
+    }
+    Ok(())
+}
+
+/// Take the controllers that were found: watch them and keep them.
+fn add_pads(state: &mut State, pads: Vec<Pad>) {
+    for pad in pads {
+        match watch_pad(&state.handle, &pad) {
+            Ok(()) => state.content.pads.push(pad),
+            Err(err) => log::warn!("{err:#}"),
+        }
+    }
 }
 
 /// How often, and how many times, the X11 keyboard grab is tried again while
@@ -649,15 +677,7 @@ impl State {
         let labels = Labels {
             accents: self.content.translator.text("osk-accents"),
         };
-        log::info!(
-            "output known {} ms after start",
-            self.content.launched.elapsed().as_millis()
-        );
         let osk = Osk::new(&self.content.theme, screen, self.layout(), labels);
-        log::info!(
-            "keyboard built {} ms after start",
-            self.content.launched.elapsed().as_millis()
-        );
         let piece = self.display.create_piece(Spec {
             anchor: Anchor::BOTTOM,
             size: (osk.width, osk.height),

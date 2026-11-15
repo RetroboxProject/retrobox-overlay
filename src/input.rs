@@ -198,6 +198,11 @@ impl Pad {
         }
     }
 
+    /// How long ago the controller was opened.
+    pub fn age(&self) -> Duration {
+        self.opened.elapsed()
+    }
+
     /// The buttons down right now, leaving out the stuck ones.
     fn held(&self) -> Vec<KeyCode> {
         self.device.get_key_state().map_or_else(
