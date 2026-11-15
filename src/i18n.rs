@@ -109,6 +109,15 @@ impl Translator {
         self.format(id, Some(&args))
     }
 
+    /// The text of a message with text arguments (`{ $name }`).
+    pub fn text_strings(&self, id: &str, values: &[(&str, &str)]) -> String {
+        let mut args = FluentArgs::new();
+        for (name, value) in values {
+            args.set(*name, (*value).to_owned());
+        }
+        self.format(id, Some(&args))
+    }
+
     fn format(&self, id: &str, args: Option<&FluentArgs>) -> String {
         for bundle in [&self.bundle, &self.fallback] {
             if let Some(pattern) = bundle.get_message(id).and_then(|message| message.value()) {

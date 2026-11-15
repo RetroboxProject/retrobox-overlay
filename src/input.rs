@@ -505,6 +505,64 @@ fn bit(words: &[u64], index: u16) -> bool {
         .is_some_and(|word| word >> (index % 64) & 1 == 1)
 }
 
+/// Open and grab every controller (a device with the south button), for a
+/// screen that runs outside a game and so has no list of its own.
+pub fn open_all_pads(swap_confirm: bool) -> Vec<Pad> {
+    gamepad_nodes()
+        .into_iter()
+        .filter_map(|path| Pad::open(&path, swap_confirm))
+        .collect()
+}
+
+/// The device nodes of the controllers (sysfs, see `keyboard_nodes`).
+fn gamepad_nodes() -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir("/sys/class/input") else {
+        return Vec::new();
+    };
+    let mut nodes: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("event"))
+        .filter(|entry| {
+            let device = entry.path().join("device");
+            let read = |file: &str| std::fs::read_to_string(device.join(file)).unwrap_or_default();
+            let name = read("name").to_lowercase();
+            bit(
+                &key_bits(&read("capabilities/key")),
+                KeyCode::BTN_SOUTH.code(),
+            ) && !name.contains("retrobox")
+        })
+        .map(|entry| Path::new("/dev/input").join(entry.file_name()))
+        .collect();
+    nodes.sort();
+    nodes
+}
+
+/// Whether some controller has both shoulder buttons (L1 and R1) down right
+/// now, as EmulationStation numbers them: what the user holds while a game
+/// loads to have its emulator installed again. Reads the state from the
+/// kernel, without grabbing anything.
+pub fn shoulders_held() -> bool {
+    gamepad_nodes().iter().any(|path| {
+        let Ok(device) = Device::open(path) else {
+            return false;
+        };
+        let Ok(keys) = device.get_key_state() else {
+            return false;
+        };
+        let translation = es_input::translation(&device);
+        let standard: Vec<KeyCode> = keys
+            .iter()
+            .map(|key| {
+                translation
+                    .as_ref()
+                    .and_then(|table| table.get(&key).copied())
+                    .unwrap_or(key)
+            })
+            .collect();
+        standard.contains(&KeyCode::BTN_TL) && standard.contains(&KeyCode::BTN_TR)
+    })
+}
+
 /// Wait (a few seconds at most) until no controller has a button down, so the
 /// press that closed the overlay is not followed by a lone release in the game.
 pub fn wait_released(pads: &mut [Pad]) {

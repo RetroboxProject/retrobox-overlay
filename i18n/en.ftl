@@ -52,3 +52,24 @@ audio-loading = Loading…
 help-audio = AUDIO
 # the on-screen keyboard's keys
 osk-accents = Accents
+
+# the task screen: installing and downloading what Retrobox needs ({ $label } is
+# the emulator or content's name)
+help-scroll = SCROLL
+help-cancel = CANCEL
+task-yes = Yes
+task-no = No
+task-ok = OK
+task-ask = { $label } is not installed. Install it now?
+task-installing = Installing { $label }…
+task-failed = Could not install { $label }
+task-done = { $label } is installed
+task-reinstall-ask = Install { $label } again? It will be updated.
+task-reinstalling = Installing { $label } again…
+task-reinstall-failed = Could not update { $label }
+task-reinstalled = { $label } is up to date
+task-downloading = Downloading { $label }…
+task-download-failed = Could not download { $label }
+task-exit-status = The installer ended with status { $status }.
+task-still-missing = The installer finished, but { $path } is not there.
+task-log = Log: { $path }

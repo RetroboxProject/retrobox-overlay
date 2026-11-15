@@ -129,6 +129,9 @@ pub(super) struct Wl {
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
     pub pointer: Option<ThemedPointer>,
     pub touch: Option<wayland_client::protocol::wl_touch::WlTouch>,
+    /// Whether the surfaces that take the keyboard take all of it (the task
+    /// screen, where nothing else may get the keys), not only on demand.
+    pub exclusive_keyboard: bool,
     pub qh: QueueHandle<State>,
 }
 
@@ -185,6 +188,18 @@ impl Display {
         }
     }
 
+    /// Whether this is Wayland.
+    pub const fn is_wayland(&self) -> bool {
+        matches!(self, Self::Wayland(_))
+    }
+
+    /// From now on, surfaces that take the keyboard take all of it.
+    pub fn take_whole_keyboard(&mut self) {
+        if let Self::Wayland(wl) = self {
+            wl.exclusive_keyboard = true;
+        }
+    }
+
     /// Send what is pending.
     pub fn flush(&self) {
         let flushed = match self {
@@ -221,8 +236,10 @@ impl Display {
                 layer.set_exclusive_zone(-1);
                 // The keyboard on demand, not exclusively: the compositor may
                 // give it to another window (Alt+Tab, a click), and then the
-                // overlay closes.
-                layer.set_keyboard_interactivity(if spec.keyboard {
+                // overlay closes. (The task screen takes all of it.)
+                layer.set_keyboard_interactivity(if spec.keyboard && wl.exclusive_keyboard {
+                    KeyboardInteractivity::Exclusive
+                } else if spec.keyboard {
                     KeyboardInteractivity::OnDemand
                 } else {
                     KeyboardInteractivity::None
@@ -1301,6 +1318,7 @@ pub(super) fn bind_wayland(
         keyboard: None,
         pointer: None,
         touch: None,
+        exclusive_keyboard: false,
         qh,
     })
 }

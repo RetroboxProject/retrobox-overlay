@@ -88,9 +88,11 @@ use crate::ui::text::Fonts;
 
 mod display;
 mod manual_view;
+mod task_view;
 
 use display::{Display, Piece, Spec, Sub, SurfaceId, X11};
 use manual_view::ManualState;
+use task_view::TaskView;
 
 const FRAME: Duration = Duration::from_millis(16);
 /// How long a controller direction is held before it repeats, and how often
@@ -130,6 +132,8 @@ pub enum Outcome {
     /// The on-screen keyboard's overlay key: the overlay opens once the
     /// keyboard is gone.
     Overlay,
+    /// The task screen is done: the process exits with this status.
+    Task(u8),
 }
 
 /// Everything the overlay shows, prepared before it connects to the display.
@@ -166,6 +170,8 @@ pub struct Content {
     pub take_keyboard: bool,
     /// Show the on-screen keyboard instead of the menu.
     pub osk: bool,
+    /// Show the task screen (an installer or a download) instead of the menu.
+    pub task: Option<crate::task::Options>,
     /// What the threads that read find (the volume, the display settings'
     /// primary screen), and how more threads send it.
     pub controls: Option<Channel<Msg>>,
@@ -198,6 +204,8 @@ struct State {
     /// The menu's help prompts, on the dim.
     menu_help: Option<Sub>,
     manual: ManualState,
+    /// The task screen, instead of everything else.
+    task: Option<TaskView>,
     /// The controller direction held, repeating like a held key.
     repeat: Option<(Nav, RegistrationToken)>,
     started: Option<Instant>,
@@ -344,6 +352,13 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
 
     wait_for_pads(&handle, content.new_pads.take())?;
 
+    let task = content.task.take().map(TaskView::new);
+    if task.is_some() {
+        // nothing else may get the keys while an installer asks for a password
+        content.take_keyboard = true;
+        display.take_whole_keyboard();
+    }
+
     // the dim comes first: its size is the screen's, which the rest is sized from
     let dim = display.create_piece(Spec {
         anchor: Anchor::all(),
@@ -373,6 +388,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         help: None,
         menu_help: None,
         manual: ManualState::default(),
+        task,
         repeat: None,
         started: None,
         outcome: None,
@@ -390,13 +406,20 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
     state.controls = state.content.controls.take();
 
     while state.outcome.is_none() {
+        // x11rb queues the events it reads while waiting for a reply (any
+        // drawing may): the socket does not become readable for those again
+        state.x11_events();
         state.x11_configures();
         state.display.flush();
         event_loop
             .dispatch(None, &mut state)
             .context("event loop error")?;
     }
-    let outcome = state.outcome.unwrap_or(Outcome::Back);
+    let outcome = match (state.outcome, &state.task) {
+        // stopped (a signal, the compositor closing it): the screen's own answer
+        (Some(Outcome::Back) | None, Some(task)) => Outcome::Task(task.quit_status()),
+        (outcome, _) => outcome.unwrap_or(Outcome::Back),
+    };
     state.slide_out(&mut event_loop);
     // what is still to be typed goes out before the keyboard is gone
     drop(state.typist.take());
@@ -571,6 +594,10 @@ impl State {
     /// The dim: translucent black over the whole output, drawn straight into
     /// the buffer (no pixmap: it can be a 4K screen).
     fn draw_dim(&mut self) {
+        if self.task.is_some() {
+            self.draw_task();
+            return;
+        }
         // the keyboard leaves the game as it is: its layer only catches clicks
         let keyboard = self.content.osk;
         let alpha = if keyboard {
@@ -593,6 +620,10 @@ impl State {
     /// Once the output size is known: create the panel and the clock.
     fn create_pieces(&mut self) {
         let (width, height) = self.dim.size;
+        if self.task.is_some() {
+            self.create_task();
+            return;
+        }
         if self.content.osk {
             self.create_osk((width, height));
             return;
@@ -1351,6 +1382,10 @@ impl State {
 
     /// A press or release, from a controller or the keyboard.
     fn input(&mut self, input: Input) {
+        if self.task.is_some() {
+            self.task_input(input);
+            return;
+        }
         if self.manual_is_open() {
             self.manual_input(input);
         } else if input.pressed {
@@ -1599,6 +1634,11 @@ impl State {
     /// Another window took the keyboard (Alt+Tab, a click elsewhere): get
     /// out of the way.
     fn focus_out(&mut self) {
+        if self.task_is_open() {
+            // an installation goes on whoever has the keyboard
+            self.focused = false;
+            return;
+        }
         if self.focused && self.outcome.is_none() {
             log::info!("keyboard focus lost: closing");
             self.outcome = Some(Outcome::Back);
@@ -1633,6 +1673,10 @@ impl State {
     /// Hovering an entry highlights it, a click opens it; a click anywhere else
     /// (or the right button) closes the overlay; the wheel moves the selection.
     fn pointer(&mut self, event: &PointerInput) {
+        if self.task.is_some() {
+            self.task_pointer(event);
+            return;
+        }
         if self.osk.is_some() {
             self.osk_pointer(event);
             return;
@@ -1801,6 +1845,12 @@ impl State {
         };
         match event {
             XEvent::Expose(event) if event.count == 0 => self.x11_expose(event.window),
+            XEvent::KeyPress(event) if self.task.is_some() => {
+                self.x11_task_key(event.detail, event.state, true);
+            }
+            XEvent::KeyRelease(event) if self.task.is_some() => {
+                self.x11_task_key(event.detail, event.state, false);
+            }
             XEvent::KeyPress(event) => {
                 if let Some(nav) = x11_key_nav(event.detail) {
                     self.key_press(nav);
@@ -1978,6 +2028,10 @@ impl KeyboardHandler for State {
         event: KeyEvent,
     ) {
         log::debug!("key {:?}", event.keysym);
+        if self.task.is_some() {
+            self.wayland_task_key(&event);
+            return;
+        }
         if let Some(nav) = key_nav(event.keysym) {
             self.key_press(nav);
         }
@@ -1991,6 +2045,10 @@ impl KeyboardHandler for State {
         _: u32,
         event: KeyEvent,
     ) {
+        if self.task.is_some() {
+            self.wayland_task_key(&event);
+            return;
+        }
         if let Some(nav) = key_nav(event.keysym) {
             self.key_repeat(nav);
         }
@@ -2033,10 +2091,13 @@ impl KeyboardHandler for State {
         _: &QueueHandle<Self>,
         _: &wl_keyboard::WlKeyboard,
         _: u32,
-        _: Modifiers,
+        modifiers: Modifiers,
         _: RawModifiers,
         _: u32,
     ) {
+        if let Some(task) = self.task.as_mut() {
+            task.set_modifiers(modifiers.ctrl, modifiers.shift);
+        }
     }
 }
 

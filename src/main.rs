@@ -22,6 +22,7 @@ mod paths;
 mod savestates;
 mod session;
 mod system;
+mod task;
 mod theme;
 mod ui;
 
@@ -51,6 +52,10 @@ retrobox-overlay: Retrobox's in-game menu
 
 Usage: retrobox-overlay [--daemon | --show [--pad DEVICE]... | --osk | --demo]
                         [--version] [--help]
+       retrobox-overlay --task --label NAME --log FILE [--check FILE]
+                        [--background PNG] [--pad DEVICE]... [--lang CODE]
+                        [--download | --reinstall] -- COMMAND [ARGUMENT]...
+       retrobox-overlay --held
 
 Without a mode, asks the daemon to open or close the overlay, or shows the
 overlay over the running game itself (see session.json in Retrobox's runtime
@@ -70,6 +75,18 @@ directory) when no daemon runs; started again while open, it closes it.
   --version      print the version
   --help         print this help
 
+  --task         run an installer or a download full screen, over Retrobox's
+                 background, showing its output (and passing the keyboard to
+                 it): Retrobox runs it for the emulators and the content it
+                 needs. It asks whether to install NAME first, unless
+                 --download runs it at once (and closes when it works);
+                 --reinstall offers to install what is installed again.
+                 Exit status: 0 done, 10 declined or cancelled, 11 failed,
+                 12 no screen. FILE is the file the installation leaves
+                 (checked after the command works), PNG the background.
+  --held         exit with status 0 if a controller has L1 and R1 held down,
+                 else 1 (how a game's start asks for a reinstall)
+
 The game's manual (a PDF scraped by EmulationStation) is shown with
 poppler's pdftoppm and pdfinfo.
 
@@ -79,6 +96,19 @@ Log: stderr from a terminal, else ~/.local/state/retrobox/logs/overlay.log; RUST
 fn main() -> ExitCode {
     let launched = std::time::Instant::now();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // before anything else looks at the arguments: those of a task's command
+    // come after its own and are none of the overlay's
+    match args.first().map(String::as_str) {
+        Some("--held") => {
+            return if input::shoulders_held() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            };
+        }
+        Some("--task") => return run_task(&args),
+        _ => {}
+    }
     let daemon = args.iter().any(|arg| arg == "--daemon");
     let log = init_log(if daemon {
         "overlay-daemon.log"
@@ -128,6 +158,101 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `--task`: the task screen, in a process of its own (see `task`).
+fn run_task(args: &[String]) -> ExitCode {
+    let options = match task::Options::parse(args) {
+        Ok(options) => options,
+        Err(err) => {
+            eprintln!("retrobox-overlay --task: {err}");
+            return ExitCode::from(2);
+        }
+    };
+    let log = init_log("overlay-task.log");
+    block_usr1();
+    ExitCode::from(match task_screen(options, log.as_ref()) {
+        Ok(status) => status,
+        Err(err) => {
+            log::error!("{err:#}");
+            task::EXIT_UNAVAILABLE
+        }
+    })
+}
+
+/// Show the task screen until it is done: the exit status.
+fn task_screen(options: task::Options, log: Option<&std::fs::File>) -> Result<u8> {
+    let runtime_dir = paths::runtime_dir();
+    let _lock = match instance::acquire_named(&runtime_dir, task::LOCK_FILE)? {
+        Instance::First(lock) => lock,
+        Instance::Running(_) => anyhow::bail!("another task screen is running"),
+    };
+    if let Some(log) = log {
+        log.set_len(0).ok();
+    }
+    let theme = MenuTheme::load_or_kept(
+        &runtime_dir.join("es-menu-theme.json"),
+        &paths::kept_menu_theme(),
+    );
+    let config = Config::load(&paths::config_dirs());
+    let language = options
+        .language
+        .clone()
+        .filter(|language| !language.is_empty())
+        .unwrap_or_else(|| i18n::preferred_language(&theme.language));
+    let translator = Translator::new(&language);
+    let fonts = theme_fonts(&theme, &language);
+    let new_pads = open_task_pads_later(&options.pads, theme.invert_buttons);
+    let (outcome, _, _) = app::run(Content {
+        config,
+        theme,
+        fonts,
+        title: String::new(),
+        subtitle: String::new(),
+        items: Vec::new(),
+        buttons: Vec::new(),
+        clock_formats: (String::new(), String::new()),
+        locale: translator.locale(),
+        pads: Vec::new(),
+        new_pads: Some(new_pads),
+        emulator: Emulator::none(),
+        states: None,
+        manual: None,
+        translator,
+        launched: std::time::Instant::now(),
+        small_clock: None,
+        battery_percent: false,
+        take_keyboard: true,
+        osk: false,
+        controls: None,
+        screens: system::brightness::Screens::scan(),
+        task: Some(options),
+    })?;
+    Ok(match outcome {
+        Outcome::Task(status) => status,
+        _ => task::EXIT_DECLINED,
+    })
+}
+
+/// The controllers of the task screen: those it was told, else every one.
+fn open_task_pads_later(
+    paths: &[PathBuf],
+    swap_confirm: bool,
+) -> calloop::channel::Channel<Vec<Pad>> {
+    let (sender, channel) = calloop::channel::channel();
+    let paths = paths.to_vec();
+    std::thread::spawn(move || {
+        let pads = if paths.is_empty() {
+            input::open_all_pads(swap_confirm)
+        } else {
+            paths
+                .iter()
+                .filter_map(|path| Pad::open(path, swap_confirm))
+                .collect()
+        };
+        sender.send(pads).ok();
+    });
+    channel
 }
 
 /// Keep SIGUSR1 pending until an event loop reads it (see `main`).
@@ -241,6 +366,7 @@ fn run(
         osk,
         controls: Some(controls),
         screens,
+        task: None,
     })?;
     // The overlay is gone and the controllers are the game's again; the
     // keyboard focus is on its way back to the game. Another overlay may
@@ -249,7 +375,7 @@ fn run(
     drop(lock);
     match outcome {
         Outcome::Quit if !demo => quit_game(),
-        Outcome::Quit | Outcome::Back => {}
+        Outcome::Quit | Outcome::Back | Outcome::Task(_) => {}
         Outcome::Overlay => open_overlay(),
         Outcome::Request(request) => emulator.back_to_game(request),
         Outcome::Standby => {

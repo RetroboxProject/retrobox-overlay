@@ -8,6 +8,7 @@ pub mod layout;
 pub mod osk;
 pub mod panel;
 pub mod states;
+pub mod task;
 pub mod text;
 pub mod viewer;
 

@@ -206,6 +206,30 @@ only while it is shown.
   percentage (`battery_percent` in `[status]`), and the time when the clock is the small one
   (`size = small` in `[clock]`, with its own format, `small_format`); the big clock keeps its
   corner. They are read again every second, from sysfs.
+* **Installing and downloading** (`retrobox-overlay --task`). The screen Retrobox shows when it
+  needs something it has not got: the emulator a game needs (it asks whether to install it
+  first), or the default theme, bezels and shaders before EmulationStation starts (it runs the
+  download at once and closes when it works). It is a process of its own, not the daemon's, so
+  it works before EmulationStation is up and leaves nothing resident. A card in the menu's
+  colours (EmulationStation's defaults without its theme) over Retrobox's background picture
+  holds the question, the buttons (controller, keyboard, mouse or touch) and the installer's
+  output, which runs in a pseudo-terminal: what asks for something, such as sudo's password,
+  gets the keyboard's keys, as in any terminal. Page Up/Down and the wheel scroll the output;
+  a selection made with the pointer is copied when it ends (Ctrl+Shift+C copies it, or all
+  the output; Ctrl+Shift+A selects it all), with `wl-copy`, `xclip` or `xsel`. The full output
+  is saved in the log file it is given.
+
+      retrobox-overlay --task --label NAME --log FILE [--check FILE] [--background PNG]
+                       [--pad DEVICE]... [--lang CODE] [--download | --reinstall]
+                       -- COMMAND [ARGUMENT]...
+
+  `--check` is a file the command must have left (a command that works but leaves nothing is
+  a failure), `--reinstall` offers to install again what is installed (to update it).
+  Exit status: 0 done, 10 declined or cancelled (a download is cancelled with Back), 11 failed
+  (the output stays on screen until the user closes it), 12 no screen could be opened.
+  `retrobox-overlay --held` exits with 0 while a controller has L1 and R1 held down (read
+  from the kernel, nothing grabbed): holding them while a game loads is how the launcher is
+  asked to offer the emulator's installation again.
 
 ## Requirements
 
