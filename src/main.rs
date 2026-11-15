@@ -108,6 +108,7 @@ fn main() -> ExitCode {
     let runtime_dir = paths::runtime_dir();
 
     let result = if daemon {
+        log::info!("theme read after {} ms", launched.elapsed().as_millis());
         let config = Config::load(&paths::config_dirs());
         daemon::run(&runtime_dir, config.hold)
     } else if !demo
@@ -289,8 +290,14 @@ fn load_fonts_and_pads(
     osk: bool,
 ) -> (Fonts, Vec<Pad>) {
     std::thread::scope(|scope| {
-        let pads = scope.spawn(|| open_pads(session, extra_pads, theme.invert_buttons, osk));
+        let start = std::time::Instant::now();
+        let pads = scope.spawn(move || {
+            let pads = open_pads(session, extra_pads, theme.invert_buttons, osk);
+            log::info!("controllers opened in {} ms", start.elapsed().as_millis());
+            pads
+        });
         let fonts = theme_fonts(theme, language);
+        log::info!("fonts loaded in {} ms", start.elapsed().as_millis());
         (fonts, pads.join().unwrap_or_default())
     })
 }
