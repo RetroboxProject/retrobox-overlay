@@ -35,6 +35,9 @@ use crate::system::{Msg, Refresher, installed};
 /// objects), and for how long at most.
 const COALESCE: Duration = Duration::from_millis(15);
 const COALESCE_MAX: Duration = Duration::from_millis(80);
+/// How long a profile change is waited for before the menu is told whatever
+/// state the card is in.
+const SETTLE: Duration = Duration::from_millis(2500);
 
 /// The sound server's interface that is used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +199,7 @@ impl Hub {
             loaded: false,
             wanted: false,
             sent: None,
+            settling: None,
             refresher,
             sender,
         };
@@ -248,13 +252,43 @@ struct Service {
     wanted: bool,
     /// What the menu was last sent.
     sent: Option<Snapshot>,
+    /// A profile was asked for: until it shows (or time runs out), what the
+    /// card goes through meanwhile (its output gone, then back) is not sent.
+    settling: Option<Settling>,
     refresher: Refresher,
     sender: calloop::channel::Sender<Msg>,
 }
 
+struct Settling {
+    until: Instant,
+    action: Action,
+}
+
 impl Service {
     fn run(mut self, input: &mpsc::Receiver<Input>) {
-        while let Ok(first) = input.recv() {
+        loop {
+            let first = match &self.settling {
+                None => match input.recv() {
+                    Ok(first) => first,
+                    Err(_) => return,
+                },
+                Some(settling) => {
+                    match input
+                        .recv_timeout(settling.until.saturating_duration_since(Instant::now()))
+                    {
+                        Ok(first) => first,
+                        Err(RecvTimeoutError::Timeout) => {
+                            // it did not come: what there is is what there is
+                            self.settling = None;
+                            if self.wanted {
+                                self.publish(true);
+                            }
+                            continue;
+                        }
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+            };
             let mut batch = vec![first];
             // what comes together is dealt with together
             let deadline = Instant::now() + COALESCE_MAX;
@@ -286,7 +320,17 @@ impl Service {
                         force |= wanted;
                     }
                     // what was shown as done is put right when it was not
-                    Input::Do(action) => force |= !self.perform(&action),
+                    Input::Do(action) => {
+                        let done = self.perform(&action);
+                        force |= !done;
+                        self.settling =
+                            (done && matches!(action, Action::SetProfile { .. })).then(|| {
+                                Settling {
+                                    until: Instant::now() + SETTLE,
+                                    action,
+                                }
+                            });
+                    }
                     Input::Lost => {
                         log::warn!("the sound server's changes are no longer followed");
                         self.loaded = false;
@@ -329,6 +373,12 @@ impl Service {
             Backend::Pulse { json: true } => pulse::snapshot(),
             Backend::Pulse { json: false } => None,
         };
+        if let (Some(settling), Some(snapshot)) = (&self.settling, &snapshot) {
+            if snapshot.default_card().is_none() || !snapshot.is_current(&settling.action) {
+                return;
+            }
+            self.settling = None;
+        }
         if let Some(snapshot) = snapshot
             && (force || self.sent.as_ref() != Some(&snapshot))
         {

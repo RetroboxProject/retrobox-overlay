@@ -967,6 +967,8 @@ impl Panel {
     /// save state page, the page and the game.
     fn header_texts(&self) -> (&str, &str) {
         match &self.page {
+            // a page of choices needs no more than its name
+            Some(page @ Page::List(_)) => (page.title(), ""),
             Some(page) => (page.title(), &self.title),
             None => (&self.title, &self.subtitle),
         }
@@ -1350,6 +1352,15 @@ impl Panel {
             let label = row.label.to_uppercase();
             match row.kind {
                 RowKind::Header => {
+                    // a band across the panel, its name in the middle
+                    fill(
+                        pixmap,
+                        0.0,
+                        y,
+                        width,
+                        row_height,
+                        self.text.style.separator_color,
+                    );
                     let (font, label) = fonts.fit(&self.small.font, &label, inner, 0.7);
                     fonts.draw(
                         pixmap,
@@ -1360,7 +1371,7 @@ impl Panel {
                             y,
                             width: inner,
                             height: row_height,
-                            align: Align::Left,
+                            align: Align::Center,
                         },
                         self.small.style.color,
                     );

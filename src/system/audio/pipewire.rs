@@ -30,6 +30,26 @@ pub struct Sink {
 pub struct Device {
     label: String,
     profiles: Vec<Profile>,
+    /// The index of the profile in use.
+    active: Option<u32>,
+}
+
+impl Device {
+    /// An update that leaves out some of the params (only one changed) keeps
+    /// what the last one said about the others.
+    fn keep(&mut self, old: &Self) {
+        if self.profiles.is_empty() {
+            self.profiles.clone_from(&old.profiles);
+        }
+        if self.active.is_none() {
+            self.active = old.active;
+        }
+        for profile in &mut self.profiles {
+            profile.active = self
+                .active
+                .is_some_and(|active| profile.id == active.to_string());
+        }
+    }
 }
 
 /// A change of the graph, as far as the menu cares.
@@ -69,10 +89,15 @@ impl Graph {
                 volume: true,
                 devices: self.sinks.insert(id, sink.clone()) != Some(sink),
             },
-            Update::Device(id, device) => Touched {
-                volume: true,
-                devices: self.devices.insert(id, device.clone()) != Some(device),
-            },
+            Update::Device(id, mut device) => {
+                if let Some(old) = self.devices.get(&id) {
+                    device.keep(old);
+                }
+                Touched {
+                    volume: true,
+                    devices: self.devices.insert(id, device.clone()) != Some(device),
+                }
+            }
             Update::Default(name) => {
                 let changed = self.default != name;
                 self.default = name;
@@ -268,7 +293,14 @@ fn parse_device(id: u32, json: &str) -> Option<Update> {
             })
         })
         .collect();
-    Some(Update::Device(id, Device { label, profiles }))
+    Some(Update::Device(
+        id,
+        Device {
+            label,
+            profiles,
+            active,
+        },
+    ))
 }
 
 fn parse_metadata(json: &str) -> Option<Update> {
@@ -276,19 +308,23 @@ fn parse_metadata(json: &str) -> Option<Update> {
     if text(&object.props, "metadata.name").as_deref() != Some("default") {
         return None;
     }
-    let name = object
+    // an update without the entry says nothing about the default
+    let entry = object
         .metadata
         .into_iter()
-        .find(|entry| entry.key.as_deref() == Some("default.audio.sink"))
-        .and_then(|entry| match entry.value {
-            // {"name": "alsa_output..."}, or the same as a string
-            Value::Object(fields) => fields.get("name")?.as_str().map(str::to_owned),
-            Value::String(text) => serde_json::from_str::<Value>(&text)
-                .ok()
-                .and_then(|value| value.get("name")?.as_str().map(str::to_owned))
-                .or(Some(text)),
-            _ => None,
-        });
+        .find(|entry| entry.key.as_deref() == Some("default.audio.sink"))?;
+    let name = match entry.value {
+        // {"name": "alsa_output..."}, or the same as a string
+        Value::Object(fields) => fields
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        Value::String(text) => serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|value| value.get("name")?.as_str().map(str::to_owned))
+            .or(Some(text)),
+        _ => None,
+    };
     Some(Update::Default(name))
 }
 
@@ -432,5 +468,33 @@ mod tests {
             graph.update(Update::Default(Some("other".into()))),
             Touched::default()
         );
+    }
+
+    #[test]
+    fn a_metadata_update_without_the_default_says_nothing() {
+        let json = r#"{"id":36,"type":"PipeWire:Interface:Metadata","props":{"metadata.name":"default"},"metadata":[{"subject":0,"key":"default.configured.audio.sink","type":"Spa:String:JSON","value":{"name":"x"}}]}"#;
+        assert_eq!(parse_object(json), None);
+    }
+
+    #[test]
+    fn a_device_update_without_profiles_keeps_them() {
+        let mut graph = graph();
+        let only_route = r#"{"id":47,"type":"PipeWire:Interface:Device","info":{"props":{"device.description":"Built-in Audio","media.class":"Audio/Device"},"params":{"Route":[{"index":0}]}}}"#;
+        graph.update(parse_object(only_route).unwrap());
+        let snapshot = graph.snapshot();
+        let profiles = &snapshot.cards[0].profiles;
+        assert_eq!(profiles.len(), 3);
+        assert!(profiles.iter().any(|profile| profile.active));
+        // and one that only says the profile in use moves the mark
+        let profile_only = r#"{"id":47,"type":"PipeWire:Interface:Device","info":{"props":{"device.description":"Built-in Audio","media.class":"Audio/Device"},"params":{"Profile":[{"index":2,"name":"output:hdmi-stereo"}]}}}"#;
+        graph.update(parse_object(profile_only).unwrap());
+        let snapshot = graph.snapshot();
+        let active: Vec<_> = snapshot.cards[0]
+            .profiles
+            .iter()
+            .filter(|profile| profile.active)
+            .map(|profile| profile.id.as_str())
+            .collect();
+        assert_eq!(active, ["2"]);
     }
 }
