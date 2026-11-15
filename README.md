@@ -210,10 +210,13 @@ only while it is shown.
   needs something it has not got: the emulator a game needs (it asks whether to install it
   first), or the default theme, bezels and shaders before EmulationStation starts (it runs the
   download at once and closes when it works). It is a process of its own, not the daemon's, so
-  it works before EmulationStation is up and leaves nothing resident. A card in the menu's
-  colours (EmulationStation's defaults without its theme) over Retrobox's background picture
-  holds the question, the buttons (controller, keyboard, mouse or touch) and the installer's
-  output, which runs in a pseudo-terminal: what asks for something, such as sudo's password,
+  it works before EmulationStation is up and leaves nothing resident. A rounded window in
+  the menu's colours (EmulationStation's defaults without its theme) over Retrobox's background
+  picture holds the question (in capitals, like EmulationStation's dialogs), the buttons
+  (controller, keyboard, mouse or touch; the chosen one filled, the one under the pointer
+  outlined) and the installer's output, with the help prompts below it. The question alone
+  makes a small window, which grows once the installer runs. The output runs in a
+  pseudo-terminal: what asks for something, such as sudo's password,
   gets the keyboard's keys, as in any terminal. Page Up/Down and the wheel scroll the output;
   a selection made with the pointer is copied when it ends (Ctrl+Shift+C copies it, or all
   the output; Ctrl+Shift+A selects it all), with `wl-copy`, `xclip` or `xsel`. The full output

@@ -349,6 +349,7 @@ impl State {
             .map(|choice| texts.text(choice.text_key()))
             .collect();
         let show_output = task.model.phase() != Phase::Ask;
+        ui.show_buttons(!buttons.is_empty());
         let (_, furthest) = ui.rows(&task.terminal, task.scroll);
         task.scroll = task.scroll.min(furthest);
         let pixmap = ui.render(

@@ -1743,7 +1743,13 @@ fn fill_path(pixmap: &mut Pixmap, path: &tiny_skia::Path, color: Rgba) {
 }
 
 /// A rectangle with rounded corners.
-fn rounded_rect(x: f32, y: f32, width: f32, height: f32, radius: f32) -> Option<tiny_skia::Path> {
+pub(super) fn rounded_rect(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radius: f32,
+) -> Option<tiny_skia::Path> {
     let r = radius.min(width / 2.0).min(height / 2.0);
     let (right, bottom) = (x + width, y + height);
     let mut builder = PathBuilder::new();

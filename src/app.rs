@@ -360,11 +360,12 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
     }
 
     // the dim comes first: its size is the screen's, which the rest is sized from
+    // (the task screen is drawn on it: on Wayland it is what gets the keys)
     let dim = display.create_piece(Spec {
         anchor: Anchor::all(),
         size: (0, 0),
         margin: [0; 4],
-        keyboard: false,
+        keyboard: task.is_some(),
         fade: true,
     });
     if let Some(window) = dim.x11_window()

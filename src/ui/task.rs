@@ -1,23 +1,40 @@
-//! The task screen's drawing: a card in the menu's colours over Retrobox's
-//! background, with a message, buttons, the installer's output in a box and
-//! the help prompts.
+//! The task screen's drawing: a small rounded window in the menu's colours
+//! over Retrobox's background, like EmulationStation's dialogs: the question
+//! (in capitals), the installer's output in a box when there is any, the
+//! buttons at the bottom, and the help prompts below the window.
 //!
-//! What does not change (the background and the card) is drawn once; a frame
-//! copies it and draws the rest. The same geometry answers where a click
-//! lands, so drawing and hit testing cannot disagree.
+//! The question alone makes a compact window; once the installer runs, the
+//! window grows to hold its output. What does not change (the background) is
+//! drawn once; a frame copies it and draws the rest. The same geometry
+//! answers where a click lands, so drawing and hit testing cannot disagree.
 
 use std::path::Path;
 
 use cosmic_text::Align;
-use tiny_skia::{FilterQuality, Paint, Pixmap, PixmapPaint, Rect as SkiaRect, Transform};
+use tiny_skia::{
+    FilterQuality, Paint, PathBuilder, Pixmap, PixmapPaint, Rect as SkiaRect, Stroke, Transform,
+};
 
 use super::help::{Help, Prompt};
+use super::panel::rounded_rect;
 use super::text::{FontRef, Fonts, TextBox};
 use crate::task::terminal::{Position, Row, Terminal};
 use crate::theme::{MenuTheme, Rgba};
 
-/// The card, relative to the screen.
-const CARD: (f32, f32, f32, f32) = (0.1, 0.07, 0.8, 0.82);
+/// The window with the installer's output: its left edge, top and width,
+/// relative to the screen.
+const FULL_WINDOW: (f32, f32, f32) = (0.08, 0.06, 0.84);
+/// The window of the question alone: its width, relative to the screen.
+const COMPACT_WIDTH: f32 = 0.5;
+/// The windows' corners, relative to the screen's smaller side.
+const RADIUS: f32 = 0.012;
+/// A button's least width, and the gap between buttons, relative to the
+/// screen's width.
+const BUTTON_MIN_WIDTH: f32 = 0.085;
+const BUTTON_GAP: f32 = 0.008;
+/// The line's width (separators, the pointed button's outline), relative to
+/// the screen's smaller side.
+const LINE_WIDTH: f32 = 0.0016;
 /// The space inside the card, relative to the screen's smaller side.
 const PADDING: f32 = 0.03;
 /// Font sizes, relative to the screen's smaller side.
@@ -28,9 +45,9 @@ const TERMINAL_SIZE: f32 = 0.027;
 const LINE_SPACING: f32 = 1.35;
 /// The width of an average letter, relative to the font's size (the
 /// terminal wraps by columns of this width, the font being proportional).
-const LETTER_WIDTH: f32 = 0.5;
-/// What shows of the background behind the card, as an opacity.
-const CARD_OPACITY: u8 = 0xF0;
+const LETTER_WIDTH: f32 = 0.6;
+/// How opaque the window is.
+const WINDOW_OPACITY: u8 = 0xF4;
 /// When there is no picture.
 const PLAIN_BACKGROUND: Rgba = Rgba(0x2020_20FF);
 /// The terminal box's tint, and the selection's.
@@ -66,6 +83,53 @@ pub struct Frame<'a> {
     pub prompts: &'a [Prompt],
 }
 
+/// Where the parts of a window go.
+#[derive(Debug, Clone, Copy)]
+struct Layout {
+    window: Rect,
+    message: Rect,
+    /// The height of the line under the message.
+    line: f32,
+    buttons_row: Rect,
+    terminal: Rect,
+}
+
+impl Layout {
+    /// The parts of a `window`, the question at the top, the buttons at the
+    /// bottom and, between the two, the room for the output box.
+    fn new(window: Rect, padding: f32, message_height: f32, button_height: f32) -> Self {
+        let inner_x = window.x + padding;
+        let inner_width = window.width - padding * 2.0;
+        let message = Rect {
+            x: inner_x,
+            y: window.y + padding,
+            width: inner_width,
+            height: message_height,
+        };
+        let line = message.y + message.height + padding * 0.5;
+        let buttons_row = Rect {
+            x: inner_x,
+            y: window.y + window.height - padding - button_height,
+            width: inner_width,
+            height: button_height,
+        };
+        let top = line + padding * 0.5;
+        let terminal = Rect {
+            x: inner_x,
+            y: top,
+            width: inner_width,
+            height: (buttons_row.y - padding * 0.5 - top).max(0.0),
+        };
+        Self {
+            window,
+            message,
+            line,
+            buttons_row,
+            terminal,
+        }
+    }
+}
+
 /// The screen's geometry and what is drawn once.
 pub struct TaskUi {
     size: (u32, u32),
@@ -74,13 +138,19 @@ pub struct TaskUi {
     message_font: FontRef,
     button_font: FontRef,
     terminal_font: FontRef,
-    message: Rect,
-    buttons_row: Rect,
+    /// The window with the installer's output, and the one of the question
+    /// alone.
+    full: Layout,
+    compact: Layout,
+    /// The output box: taller while there are no buttons under it.
     terminal: Rect,
-    help_top: f32,
+    /// The room under the output box that buttons use.
+    buttons_band: f32,
     cell: (f32, f32),
+    line_width: f32,
+    radius: f32,
+    window_color: Rgba,
     text: crate::theme::TextStyle,
-    title_color: Rgba,
     /// The buttons as last drawn.
     buttons: Vec<Rect>,
 }
@@ -91,6 +161,41 @@ fn font(path: &Path, size: f32) -> FontRef {
         size,
         line_height: (size * LINE_SPACING).round(),
         bold: false,
+    }
+}
+
+/// A rectangle with rounded corners.
+fn fill_rounded(pixmap: &mut Pixmap, area: Rect, radius: f32, color: Rgba) {
+    if let Some(path) = rounded_rect(area.x, area.y, area.width, area.height, radius) {
+        let mut paint = Paint::default();
+        paint.set_color(color.to_color());
+        paint.anti_alias = true;
+        pixmap.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
+}
+
+/// The outline of a rectangle.
+fn outline(pixmap: &mut Pixmap, area: Rect, width: f32, color: Rgba) {
+    if let Some(rect) = SkiaRect::from_xywh(area.x, area.y, area.width, area.height) {
+        let mut paint = Paint::default();
+        paint.set_color(color.to_color());
+        let stroke = Stroke {
+            width,
+            ..Stroke::default()
+        };
+        pixmap.stroke_path(
+            &PathBuilder::from_rect(rect),
+            &paint,
+            &stroke,
+            Transform::identity(),
+            None,
+        );
     }
 }
 
@@ -133,46 +238,40 @@ impl TaskUi {
                 Err(err) => log::warn!("cannot read the background {}: {err}", path.display()),
             }
         }
-        let card = Rect {
-            x: width * CARD.0,
-            y: height * CARD.1,
-            width: width * CARD.2,
-            height: height * CARD.3,
-        };
-        fill(
-            &mut base,
-            card,
-            theme.background.center_color.with_alpha(CARD_OPACITY),
-        );
-
         let padding = smaller * PADDING;
-        let message_font = font(&theme.title.font.path, smaller * MESSAGE_SIZE).bold();
+        let message_font = font(&theme.text.font.path, smaller * MESSAGE_SIZE);
         let button_font = font(&theme.text.font.path, smaller * BUTTON_SIZE);
         let terminal_font = font(&theme.text_small.font.path, smaller * TERMINAL_SIZE);
-        let inner = Rect {
-            x: card.x + padding,
-            y: card.y + padding,
-            width: card.width - padding * 2.0,
-            height: card.height - padding * 2.0,
-        };
-        let message = Rect {
-            height: message_font.line_height * 2.0,
-            ..inner
-        };
-        let buttons_row = Rect {
-            y: message.y + message.height + padding * 0.5,
-            height: (button_font.line_height * 1.5).round(),
-            ..inner
-        };
         let help = Help::new(theme, size);
-        let help_height = help.height() as f32;
-        let help_top = card.y + card.height - padding - help_height;
-        let box_top = buttons_row.y + buttons_row.height + padding * 0.5;
-        let terminal = Rect {
-            y: box_top,
-            height: (help_top - padding * 0.5 - box_top).max(terminal_font.line_height),
-            ..inner
-        };
+        // the help goes where the theme puts it: the windows stay above it
+        let room = (help.place(1).1 as f32 - padding * 0.6).min(height * 0.96);
+        let message_height = message_font.line_height;
+        let button_height = (button_font.line_height * 1.3).round();
+        let top = height * FULL_WINDOW.1;
+        let full = Layout::new(
+            Rect {
+                x: width * FULL_WINDOW.0,
+                y: top,
+                width: width * FULL_WINDOW.2,
+                height: (room - top).max(padding * 8.0),
+            },
+            padding,
+            message_height,
+            button_height,
+        );
+        let compact_height = padding * 3.4 + message_height + button_height;
+        let compact_width = width * COMPACT_WIDTH;
+        let compact = Layout::new(
+            Rect {
+                x: (width - compact_width) / 2.0,
+                y: ((room - compact_height) / 2.0).max(0.0),
+                width: compact_width,
+                height: compact_height,
+            },
+            padding,
+            message_height,
+            button_height,
+        );
         let cell = (
             (terminal_font.size * LETTER_WIDTH).max(1.0),
             terminal_font.line_height,
@@ -184,13 +283,15 @@ impl TaskUi {
             message_font,
             button_font,
             terminal_font,
-            message,
-            buttons_row,
-            terminal,
-            help_top,
+            terminal: full.terminal,
+            buttons_band: padding * 0.5 + button_height,
+            full,
+            compact,
             cell,
+            line_width: (smaller * LINE_WIDTH).max(1.0),
+            radius: smaller * RADIUS,
+            window_color: theme.background.center_color.with_alpha(WINDOW_OPACITY),
             text: theme.text.clone(),
-            title_color: theme.title.color,
             buttons: Vec::new(),
         })
     }
@@ -203,6 +304,15 @@ impl TaskUi {
     /// The space between the box's edge and its text.
     fn inset(&self) -> f32 {
         self.cell.0
+    }
+
+    /// Whether buttons share the window with the output box: without them
+    /// the box takes their room. Call it before anything asks for rows.
+    pub fn show_buttons(&mut self, shown: bool) {
+        self.terminal = self.full.terminal;
+        if !shown {
+            self.terminal.height += self.buttons_band;
+        }
     }
 
     /// The rows the output box shows.
@@ -271,22 +381,40 @@ impl TaskUi {
     /// Draw a frame.
     pub fn render(&mut self, fonts: &mut Fonts, frame: &Frame) -> Pixmap {
         let mut pixmap = self.base.clone();
+        let layout = if frame.terminal.is_some() {
+            self.full
+        } else {
+            self.compact
+        };
+        fill_rounded(&mut pixmap, layout.window, self.radius, self.window_color);
+        // capitals, as everything in EmulationStation's menus
+        let message = frame.message.to_uppercase();
         let (message_font, message) =
-            fonts.fit(&self.message_font, frame.message, self.message.width, 0.6);
+            fonts.fit(&self.message_font, &message, layout.message.width, 0.6);
         fonts.draw(
             &mut pixmap,
             &message_font,
             &message,
             TextBox {
-                x: self.message.x,
-                y: self.message.y,
-                width: self.message.width,
-                height: self.message.height,
+                x: layout.message.x,
+                y: layout.message.y,
+                width: layout.message.width,
+                height: layout.message.height,
                 align: Align::Center,
             },
-            self.title_color,
+            self.text.color,
         );
-        self.draw_buttons(&mut pixmap, fonts, frame);
+        fill(
+            &mut pixmap,
+            Rect {
+                x: layout.window.x,
+                y: layout.line,
+                width: layout.window.width,
+                height: self.line_width,
+            },
+            self.text.separator_color,
+        );
+        self.draw_buttons(&mut pixmap, fonts, frame, layout.buttons_row);
         if let Some((terminal, scroll)) = frame.terminal {
             self.draw_terminal(&mut pixmap, fonts, terminal, scroll);
         }
@@ -294,28 +422,37 @@ impl TaskUi {
         pixmap
     }
 
-    fn draw_buttons(&mut self, pixmap: &mut Pixmap, fonts: &mut Fonts, frame: &Frame) {
-        let row = self.buttons_row;
-        let padding = self.button_font.size;
-        let widths: Vec<f32> = frame
+    fn draw_buttons(&mut self, pixmap: &mut Pixmap, fonts: &mut Fonts, frame: &Frame, row: Rect) {
+        let labels: Vec<String> = frame
             .buttons
             .iter()
-            .map(|label| fonts.measure(&self.button_font, label) + padding * 2.0)
+            .map(|label| label.to_uppercase())
             .collect();
-        let gap = padding;
-        let total = widths.iter().sum::<f32>() + gap * widths.len().saturating_sub(1) as f32;
+        let padding = self.button_font.size;
+        let screen_width = self.size.0 as f32;
+        // all of them as wide as the widest, and not narrower than a least
+        let width = labels
+            .iter()
+            .map(|label| fonts.measure(&self.button_font, label) + padding * 2.0)
+            .fold(screen_width * BUTTON_MIN_WIDTH, f32::max);
+        let gap = screen_width * BUTTON_GAP;
+        let total = width * labels.len() as f32 + gap * labels.len().saturating_sub(1) as f32;
         let mut x = row.x + (row.width - total) / 2.0;
         self.buttons.clear();
-        for (index, (label, width)) in frame.buttons.iter().zip(&widths).enumerate() {
+        for (index, label) in labels.iter().enumerate() {
             let rect = Rect {
                 x,
                 y: row.y,
-                width: *width,
+                width,
                 height: row.height,
             };
-            let chosen = frame.focus == Some(index) || frame.hover == Some(index);
+            // the chosen one (controller, keyboard) is filled, as in ES; the
+            // one under the pointer is outlined
+            let chosen = frame.focus == Some(index);
             if chosen {
                 fill(pixmap, rect, self.text.selector_color);
+            } else if frame.hover == Some(index) {
+                outline(pixmap, rect, self.line_width, self.text.color);
             }
             fonts.draw(
                 pixmap,
@@ -323,9 +460,9 @@ impl TaskUi {
                 label,
                 TextBox {
                     x: rect.x,
-                    y: rect.y,
+                    y: rect.y + (rect.height - self.button_font.line_height) / 2.0,
                     width: rect.width,
-                    height: rect.height,
+                    height: self.button_font.line_height,
                     align: Align::Center,
                 },
                 if chosen {
@@ -347,7 +484,12 @@ impl TaskUi {
         scroll: usize,
     ) {
         let area = self.terminal;
-        fill(pixmap, area, self.text.color.with_alpha(BOX_OPACITY));
+        fill_rounded(
+            pixmap,
+            area,
+            self.radius * 0.6,
+            self.text.color.with_alpha(BOX_OPACITY),
+        );
         let (rows, _) = self.rows(terminal, scroll);
         let selection = terminal.selection();
         for (index, row) in rows.iter().enumerate() {
@@ -391,12 +533,12 @@ impl TaskUi {
     }
 
     fn draw_help(&mut self, pixmap: &mut Pixmap, fonts: &mut Fonts, prompts: &[Prompt]) {
-        let max = self.size.0 as f32 * CARD.2;
+        let max = self.size.0 as f32 * FULL_WINDOW.2;
         if let Some(row) = self.help.render(fonts, prompts, max, None) {
-            let x = (self.size.0 as f32 * CARD.0 + (max - row.width() as f32) / 2.0).round() as i32;
+            let (x, y) = self.help.place(row.width());
             pixmap.draw_pixmap(
                 x,
-                self.help_top.round() as i32,
+                y,
                 row.as_ref(),
                 &PixmapPaint::default(),
                 Transform::identity(),
@@ -459,6 +601,41 @@ mod tests {
         assert_eq!(selected_span(&ROW, at(1, 0), at(2, 9)), None);
         assert_eq!(selected_span(&ROW, at(3, 20), at(4, 3)), None);
         assert_eq!(selected_span(&ROW, at(3, 4), at(3, 10)), None);
+    }
+
+    #[test]
+    fn the_parts_of_a_window_stay_inside_it() {
+        let window = Rect {
+            x: 100.0,
+            y: 50.0,
+            width: 800.0,
+            height: 500.0,
+        };
+        let layout = Layout::new(window, 20.0, 40.0, 50.0);
+        let inside = |part: Rect| {
+            part.x >= window.x
+                && part.y >= window.y
+                && part.x + part.width <= window.x + window.width
+                && part.y + part.height <= window.y + window.height
+        };
+        assert!(inside(layout.message));
+        assert!(inside(layout.buttons_row));
+        assert!(inside(layout.terminal));
+        // the output box lies between the line under the message and the buttons
+        assert!(layout.terminal.y > layout.line);
+        assert!(layout.terminal.y + layout.terminal.height < layout.buttons_row.y);
+    }
+
+    #[test]
+    fn a_window_too_small_for_its_parts_has_an_empty_output_box() {
+        let window = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 300.0,
+            height: 100.0,
+        };
+        let layout = Layout::new(window, 20.0, 40.0, 50.0);
+        assert!(layout.terminal.height.abs() < f32::EPSILON);
     }
 
     #[test]
