@@ -124,11 +124,11 @@ only while it is shown.
   screen what the buttons do, in the theme's help style (`helpsystem` of its system view:
   position, colours, font and icons, the theme's own icons included), which ES exports with
   the menu theme. Without it they look like ES's defaults, with the icons of Retrobox's ES.
-* **On-screen keyboard** (`retrobox-overlay --osk`, first version). Hotkey+X (Nintendo's X) in an
+* **On-screen keyboard** (`retrobox-overlay --osk`, first version). Hotkey+Y (Nintendo's Y) in an
   emulator or app whose feature file in retrobox-core lists `osk` (the web browsers): a keyboard
   slides up from the bottom of the screen, in the menu's theme colours and font, over the game
   without dimming it. The d-pad or stick moves over the keys, A types, Y is backspace, X space,
-  Start enter, L and R move the cursor, R2 is shift (for one character), L2 the symbols layer,
+  Start enter, L and R move the cursor, R2 toggles shift (locked on at the start), L2 the symbols layer,
   Home closes it, and a click or a tap outside the keyboard too. It never takes the keyboard
   focus: the game keeps it, and the keys are typed on the launcher's virtual keyboard through the
   control channel (`key down|up`), so the overlay and the keyboard are never open together (they

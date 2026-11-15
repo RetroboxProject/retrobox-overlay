@@ -1289,8 +1289,7 @@ impl State {
     /// held key does (the compositor repeats the keyboard's).
     fn pad_input(&mut self, input: Input) {
         let repeats = matches!(input.nav, Nav::Up | Nav::Down | Nav::Left | Nav::Right)
-            || (self.osk.is_some()
-                && matches!(input.nav, Nav::Backspace | Nav::ZoomOut | Nav::ZoomIn))
+            || self.osk_repeats(input.nav)
             || (self.manual_is_open() && matches!(input.nav, Nav::PrevPage | Nav::NextPage));
         if repeats && (input.pressed || self.repeat.is_some_and(|(nav, _)| nav == input.nav)) {
             if let Some((_, token)) = self.repeat.take() {
@@ -1429,6 +1428,19 @@ impl State {
         };
         if let Some(key) = key {
             self.osk_activate(key);
+        }
+    }
+
+    /// Whether holding this button on the on-screen keyboard repeats: the
+    /// keys that type do, the ones that switch something do not.
+    fn osk_repeats(&self, nav: Nav) -> bool {
+        let Some((osk, _)) = &self.osk else {
+            return false;
+        };
+        match nav {
+            Nav::Backspace | Nav::Space | Nav::Enter | Nav::ZoomOut | Nav::ZoomIn => true,
+            Nav::Confirm => osk.types(osk.selected()),
+            _ => false,
         }
     }
 

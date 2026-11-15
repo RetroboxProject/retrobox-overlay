@@ -31,13 +31,17 @@ const ROWS: f32 = 5.0;
 const ROW_PITCH: f32 = 0.74;
 /// The space around the grid, and between keys, relative to a key's width.
 const PADDING: f32 = 0.15;
-const GAP: f32 = 0.06;
+const GAP: f32 = 0.1;
 /// The keyboard's height, relative to the screen's.
 const MAX_HEIGHT: f32 = 0.4;
 /// Key caps: the opacity of the text colour over the background, normal,
 /// pointed at and active (shift, symbols).
 const CAP_ALPHA: u8 = 0x26;
-const HOVER_ALPHA: u8 = 0x50;
+const HOVER_ALPHA: u8 = 0x60;
+/// The selected key's ring: its thickness and its gap from the key,
+/// relative to a key's width.
+const RING_WIDTH: f32 = 0.035;
+const RING_GAP: f32 = 0.02;
 const ACTIVE_ALPHA: u8 = 0x70;
 /// Where the grid starts, in keys: the first letter column.
 const LEFT: f32 = SIDE;
@@ -52,17 +56,6 @@ pub struct Labels {
     pub close: String,
     pub accents: String,
 }
-
-/// The help icon (as the theme names it) that stands for a controller
-/// button on the keys; the others are written.
-const BADGE_ICONS: [(&str, &str, &str); 6] = [
-    ("A", "a", "button_a.svg"),
-    ("X", "x", "button_x.svg"),
-    ("Y", "y", "button_y.svg"),
-    ("L", "l", "button_l.svg"),
-    ("R", "r", "button_r.svg"),
-    ("+", "start", "button_start.svg"),
-];
 
 /// A badge's icon, plain and on a selected key.
 type BadgeIcon = (Pixmap, Pixmap);
@@ -108,7 +101,9 @@ enum Layer {
 struct Key {
     action: Action,
     rect: (f32, f32, f32, f32),
-    badge: Option<&'static str>,
+    /// The help icon's name (`y`, `start`...), written when the theme has
+    /// no such icon.
+    badge: Option<String>,
 }
 
 impl Key {
@@ -146,9 +141,9 @@ pub struct Osk {
     hovered: Option<usize>,
     layout: Layout,
     labels: Labels,
-    icons: HashMap<&'static str, BadgeIcon>,
+    icons: HashMap<String, BadgeIcon>,
     layer: Layer,
-    /// Shift is on for the next character.
+    /// Shift is locked on (capitals) until pressed again; it starts on.
     shift: bool,
     background: Rgba,
     separator: Rgba,
@@ -156,6 +151,8 @@ pub struct Osk {
     selected_text: Rgba,
     selector: Rgba,
     font: FontRef,
+    /// For the keys with a word on them.
+    word_font: FontRef,
     badge_font: FontRef,
     unit: f32,
 }
@@ -171,7 +168,7 @@ impl Osk {
             .max(8.0);
         let width = ((COLUMNS + 2.0 * PADDING) * unit).round();
         let height = ((ROWS * ROW_PITCH + 2.0 * PADDING) * unit).round();
-        let keys = Self::layout(unit);
+        let keys = Self::layout(unit, &theme.help.back);
         let selected = keys
             .iter()
             .position(|key| key.action == Action::Char(22))
@@ -183,6 +180,7 @@ impl Osk {
             line_height: size * 1.3,
             bold: false,
         };
+        let icons = Self::badge_icons(theme, &keys, (unit * 0.26).round() as u32);
         Self {
             width: width as u32,
             height: height as u32,
@@ -191,47 +189,48 @@ impl Osk {
             hovered: None,
             layout,
             labels,
-            icons: Self::badge_icons(theme, (unit * 0.26).round() as u32),
+            icons,
             layer: Layer::Letters,
-            shift: false,
+            shift: true,
             background: theme.background.center_color,
             separator: style.separator_color,
             text_color: style.color,
             selected_text: style.selected_color,
             selector: style.selector_color,
             font: font(unit * 0.4),
+            word_font: font(unit * 0.28),
             badge_font: font(unit * 0.2),
             unit,
         }
     }
 
-    /// The theme's icons for the controller buttons, drawn in the text
-    /// colour and in the selected one.
-    fn badge_icons(theme: &MenuTheme, height: u32) -> HashMap<&'static str, BadgeIcon> {
+    /// The theme's icons for the controller buttons the keys name, drawn in
+    /// the text colour and in the selected one.
+    fn badge_icons(theme: &MenuTheme, keys: &[Key], height: u32) -> HashMap<String, BadgeIcon> {
         let fallback = Path::new(crate::theme::ES_HELP_ICONS);
-        BADGE_ICONS
-            .iter()
-            .filter_map(|(badge, name, file)| {
+        keys.iter()
+            .filter_map(|key| key.badge.as_ref())
+            .filter_map(|name| {
                 let path = theme
                     .help
                     .icons
-                    .get(*name)
+                    .get(name)
                     .cloned()
-                    .unwrap_or_else(|| fallback.join(file));
+                    .unwrap_or_else(|| fallback.join(format!("button_{name}.svg")));
                 let draw = |tint| super::help::draw_svg(&path, height, tint);
                 let normal = draw(theme.text.color.with_alpha(0xB0))?;
                 let selected = draw(theme.text.selected_color.with_alpha(0xB0))?;
-                Some((*badge, (normal, selected)))
+                Some((name.clone(), (normal, selected)))
             })
             .collect()
     }
 
     /// The keys' places, in pixels.
-    fn layout(unit: f32) -> Vec<Key> {
+    fn layout(unit: f32, accents_icon: &str) -> Vec<Key> {
         let pitch = unit * ROW_PITCH;
         let (pad, gap) = (unit * PADDING, unit * GAP);
         let mut keys = Vec::new();
-        let mut add = |action, x: f32, y: f32, w: f32, h: f32, badge| {
+        let mut add = |action, x: f32, y: f32, w: f32, h: f32, badge: Option<&str>| {
             keys.push(Key {
                 action,
                 rect: (
@@ -240,15 +239,15 @@ impl Osk {
                     w * unit - gap,
                     h * pitch - gap,
                 ),
-                badge,
+                badge: badge.map(str::to_owned),
             });
         };
-        add(Action::Symbols, 0.0, 0.0, SIDE, 1.0, Some("L2"));
-        add(Action::CursorLeft, 0.0, 1.0, SIDE, 2.0, Some("L"));
-        add(Action::Shift, 0.0, 3.0, SIDE, 1.0, Some("R2"));
-        add(Action::Backspace, LEFT + 10.0, 0.0, SIDE, 1.0, Some("Y"));
-        add(Action::CursorRight, LEFT + 10.0, 1.0, SIDE, 2.0, Some("R"));
-        add(Action::Enter, LEFT + 10.0, 3.0, SIDE, 1.0, Some("+"));
+        add(Action::Symbols, 0.0, 0.0, SIDE, 1.0, Some("l2"));
+        add(Action::CursorLeft, 0.0, 1.0, SIDE, 2.0, Some("l"));
+        add(Action::Shift, 0.0, 3.0, SIDE, 1.0, Some("r2"));
+        add(Action::Backspace, LEFT + 10.0, 0.0, SIDE, 1.0, Some("y"));
+        add(Action::CursorRight, LEFT + 10.0, 1.0, SIDE, 2.0, Some("r"));
+        add(Action::Enter, LEFT + 10.0, 3.0, SIDE, 1.0, Some("start"));
         for row in 0..4 {
             for column in 0..10 {
                 add(
@@ -261,9 +260,17 @@ impl Osk {
                 );
             }
         }
-        add(Action::Close, LEFT, 4.0, 2.0, 1.0, Some("Home"));
-        add(Action::Space, LEFT + 2.0, 4.0, 6.0, 1.0, Some("X"));
-        add(Action::Accents, LEFT + 8.0, 4.0, 2.0, 1.0, Some("A"));
+        add(Action::Close, LEFT, 4.0, 2.0, 1.0, Some("home"));
+        add(Action::Space, LEFT + 2.0, 4.0, 6.0, 1.0, Some("x"));
+        // the cancel button, wherever the theme has put it
+        add(
+            Action::Accents,
+            LEFT + 8.0,
+            4.0,
+            2.0,
+            1.0,
+            Some(accents_icon),
+        );
         keys
     }
 
@@ -347,6 +354,19 @@ impl Osk {
         self.selected
     }
 
+    /// Whether a key types (and so repeats when held).
+    pub fn types(&self, key: usize) -> bool {
+        matches!(
+            self.keys[key].action,
+            Action::Char(_)
+                | Action::Backspace
+                | Action::Space
+                | Action::Enter
+                | Action::CursorLeft
+                | Action::CursorRight
+        )
+    }
+
     /// Press a key.
     pub fn activate(&mut self, key: usize) -> Activation {
         let tap = |code| Activation {
@@ -364,23 +384,16 @@ impl Osk {
             } else {
                 layer
             };
-            osk.shift = false;
             Activation {
                 redraw: true,
                 ..Activation::default()
             }
         };
         match self.keys[key].action {
-            Action::Char(slot) => {
-                let taps = self.slot(slot).steps.clone();
-                // shift is for one character
-                let redraw = std::mem::take(&mut self.shift);
-                Activation {
-                    taps,
-                    redraw,
-                    ..Activation::default()
-                }
-            }
+            Action::Char(slot) => Activation {
+                taps: self.slot(slot).steps.clone(),
+                ..Activation::default()
+            },
             Action::Backspace => tap("KEY_BACKSPACE"),
             Action::Space => tap("KEY_SPACE"),
             Action::Enter => tap("KEY_ENTER"),
@@ -440,17 +453,16 @@ impl Osk {
         let radius = self.unit * 0.12;
         for (index, key) in self.keys.iter().enumerate() {
             let selected = index == self.selected;
-            let alpha = if self.is_on(key.action) {
-                ACTIVE_ALPHA
-            } else if self.hovered == Some(index) {
-                HOVER_ALPHA
-            } else {
-                CAP_ALPHA
-            };
+            // the selected key is the one a button press types: the selector's
+            // colour and a ring; the one under the pointer is only tinted
             let (cap, text) = if selected {
                 (self.selector, self.selected_text)
+            } else if self.hovered == Some(index) {
+                (self.selector.with_alpha(HOVER_ALPHA), self.text_color)
+            } else if self.is_on(key.action) {
+                (self.text_color.with_alpha(ACTIVE_ALPHA), self.text_color)
             } else {
-                (self.text_color.with_alpha(alpha), self.text_color)
+                (self.text_color.with_alpha(CAP_ALPHA), self.text_color)
             };
             // a character this layout cannot type is left blank
             let text = if matches!(key.action, Action::Char(slot) if self.slot(slot).steps.is_empty())
@@ -463,10 +475,30 @@ impl Osk {
             if let Some(path) = rounded_rect(x, y, w, h, radius) {
                 fill_path(&mut pixmap, &path, cap);
             }
+            if selected {
+                // a ring in the text's colour, as the round buttons of the
+                // menu have: it stands out whatever the theme's selector
+                let (grow, width) = (self.unit * RING_GAP, (self.unit * RING_WIDTH).max(2.0));
+                let ring = rounded_rect(
+                    x - grow,
+                    y - grow,
+                    w + 2.0 * grow,
+                    h + 2.0 * grow,
+                    radius + grow,
+                );
+                if let Some(path) = ring {
+                    stroke_path(&mut pixmap, &path, width, self.text_color);
+                }
+            }
             let label_height = if key.badge.is_some() { h * 0.62 } else { h };
+            let font = if matches!(key.action, Action::Char(_)) {
+                &self.font
+            } else {
+                &self.word_font
+            };
             fonts.draw(
                 &mut pixmap,
-                &self.font,
+                font,
                 self.label(key.action),
                 TextBox {
                     x,
@@ -477,7 +509,7 @@ impl Osk {
                 },
                 text,
             );
-            if let Some(badge) = key.badge {
+            if let Some(badge) = &key.badge {
                 self.draw_badge(&mut pixmap, fonts, badge, key.rect, (text, selected));
             }
         }
@@ -490,11 +522,11 @@ impl Osk {
         &self,
         pixmap: &mut Pixmap,
         fonts: &mut Fonts,
-        badge: &str,
+        name: &str,
         (x, y, w, h): (f32, f32, f32, f32),
         (color, selected): (Rgba, bool),
     ) {
-        if let Some((normal, highlighted)) = self.icons.get(badge) {
+        if let Some((normal, highlighted)) = self.icons.get(name) {
             let icon = if selected { highlighted } else { normal };
             let left = x + (w - icon.width() as f32) / 2.0;
             let top = y + h * 0.62 + (self.badge_font.line_height - icon.height() as f32) / 2.0;
@@ -508,6 +540,12 @@ impl Osk {
             );
             return;
         }
+        let written = match name {
+            "start" => "+".to_owned(),
+            "home" => "Home".to_owned(),
+            other => other.to_uppercase(),
+        };
+        let badge = written.as_str();
         let text_width = fonts.measure(&self.badge_font, badge);
         let line = self.badge_font.line_height;
         let box_width = (text_width + self.unit * 0.2).max(line);
@@ -545,6 +583,17 @@ fn fill_rect(pixmap: &mut Pixmap, (x, y, width, height): (f32, f32, f32, f32), c
         paint.set_color(color.to_color());
         pixmap.fill_rect(rect, &paint, Transform::identity(), None);
     }
+}
+
+fn stroke_path(pixmap: &mut Pixmap, path: &tiny_skia::Path, width: f32, color: Rgba) {
+    let mut paint = Paint::default();
+    paint.set_color(color.to_color());
+    paint.anti_alias = true;
+    let stroke = Stroke {
+        width,
+        ..Stroke::default()
+    };
+    pixmap.stroke_path(path, &paint, &stroke, Transform::identity(), None);
 }
 
 fn fill_path(pixmap: &mut Pixmap, path: &tiny_skia::Path, color: Rgba) {
@@ -594,7 +643,14 @@ mod tests {
         }
     }
 
+    /// A keyboard with shift off (it starts locked on).
     fn osk() -> Osk {
+        let mut osk = capitals_osk();
+        osk.shift = false;
+        osk
+    }
+
+    fn capitals_osk() -> Osk {
         Osk::new(
             &MenuTheme::default(),
             (1920, 1080),
@@ -645,20 +701,14 @@ mod tests {
     }
 
     #[test]
-    fn shift_is_for_one_character() {
-        let mut osk = osk();
-        let shift = osk
-            .keys
-            .iter()
-            .position(|key| key.action == Action::Shift)
-            .unwrap();
-        assert!(osk.activate(shift).redraw);
-        let key = osk
+    fn shift_starts_locked_and_stays() {
+        let mut osk = capitals_osk();
+        let q = osk
             .keys
             .iter()
             .position(|key| key.action == Action::Char(10))
             .unwrap();
-        let typed = osk.activate(key);
+        let typed = osk.activate(q);
         assert_eq!(
             typed.taps,
             vec![Step {
@@ -667,10 +717,16 @@ mod tests {
                 altgr: false
             }]
         );
-        assert!(typed.redraw);
-        let again = osk.activate(key);
-        assert_eq!(again.taps.first().map(|tap| tap.shift), Some(false));
-        assert!(!again.redraw);
+        // still capitals for the next one, until shift is pressed
+        assert!(!typed.redraw);
+        assert!(osk.activate(q).taps[0].shift);
+        let shift = osk
+            .keys
+            .iter()
+            .position(|key| key.action == Action::Shift)
+            .unwrap();
+        assert!(osk.activate(shift).redraw);
+        assert!(!osk.activate(q).taps[0].shift);
     }
 
     #[test]
