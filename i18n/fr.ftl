@@ -43,3 +43,10 @@ help-zoom-in = ZOOM AVANT
 help-zoom-out = ZOOM ARRIÈRE
 help-move = DÉPLACER
 help-page = PAGE
+
+menu-audio = Audio
+audio-output = Périphérique de sortie
+audio-profile = Profil
+audio-no-outputs = Aucune sortie audio trouvée
+audio-loading = Chargement…
+help-audio = AUDIO

@@ -43,3 +43,10 @@ help-zoom-in = ZOOM IN
 help-zoom-out = ZOOM UIT
 help-move = VERPLAATS
 help-page = PAGINA
+
+menu-audio = Audio
+audio-output = Uitvoerapparaat
+audio-profile = Profiel
+audio-no-outputs = Geen audio-uitvoer gevonden
+audio-loading = Laden…
+help-audio = AUDIO

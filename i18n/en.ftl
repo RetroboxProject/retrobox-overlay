@@ -43,3 +43,10 @@ help-zoom-in = ZOOM IN
 help-zoom-out = ZOOM OUT
 help-move = MOVE
 help-page = PAGE
+
+menu-audio = Audio
+audio-output = Output device
+audio-profile = Profile
+audio-no-outputs = No audio outputs found
+audio-loading = Loading…
+help-audio = AUDIO

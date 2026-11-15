@@ -2,6 +2,11 @@
 //! `PipeWire` (`wpctl`) or `PulseAudio` (`pactl`, which also works with
 //! `PipeWire`'s `PulseAudio` server).
 
+pub mod devices;
+pub mod hub;
+mod pipewire;
+mod pulse;
+
 use super::{output, run};
 
 /// The sound server's command line tool.
@@ -23,6 +28,11 @@ const WPCTL_SINK: &str = "@DEFAULT_AUDIO_SINK@";
 const PACTL_SINK: &str = "@DEFAULT_SINK@";
 
 impl Mixer {
+    /// The sound server's tool.
+    pub const fn tool(self) -> Tool {
+        self.tool
+    }
+
     /// The first tool that can read the default output's volume.
     pub fn detect() -> Option<Self> {
         let mixer = [Tool::Wpctl, Tool::Pactl]

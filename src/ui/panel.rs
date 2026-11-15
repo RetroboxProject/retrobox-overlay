@@ -15,6 +15,8 @@
 //! when highlighted for a while, and the sliders (the brightness, the
 //! volume): their icon, the slider and its value. The entries between the
 //! header and those scroll when they do not all fit (smoothly when dragged).
+//! A page can take the entries' place: the save states' slots, or a list of
+//! choices (the audio outputs and profiles).
 //! For touch screens, the rows can be taller than ES's (`row_scale`), the
 //! text staying as it is.
 
@@ -53,6 +55,8 @@ pub enum MenuAction {
     States(StateMode),
     /// Save into, or load, a slot.
     Slot(StateMode, u32),
+    /// Choose a row of the open list page.
+    Choice(usize),
     /// Read the game's manual.
     Manual,
     Quit,
@@ -78,6 +82,52 @@ pub struct SlotPage {
     pub mode: StateMode,
     pub title: String,
     pub slots: Vec<SlotView>,
+}
+
+/// What a row of a list page is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKind {
+    /// A title for the rows under it; it cannot be chosen.
+    Header,
+    /// Something to choose, marked when it is the current one.
+    Choice { checked: bool, enabled: bool },
+}
+
+/// One row of a list page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListRow {
+    pub label: String,
+    pub kind: RowKind,
+}
+
+/// A page of choices, shown instead of the main entries (the audio outputs
+/// and profiles).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListPage {
+    pub title: String,
+    pub rows: Vec<ListRow>,
+}
+
+/// The page shown instead of the main entries.
+enum Page {
+    Slots(SlotPage),
+    List(ListPage),
+}
+
+impl Page {
+    fn title(&self) -> &str {
+        match self {
+            Self::Slots(page) => &page.title,
+            Self::List(page) => &page.title,
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Slots(page) => page.slots.len(),
+            Self::List(page) => page.rows.len(),
+        }
+    }
 }
 
 /// The icons' size, relative to the height of the text's capital letters.
@@ -226,8 +276,9 @@ pub struct Panel {
     selected: Target,
     /// What is under the mouse pointer: highlighted, not selected.
     hovered: Option<Target>,
-    /// The save state page, when open; its slots are `Target::Item`s.
-    page: Option<SlotPage>,
+    /// The page shown instead of the entries, when open; its slots or rows
+    /// are `Target::Item`s.
+    page: Option<Page>,
     /// What was selected, and the scroll, when the page was opened.
     main_selected: Target,
     main_scroll: f32,
@@ -441,10 +492,22 @@ impl Panel {
     /// Whether a target is there on the current page.
     fn exists(&self, target: Target) -> bool {
         match (target, &self.page) {
-            (Target::Item(index), _) => index < self.count(),
+            (Target::Item(index), _) => self.selectable(index),
             (_, Some(_)) => false,
             (Target::Button(index), None) => index < self.buttons.len(),
             (Target::Slider(index), None) => index < self.sliders.len(),
+        }
+    }
+
+    /// Whether an entry (a slot, a row) of the current page can be selected:
+    /// it is there, and is not a header.
+    fn selectable(&self, index: usize) -> bool {
+        match &self.page {
+            Some(Page::List(page)) => page
+                .rows
+                .get(index)
+                .is_some_and(|row| row.kind != RowKind::Header),
+            _ => index < self.count(),
         }
     }
 
@@ -461,7 +524,10 @@ impl Panel {
     /// Where Up and Down stop, in order: the entries, the buttons' row (at
     /// the button last selected) and the sliders.
     fn stops(&self) -> Vec<Target> {
-        let mut stops: Vec<Target> = (0..self.count()).map(Target::Item).collect();
+        let mut stops: Vec<Target> = (0..self.count())
+            .filter(|&index| self.selectable(index))
+            .map(Target::Item)
+            .collect();
         if self.page.is_none() {
             if !self.buttons.is_empty() {
                 stops.push(Target::Button(
@@ -582,16 +648,60 @@ impl Panel {
 
     /// Show a save state page instead of the main entries.
     pub fn open_page(&mut self, page: SlotPage) {
+        let first = page.slots.iter().position(|slot| slot.enabled).unwrap_or(0);
+        self.show_page(Page::Slots(page), first);
+    }
+
+    /// Show a page of choices instead of the main entries, the first choice
+    /// selected.
+    pub fn open_list(&mut self, page: ListPage) {
+        let first = first_choice(&page);
+        self.show_page(Page::List(page), first);
+    }
+
+    fn show_page(&mut self, page: Page, first: usize) {
         self.main_selected = self.selected;
         self.main_scroll = self.scroll;
-        let first = page.slots.iter().position(|slot| slot.enabled).unwrap_or(0);
         self.hovered = None;
         self.page = Some(page);
         self.scroll = 0.0;
         self.set_selected(Target::Item(first));
     }
 
-    /// Whether a save state page is shown.
+    /// Change the rows of the open page of choices (what they say changed):
+    /// row `select` is selected, or the one that was (the same place) when
+    /// there is none; the first choice when that one cannot be. False when no
+    /// page of choices is open.
+    pub fn update_list(&mut self, page: ListPage, select: Option<usize>) -> bool {
+        let Some(Page::List(shown)) = &mut self.page else {
+            return false;
+        };
+        *shown = page;
+        let wanted = select.unwrap_or(match self.selected {
+            Target::Item(index) => index,
+            _ => 0,
+        });
+        self.hovered = None;
+        let target = if self.selectable(wanted) {
+            wanted
+        } else if let Some(Page::List(page)) = &self.page {
+            first_choice(page)
+        } else {
+            0
+        };
+        self.set_selected(Target::Item(target));
+        true
+    }
+
+    /// The row selected on the open list page.
+    pub fn selected_row(&self) -> Option<usize> {
+        match (&self.page, self.selected) {
+            (Some(Page::List(_)), Target::Item(index)) => Some(index),
+            _ => None,
+        }
+    }
+
+    /// Whether a page is shown.
     pub const fn page_open(&self) -> bool {
         self.page.is_some()
     }
@@ -611,9 +721,7 @@ impl Panel {
 
     /// How many entries (or slots) the current page has.
     fn count(&self) -> usize {
-        self.page
-            .as_ref()
-            .map_or(self.items.len(), |page| page.slots.len())
+        self.page.as_ref().map_or(self.items.len(), Page::len)
     }
 
     /// Taller rows, for fingers: 1 is ES's.
@@ -676,7 +784,7 @@ impl Panel {
 
     /// The height of a row of the current page, with its separator.
     fn pitch(&self) -> f32 {
-        if self.page.is_some() {
+        if matches!(self.page, Some(Page::Slots(_))) {
             self.slot_height()
         } else {
             self.row_height() + self.line()
@@ -771,11 +879,16 @@ impl Panel {
                 .map(|item| item.action)
         };
         match (&self.page, target) {
-            (Some(page), Target::Item(index)) => page
+            (Some(Page::Slots(page)), Target::Item(index)) => page
                 .slots
                 .get(index)
                 .filter(|slot| slot.enabled)
                 .map(|slot| MenuAction::Slot(page.mode, slot.number)),
+            (Some(Page::List(page)), Target::Item(index)) => page
+                .rows
+                .get(index)
+                .filter(|row| matches!(row.kind, RowKind::Choice { enabled: true, .. }))
+                .map(|_| MenuAction::Choice(index)),
             (Some(_), _) => None,
             (None, Target::Item(index)) => entry(&self.items, index),
             (None, Target::Button(index)) => entry(&self.buttons, index),
@@ -810,7 +923,7 @@ impl Panel {
         }
         if y < bottom {
             let index = ((y - top + self.scroll) / self.pitch()) as usize;
-            return (index < self.count()).then_some(Target::Item(index));
+            return self.selectable(index).then_some(Target::Item(index));
         }
         if !self.footer_shown() {
             return None;
@@ -854,7 +967,7 @@ impl Panel {
     /// save state page, the page and the game.
     fn header_texts(&self) -> (&str, &str) {
         match &self.page {
-            Some(page) => (&page.title, &self.title),
+            Some(page) => (page.title(), &self.title),
             None => (&self.title, &self.subtitle),
         }
     }
@@ -919,7 +1032,8 @@ impl Panel {
         // the entries first: the header and the footer cover what scrolled
         // past them
         match &self.page {
-            Some(page) => self.draw_slots(&mut pixmap, fonts, page, padding),
+            Some(Page::Slots(page)) => self.draw_slots(&mut pixmap, fonts, page, padding),
+            Some(Page::List(page)) => self.draw_list(&mut pixmap, fonts, page, padding),
             None => self.draw_items(&mut pixmap, fonts, padding),
         }
         self.draw_scrollbar(&mut pixmap);
@@ -1221,6 +1335,67 @@ impl Panel {
         }
     }
 
+    /// A page of choices: a check mark (in the icons' column) on the current
+    /// one, and small titles over the groups of rows.
+    fn draw_list(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, page: &ListPage, padding: f32) {
+        let width = self.width as f32;
+        let inner = width - 2.0 * padding;
+        let line = self.line();
+        let row_height = self.row_height();
+        let icon_size = self.row_icon();
+        let text_x = padding + icon_size + padding * ICON_GAP;
+        let (rows, mut y) = self.shown_rows();
+        for index in rows {
+            let row = &page.rows[index];
+            let label = row.label.to_uppercase();
+            match row.kind {
+                RowKind::Header => {
+                    let (font, label) = fonts.fit(&self.small.font, &label, inner, 0.7);
+                    fonts.draw(
+                        pixmap,
+                        &font,
+                        &label,
+                        TextBox {
+                            x: padding,
+                            y,
+                            width: inner,
+                            height: row_height,
+                            align: Align::Left,
+                        },
+                        self.small.style.color,
+                    );
+                }
+                RowKind::Choice { checked, enabled } => {
+                    let target = Target::Item(index);
+                    self.draw_row_background(pixmap, target, y, row_height);
+                    let color = self.row_color(target, enabled);
+                    if checked {
+                        let top = y + (row_height - icon_size) / 2.0;
+                        draw_icon(pixmap, Icon::Check, icon_size, (padding, top), color);
+                    }
+                    let label_width = inner - (text_x - padding);
+                    let (font, label) = fonts.fit(&self.text.font, &label, label_width, 0.7);
+                    fonts.draw(
+                        pixmap,
+                        &font,
+                        &label,
+                        TextBox {
+                            x: text_x,
+                            y,
+                            width: label_width.max(1.0),
+                            height: row_height,
+                            align: Align::Left,
+                        },
+                        color,
+                    );
+                }
+            }
+            y += row_height;
+            fill(pixmap, 0.0, y, width, line, self.text.style.separator_color);
+            y += line;
+        }
+    }
+
     /// What is pinned at the bottom: the round buttons, then the sliders,
     /// each under a separator.
     fn draw_footer(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, padding: f32) {
@@ -1511,6 +1686,14 @@ impl Panel {
             );
         }
     }
+}
+
+/// The first row of a page of choices that can be selected (0 when none).
+fn first_choice(page: &ListPage) -> usize {
+    page.rows
+        .iter()
+        .position(|row| row.kind != RowKind::Header)
+        .unwrap_or(0)
 }
 
 /// A filled circle.

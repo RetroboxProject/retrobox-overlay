@@ -168,6 +168,7 @@ impl Default for HelpTheme {
                 icon("up/down/left/right", "dpad_all.svg"),
                 icon("a", "button_a.svg"),
                 icon("b", "button_b.svg"),
+                icon("x", "button_x.svg"),
                 icon("l", "button_l.svg"),
                 icon("r", "button_r.svg"),
                 icon("lr", "button_lr.svg"),

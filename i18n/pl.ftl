@@ -43,3 +43,10 @@ help-zoom-in = POWIĘKSZENIE
 help-zoom-out = POMNIEJSZENIE
 help-move = PRZESUŃ
 help-page = STRONA
+
+menu-audio = Dźwięk
+audio-output = Urządzenie wyjściowe
+audio-profile = Profil
+audio-no-outputs = Nie znaleziono wyjść audio
+audio-loading = Ładowanie…
+help-audio = DŹWIĘK

@@ -157,6 +157,17 @@ only while it is shown.
     works with PipeWire's PulseAudio server). At 0 the output is muted; above, unmuted. A
     (Enter, a click or a tap off its track) on the volume's slider mutes or unmutes it, its
     level kept: the speaker crossed out and the slider faded; moving it unmutes.
+    The slider follows changes made elsewhere (volume keys, another mixer, a new default
+    output with its own volume) at once: the sound server is watched for events (`pw-dump
+    --monitor` or `pactl subscribe`), never polled.
+  * **Audio page.** X on a controller (while the volume's slider is selected) or F2 (anywhere)
+    opens a page of choices: the system's default output device and, under it, the profile of
+    that device's card (stereo, headset, HDMI...), with a check mark on the current ones. The change
+    is system-wide, as in pavucontrol or KDE's sound settings, and the page follows what changes
+    outside while it is open. PipeWire is used when it is there (`wpctl` and `pw-dump`), else
+    PulseAudio (`pactl` with JSON output, PulseAudio 16 or later). The "off" profile is not
+    offered, so a card cannot be switched off from the overlay; profiles that cannot be used
+    now (nothing plugged in) are shown dimmed. There is no touch entry to the page.
 * **Touch screens and dragging.** A finger is the left button: a tap opens an entry (or sets a
   slider where it lands on its track), a drag up or down scrolls the entries smoothly (pixel by
   pixel), a drag along a slider moves it; the mouse drags the same way. Entries open on
@@ -184,7 +195,8 @@ only while it is shown.
 * retrobox-core and retrobox-emulationstation (the packages depend on both).
 * poppler's command line tools (`poppler-utils`, recommended by the packages) for the manuals;
   without them the menu has no manual entry.
-* For the sliders: `wpctl` (PipeWire) or `pactl` (PulseAudio); `busctl` (systemd) or
+* For the sliders: `wpctl` (PipeWire) or `pactl` (PulseAudio); for the audio page and for
+  following the volume: `pw-dump` (PipeWire's tools) or `pactl`; `busctl` (systemd) or
   `brightnessctl` for a built-in panel's backlight (unless sysfs is writable);
   `kscreen-doctor` to know KDE's primary screen on Wayland with more than one screen on.
 * The menu's look comes from EmulationStation (retrobox-emulationstation exports its resolved

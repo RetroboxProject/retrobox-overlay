@@ -380,7 +380,7 @@ impl State {
             }
             Nav::Back => self.close_manual(),
             Nav::Close => self.outcome = Some(Outcome::Back),
-            Nav::ZoomIn | Nav::ZoomOut => {}
+            Nav::ZoomIn | Nav::ZoomOut | Nav::Options | Nav::Audio => {}
         }
     }
 

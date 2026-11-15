@@ -10,17 +10,25 @@
 //! down asks for many). The brightness waits for the slider to rest, then
 //! glides there from where it is, one way only, rather than jumping or
 //! following every move.
+//!
+//! The volume is also followed from outside: when something else changes it
+//! (the volume keys, another output becoming the default), the sound server
+//! tells (see `audio/hub.rs`), the thread that applies the volume reads it
+//! again, and the slider follows with a `Msg::Volume`.
 
 pub mod audio;
 pub mod brightness;
 pub mod status;
 
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use audio::Mixer;
+use audio::devices::Snapshot;
+use audio::hub::Hub;
 use brightness::Screen;
 
 /// What a slider controls.
@@ -92,7 +100,9 @@ pub struct Found {
 }
 
 impl Found {
-    pub fn new(control: Control) -> Option<Self> {
+    /// `sender`: where the control tells about changes made from outside
+    /// (the volume).
+    pub fn new(control: Control, sender: Option<calloop::channel::Sender<Msg>>) -> Option<Self> {
         let (value, muted) = control.get()?;
         log::info!(
             "{:?}: {:.0} %{}",
@@ -104,7 +114,7 @@ impl Found {
             kind: control.kind(),
             value,
             muted,
-            setter: Setter::new(control),
+            setter: Setter::new(control, sender),
         })
     }
 }
@@ -113,16 +123,32 @@ impl Found {
 pub enum Msg {
     /// A slider's control.
     Found(Found),
+    /// The volume was changed from outside.
+    Volume(VolumeChange),
+    /// The audio menu's backend, following the sound server.
+    Audio(Box<Hub>),
+    /// The outputs and profiles, while the audio page is open.
+    Devices(Snapshot),
     /// The display settings' primary screen (None: none set, or no way
     /// to ask).
     Primary(Option<String>),
 }
 
-/// Read the volume in a thread (`wpctl` or `pactl`).
+/// Read the volume in a thread (`wpctl` or `pactl`), and start following the
+/// sound server.
 pub fn read_volume(sender: calloop::channel::Sender<Msg>) {
     spawn("volume", move || {
-        if let Some(found) = Mixer::detect().and_then(|mixer| Found::new(Control::Volume(mixer))) {
-            sender.send(Msg::Found(found)).ok();
+        let Some(mixer) = Mixer::detect() else {
+            return;
+        };
+        let tool = mixer.tool();
+        let Some(found) = Found::new(Control::Volume(mixer), Some(sender.clone())) else {
+            return;
+        };
+        let hub = Hub::start(tool, found.setter.refresher(), sender.clone());
+        sender.send(Msg::Found(found)).ok();
+        if let Some(hub) = hub {
+            sender.send(Msg::Audio(Box::new(hub))).ok();
         }
     });
 }
@@ -150,14 +176,47 @@ fn spawn(name: &str, work: impl FnOnce() + Send + 'static) {
 pub struct Setter {
     kind: SliderKind,
     shared: Arc<(Mutex<Pending>, Condvar)>,
+    /// Counts the changes asked for: what the thread read before one was
+    /// asked is out of date.
+    generation: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
 }
 
+/// The volume, as the thread that applies it found it changed from outside.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VolumeChange {
+    pub value: f32,
+    pub muted: bool,
+    /// [`Setter::generation`] when it was read: a change asked for since
+    /// makes it out of date.
+    pub generation: u64,
+}
+
+/// What a thread that follows the sound server asks of the volume's thread.
+#[derive(Clone)]
+pub struct Refresher(Arc<(Mutex<Pending>, Condvar)>);
+
+impl Refresher {
+    /// Read the volume again soon (any number of calls before it happens
+    /// are one read).
+    pub fn refresh(&self) {
+        let (lock, changed) = &*self.0;
+        lock.lock().unwrap_or_else(PoisonError::into_inner).refresh = true;
+        changed.notify_all();
+    }
+}
+
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent flags of one worker"
+)]
 struct Pending {
     value: Option<f32>,
     /// Mute or unmute (the volume).
     mute: Option<bool>,
+    /// Read the volume again, to see whether something else changed it.
+    refresh: bool,
     busy: bool,
     /// The overlay is closing: no waiting for the slider to rest.
     closing: bool,
@@ -171,19 +230,36 @@ impl Pending {
 }
 
 impl Setter {
-    fn new(control: Control) -> Self {
+    fn new(control: Control, sender: Option<calloop::channel::Sender<Msg>>) -> Self {
         let kind = control.kind();
         let shared = Arc::new((Mutex::new(Pending::default()), Condvar::new()));
+        let generation = Arc::new(AtomicU64::new(0));
         let worker = Arc::clone(&shared);
+        let reports = Reports {
+            sender,
+            generation: Arc::clone(&generation),
+        };
         let thread = std::thread::Builder::new()
             .name(format!("{kind:?}"))
-            .spawn(move || work(control, &worker))
+            .spawn(move || work(control, &worker, &reports))
             .ok();
         Self {
             kind,
             shared,
+            generation,
             thread,
         }
+    }
+
+    /// What a thread that follows the sound server calls to have the value
+    /// read again.
+    pub fn refresher(&self) -> Refresher {
+        Refresher(Arc::clone(&self.shared))
+    }
+
+    /// How many changes have been asked for.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
     }
 
     pub const fn kind(&self) -> SliderKind {
@@ -192,6 +268,7 @@ impl Setter {
 
     /// Apply a value soon, replacing one not applied yet.
     pub fn set(&self, value: f32) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
         let (lock, changed) = &*self.shared;
         lock.lock().unwrap_or_else(PoisonError::into_inner).value = Some(value.clamp(0.0, 1.0));
         changed.notify_all();
@@ -199,6 +276,7 @@ impl Setter {
 
     /// Mute or unmute soon (the volume).
     pub fn mute(&self, muted: bool) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
         let (lock, changed) = &*self.shared;
         lock.lock().unwrap_or_else(PoisonError::into_inner).mute = Some(muted);
         changed.notify_all();
@@ -209,12 +287,37 @@ impl Setter {
 enum Job {
     Value(f32),
     Mute(bool),
+    /// Read the volume: has something else changed it?
+    Refresh,
 }
 
-/// The setter's thread: wait for a value, apply it, again.
-fn work(mut control: Control, shared: &(Mutex<Pending>, Condvar)) {
+/// What the setter's thread tells the menu.
+struct Reports {
+    sender: Option<calloop::channel::Sender<Msg>>,
+    generation: Arc<AtomicU64>,
+}
+
+/// The volume as the mixer holds it after `set(value)`: whole percents, muted
+/// at 0.
+fn applied(value: f32) -> (f32, bool) {
+    let percent = (value.clamp(0.0, 1.0) * 100.0).round();
+    (percent / 100.0, percent == 0.0)
+}
+
+/// Whether a volume read is not what was known (the sound server rounds to
+/// whole percents at best).
+fn differs(known: (f32, bool), read: (f32, bool)) -> bool {
+    known.1 != read.1 || (known.0 - read.0).abs() >= 0.005
+}
+
+/// The setter's thread: wait for a value, apply it, again; between them,
+/// read the volume again when asked, and say when something else has
+/// changed it.
+fn work(mut control: Control, shared: &(Mutex<Pending>, Condvar), reports: &Reports) {
     let (lock, changed) = shared;
     let mut current = control.get().map(|(value, _)| value);
+    // the volume as last applied, or last told: what a read is compared to
+    let mut known = control.get();
     let mut last: Option<Instant> = None;
     loop {
         let job = {
@@ -231,14 +334,42 @@ fn work(mut control: Control, shared: &(Mutex<Pending>, Condvar)) {
                 if pending.stop {
                     return;
                 }
+                // after everything asked for: a read then sees its result
+                if std::mem::take(&mut pending.refresh) {
+                    pending.busy = true;
+                    break Job::Refresh;
+                }
                 pending = changed
                     .wait(pending)
                     .unwrap_or_else(PoisonError::into_inner);
             }
         };
         match (&mut control, job) {
-            (Control::Volume(mixer), Job::Mute(muted)) => mixer.set_mute(muted),
-            (Control::Brightness(_), Job::Mute(_)) => {}
+            (Control::Volume(mixer), Job::Mute(muted)) => {
+                mixer.set_mute(muted);
+                if let Some((_, was)) = known.as_mut() {
+                    *was = muted;
+                }
+            }
+            (Control::Brightness(_), Job::Mute(_) | Job::Refresh) => {}
+            (Control::Volume(mixer), Job::Refresh) => {
+                // before the read: a change asked for meanwhile makes it stale
+                let generation = reports.generation.load(Ordering::SeqCst);
+                if let Some((value, muted)) = mixer.read()
+                    && known.is_none_or(|known| differs(known, (value, muted)))
+                {
+                    known = Some((value, muted));
+                    if let Some(sender) = &reports.sender {
+                        sender
+                            .send(Msg::Volume(VolumeChange {
+                                value,
+                                muted,
+                                generation,
+                            }))
+                            .ok();
+                    }
+                }
+            }
             (Control::Brightness(screen), Job::Value(target)) => {
                 let target = rested(shared, target);
                 let from = current.unwrap_or(target);
@@ -262,6 +393,7 @@ fn work(mut control: Control, shared: &(Mutex<Pending>, Condvar)) {
                     target = pending.value.take().unwrap_or(target);
                 }
                 control.set(target);
+                known = Some(applied(target));
                 last = Some(Instant::now());
             }
         }

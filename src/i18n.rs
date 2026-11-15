@@ -156,6 +156,12 @@ mod tests {
                 "menu-quit",
                 "clock-date-format",
                 "clock-time-format",
+                "menu-audio",
+                "audio-output",
+                "audio-profile",
+                "audio-no-outputs",
+                "audio-loading",
+                "help-audio",
             ] {
                 assert!(english.has_message(id), "{id}");
                 assert!(translated.has_message(id), "{code}: {id}");

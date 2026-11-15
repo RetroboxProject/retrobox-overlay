@@ -71,10 +71,13 @@ use crate::i18n::Translator;
 use crate::input::{self, Input, Nav, Pad};
 use crate::manual::Manual;
 use crate::savestates::StateMode;
+use crate::system::audio::devices::{Action, Snapshot};
+use crate::system::audio::hub::Hub;
 use crate::system::brightness::{self, Screens};
 use crate::system::status::Status;
-use crate::system::{Control, Found, Msg, STEP, Setter, SliderKind};
+use crate::system::{Control, Found, Msg, STEP, Setter, SliderKind, VolumeChange};
 use crate::theme::MenuTheme;
+use crate::ui::audio::AudioMenu;
 use crate::ui::clock::Clock;
 use crate::ui::help::{Help, Prompt};
 use crate::ui::panel::{MenuAction, MenuItem, Panel, StatusBar, Target};
@@ -183,7 +186,13 @@ struct State {
     setters: Vec<Setter>,
     /// What the menu's help prompts were drawn for (a page open, what kind
     /// of thing selected).
-    menu_help_shown: Option<(bool, Focus)>,
+    menu_help_shown: Option<(bool, Focus, bool)>,
+    /// What follows the sound server, once it is known to be there.
+    audio: Option<Box<Hub>>,
+    /// The outputs and profiles, as last sent while the audio page is open.
+    devices: Option<Snapshot>,
+    /// What each row of the audio page asks for (nothing for a header).
+    audio_rows: Vec<Option<Action>>,
     /// The button whose function is to show, and the timer that shows it.
     tooltip: Option<(usize, RegistrationToken)>,
     /// The button (or finger) held on the panel, and what it turned into.
@@ -334,6 +343,9 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         press: None,
         finger: None,
         menu_help_shown: None,
+        audio: None,
+        devices: None,
+        audio_rows: Vec::new(),
         tooltip: None,
         brightness_settled: false,
         controls: None,
@@ -694,7 +706,8 @@ impl State {
         };
         // the same prompts as shown: nothing to draw again
         let focus = Focus::of(panel);
-        let shown = (panel.page_open(), focus);
+        let audio = self.audio.as_ref().is_some_and(|hub| hub.lists_devices());
+        let shown = (panel.page_open(), focus, audio);
         if self.menu_help_shown == Some(shown) {
             return;
         }
@@ -718,6 +731,9 @@ impl State {
             Focus::Volume => {
                 prompts.push(prompt("left/right", "help-adjust"));
                 prompts.push(prompt(help.ok(), "help-mute"));
+                if audio {
+                    prompts.push(prompt("x", "help-audio"));
+                }
             }
             Focus::Item | Focus::Button => prompts.push(prompt(help.ok(), "help-select")),
         }
@@ -872,7 +888,97 @@ impl State {
         match msg {
             Msg::Found(found) => self.slider_found(found),
             Msg::Primary(primary) => self.settle_brightness(primary.as_deref()),
+            Msg::Volume(change) => self.volume_changed(change),
+            Msg::Audio(hub) => {
+                self.audio = Some(hub);
+                self.draw_menu_help();
+            }
+            Msg::Devices(snapshot) => self.devices_changed(snapshot),
         }
+    }
+
+    /// The volume was changed from outside (volume keys, another mixer, a
+    /// new default output): show it, unless a change from here is on its way.
+    fn volume_changed(&mut self, change: VolumeChange) {
+        let current = self
+            .setters
+            .iter()
+            .find(|setter| setter.kind() == SliderKind::Volume)
+            .is_some_and(|setter| setter.generation() == change.generation);
+        if !current {
+            return;
+        }
+        if let Some((panel, _)) = self.panel.as_mut() {
+            let label = slider_label(&self.content.translator, SliderKind::Volume);
+            panel.set_slider(SliderKind::Volume, &label, change.value, change.muted);
+            self.draw_panel();
+        }
+    }
+
+    /// The outputs and profiles changed while the audio page is open.
+    fn devices_changed(&mut self, snapshot: Snapshot) {
+        self.devices = Some(snapshot);
+        self.show_devices(None);
+    }
+
+    /// Show the outputs and profiles on the audio page, when it is open;
+    /// `select` is the row to select (the one selected by default).
+    fn show_devices(&mut self, select: Option<usize>) {
+        let (page, rows) = AudioMenu::new(&self.content.translator).page(self.devices.as_ref());
+        let Some((panel, _)) = self.panel.as_mut() else {
+            return;
+        };
+        // the same choice stays selected when the rows move
+        let select = select.or_else(|| {
+            let wanted = panel
+                .selected_row()
+                .and_then(|row| self.audio_rows.get(row))?;
+            wanted
+                .as_ref()
+                .and_then(|wanted| rows.iter().position(|row| row.as_ref() == Some(wanted)))
+        });
+        if panel.update_list(page, select) {
+            self.audio_rows = rows;
+            self.draw_panel();
+            self.draw_menu_help();
+        }
+    }
+
+    /// Show the audio page (X on the volume, F2): where the sound goes and
+    /// how its card is used.
+    fn open_audio(&mut self) {
+        let Some(hub) = self.audio.as_ref().filter(|hub| hub.lists_devices()) else {
+            return;
+        };
+        let Some((panel, _)) = self.panel.as_mut() else {
+            return;
+        };
+        if panel.page_open() {
+            return;
+        }
+        hub.watch_devices(true);
+        let (page, rows) = AudioMenu::new(&self.content.translator).page(self.devices.as_ref());
+        self.audio_rows = rows;
+        panel.open_list(page);
+        self.draw_panel();
+        self.draw_menu_help();
+    }
+
+    /// A row of the audio page was chosen.
+    fn choose_audio(&mut self, row: usize) {
+        let Some(action) = self.audio_rows.get(row).cloned().flatten() else {
+            return;
+        };
+        let (Some(hub), Some(snapshot)) = (self.audio.as_ref(), self.devices.as_mut()) else {
+            return;
+        };
+        if snapshot.is_current(&action) {
+            return;
+        }
+        // shown at once; the sound server's word follows (and corrects it)
+        snapshot.apply(&action);
+        hub.apply(action);
+        self.show_devices(Some(row));
     }
 
     /// The overlay is on an output: on a Wayland compositor without a
@@ -903,7 +1009,7 @@ impl State {
             .content
             .screens
             .resolve(primary)
-            .and_then(|screen| Found::new(Control::Brightness(screen)))
+            .and_then(|screen| Found::new(Control::Brightness(screen), None))
         {
             self.slider_found(found);
         }
@@ -980,6 +1086,10 @@ impl State {
                 self.open_states(mode);
                 return;
             }
+            Some(MenuAction::Choice(row)) => {
+                self.choose_audio(row);
+                return;
+            }
             Some(MenuAction::Manual) => {
                 self.open_manual();
                 return;
@@ -1025,6 +1135,10 @@ impl State {
             .as_mut()
             .is_some_and(|(panel, _)| panel.close_page());
         if closed_page {
+            if let Some(hub) = &self.audio {
+                hub.watch_devices(false);
+            }
+            self.devices = None;
             self.draw_panel();
             self.draw_menu_help();
         } else {
@@ -1102,6 +1216,17 @@ impl State {
                 self.activate(action);
             }
             Nav::Back => self.back(),
+            // X on the volume, F2 anywhere: the audio page
+            Nav::Options => {
+                if self
+                    .panel
+                    .as_ref()
+                    .is_some_and(|(panel, _)| Focus::of(panel) == Focus::Volume)
+                {
+                    self.open_audio();
+                }
+            }
+            Nav::Audio => self.open_audio(),
             // the shortcut that opened the overlay, again: back to the game
             Nav::Close => self.outcome = Some(Outcome::Back),
             // R1 (Page Down): to the buttons and sliders and back; L1
@@ -1477,6 +1602,7 @@ fn x11_key_nav(keycode: u8) -> Option<Nav> {
         KeyCode::KEY_ENTER | KeyCode::KEY_KPENTER | KeyCode::KEY_SPACE => Nav::Confirm,
         KeyCode::KEY_ESC | KeyCode::KEY_BACKSPACE => Nav::Back,
         KeyCode::KEY_F7 => Nav::Close,
+        KeyCode::KEY_F2 => Nav::Audio,
         _ => return None,
     })
 }
@@ -1596,6 +1722,7 @@ fn key_nav(keysym: Keysym) -> Option<Nav> {
         Keysym::Return | Keysym::KP_Enter | Keysym::space => Nav::Confirm,
         Keysym::Escape | Keysym::BackSpace => Nav::Back,
         Keysym::F7 => Nav::Close,
+        Keysym::F2 => Nav::Audio,
         _ => return None,
     })
 }

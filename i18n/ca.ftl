@@ -43,3 +43,10 @@ help-zoom-in = APROPAR
 help-zoom-out = ALLUNYAR
 help-move = MOURE
 help-page = PÀGINA
+
+menu-audio = Àudio
+audio-output = Dispositiu de sortida
+audio-profile = Perfil
+audio-no-outputs = No s'han trobat sortides d'àudio
+audio-loading = Carregant…
+help-audio = ÀUDIO

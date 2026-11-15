@@ -38,6 +38,10 @@ pub enum Nav {
     Back,
     /// Home (or F7): the shortcut that opens the overlay, now closing it.
     Close,
+    /// Nintendo's X (the top face button): the options of what is selected.
+    Options,
+    /// F2: the audio page, wherever the selection is.
+    Audio,
 }
 
 /// An input going down or coming back up: the manual moves and zooms while
@@ -245,6 +249,7 @@ impl Pad {
             KeyCode::BTN_TR2 => Some(Nav::NextPage),
             KeyCode::BTN_MODE => Some(Nav::Close),
             KeyCode::BTN_START => Some(Nav::Confirm),
+            KeyCode::BTN_NORTH => Some(Nav::Options),
             code if code == confirm => Some(Nav::Confirm),
             code if code == back => Some(Nav::Back),
             _ => None,

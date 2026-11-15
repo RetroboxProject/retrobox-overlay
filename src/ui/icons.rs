@@ -29,6 +29,7 @@ pub enum Icon {
     LogOut,
     Disc,
     BookOpen,
+    Check,
     Sun,
     VolumeX,
     Volume1,
@@ -69,7 +70,7 @@ impl Icon {
             MenuAction::Standby => Self::Moon,
             MenuAction::Slider(SliderKind::Brightness) => Self::Sun,
             MenuAction::Slider(SliderKind::Volume) => Self::Volume2,
-            MenuAction::Slot(..) => return None,
+            MenuAction::Slot(..) | MenuAction::Choice(_) => return None,
         })
     }
 
@@ -122,6 +123,7 @@ impl Icon {
             Self::LogOut => include_str!("../../assets/icons/log-out.svg"),
             Self::Disc => include_str!("../../assets/icons/disc-3.svg"),
             Self::BookOpen => include_str!("../../assets/icons/book-open.svg"),
+            Self::Check => include_str!("../../assets/icons/check.svg"),
             Self::Sun => include_str!("../../assets/icons/sun.svg"),
             Self::VolumeX => include_str!("../../assets/icons/volume-x.svg"),
             Self::Volume1 => include_str!("../../assets/icons/volume-1.svg"),
@@ -182,6 +184,7 @@ mod tests {
             Icon::LogOut,
             Icon::Disc,
             Icon::BookOpen,
+            Icon::Check,
             Icon::Sun,
             Icon::VolumeX,
             Icon::Volume1,

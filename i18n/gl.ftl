@@ -43,3 +43,10 @@ help-zoom-in = ACHEGAR
 help-zoom-out = ALONXAR
 help-move = MOVER
 help-page = PÁXINA
+
+menu-audio = Audio
+audio-output = Dispositivo de saída
+audio-profile = Perfil
+audio-no-outputs = Non se atoparon saídas de audio
+audio-loading = Cargando…
+help-audio = AUDIO

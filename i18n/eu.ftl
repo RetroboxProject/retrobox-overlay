@@ -43,3 +43,10 @@ help-zoom-in = HANDIAGOTU
 help-zoom-out = TXIKIAGOTU
 help-move = MUGITU
 help-page = ORRIA
+
+menu-audio = Audioa
+audio-output = Irteerako gailua
+audio-profile = Profila
+audio-no-outputs = Ez da audio-irteerarik aurkitu
+audio-loading = Kargatzen…
+help-audio = AUDIOA
