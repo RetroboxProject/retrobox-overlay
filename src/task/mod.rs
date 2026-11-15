@@ -410,7 +410,7 @@ mod tests {
     fn running_has_no_buttons_and_only_a_download_is_cancelled() {
         let mut install = Model::new(&options(false, false));
         install.set_phase(Phase::Running);
-        assert!(install.buttons().is_empty());
+        assert_eq!(install.buttons(), &[]);
         assert!(!install.move_focus(1));
         assert_eq!(install.back_status(), None);
         assert_eq!(install.quit_status(), EXIT_FAILED);

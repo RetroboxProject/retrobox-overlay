@@ -296,7 +296,7 @@ mod tests {
             text.push_str(&decode(&mut carry, chunk));
         }
         assert_eq!(text, "añ€");
-        assert!(carry.is_empty());
+        assert_eq!(carry, Vec::<u8>::new());
     }
 
     #[test]
