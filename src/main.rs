@@ -454,9 +454,20 @@ fn open_pads(
 fn init_log(name: &str) -> Option<std::fs::File> {
     let mut builder =
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
-    if std::io::stderr().is_terminal() {
-        builder.format_timestamp(None);
-    } else {
+    // every line says how long after the start it was written
+    let start = std::time::Instant::now();
+    builder.format(move |buf, record| {
+        use std::io::Write;
+        writeln!(
+            buf,
+            "[{:>5} ms {:5} {}] {}",
+            start.elapsed().as_millis(),
+            record.level(),
+            record.target(),
+            record.args()
+        )
+    });
+    if !std::io::stderr().is_terminal() {
         let path = paths::log_file(name);
         let file = path
             .parent()
@@ -470,9 +481,7 @@ fn init_log(name: &str) -> Option<std::fs::File> {
         if let Ok(file) = file
             && let Ok(target) = file.try_clone()
         {
-            builder
-                .format_timestamp_millis()
-                .target(env_logger::Target::Pipe(Box::new(target)));
+            builder.target(env_logger::Target::Pipe(Box::new(target)));
             builder.init();
             return Some(file);
         }
