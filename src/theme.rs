@@ -130,7 +130,7 @@ impl Default for Background {
 
 /// Where the help prompts' icons are when the theme names none: the
 /// resources of Retrobox's EmulationStation.
-const ES_HELP_ICONS: &str = "/opt/retrobox/frontend/resources/help";
+pub const ES_HELP_ICONS: &str = "/opt/retrobox/frontend/resources/help";
 
 /// The help prompts at the bottom of the screen (`helpsystem` of the theme's
 /// system view, ES's `HelpStyle`), in pixels on ES's screen.
@@ -172,6 +172,8 @@ impl Default for HelpTheme {
                 icon("l", "button_l.svg"),
                 icon("r", "button_r.svg"),
                 icon("lr", "button_lr.svg"),
+                icon("y", "button_y.svg"),
+                icon("start", "button_start.svg"),
             ]
             .into_iter()
             .collect(),

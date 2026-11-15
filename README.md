@@ -136,7 +136,11 @@ only while it is shown.
   keys, labelled and typed from the active xkb keymap (the compositor's on Wayland; else the
   `[osk]` names in `overlay.ini`, `XKB_DEFAULT_*` or `/etc/default/keyboard`; else US): the
   symbols page holds what the layout types with shift and AltGr, and the accents page (A) the
-  accented letters it can type, directly or as a dead key and a letter.
+  accented letters it can type, directly or as a dead key and a letter. Held backspace and cursor
+  keys repeat; with a physical keyboard the arrow keys move, Enter types and Escape closes (the
+  keyboards are grabbed while it is open, so nothing else reaches the game); the keyboard slides
+  out when it closes. Keys are typed on a thread of their own, and the controller buttons on the
+  keys are the theme's help icons, written where it has none.
 * **Leaving the game** runs `retrobox-emukill`.
 * **Outside games** (in EmulationStation) the same hold opens the system's menu, like the
   Switch's quick settings: *Sleep mode* (`systemctl suspend`; `standby` in `[system]`), and the

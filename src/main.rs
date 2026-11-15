@@ -379,6 +379,11 @@ fn open_pads(
             }
             pad
         })
+        .chain(if keyboard {
+            input::open_keyboards()
+        } else {
+            Vec::new()
+        })
         .collect()
 }
 

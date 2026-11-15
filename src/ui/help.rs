@@ -230,7 +230,7 @@ impl Help {
     }
 }
 
-fn draw_svg(path: &std::path::Path, height: u32, tint: Rgba) -> Option<Pixmap> {
+pub fn draw_svg(path: &std::path::Path, height: u32, tint: Rgba) -> Option<Pixmap> {
     let data = std::fs::read(path).ok()?;
     let tree = usvg::Tree::from_data(&data, &usvg::Options::default())
         .inspect_err(|err| log::warn!("help icon {}: {err}", path.display()))

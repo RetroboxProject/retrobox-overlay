@@ -50,3 +50,10 @@ audio-profile = Profiel
 audio-no-outputs = Geen audio-uitvoer gevonden
 audio-loading = Laden…
 help-audio = AUDIO
+# the on-screen keyboard's keys
+osk-delete = Wissen
+osk-space = Spatie
+osk-enter = Enter
+osk-shift = Shift
+osk-close = Sluiten
+osk-accents = Accenten

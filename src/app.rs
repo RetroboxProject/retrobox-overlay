@@ -66,7 +66,7 @@ use x11rb::protocol::Event as XEvent;
 use x11rb::protocol::xproto::{self, NotifyDetail, NotifyMode};
 
 use crate::config::{Config, Side, TakeKeyboard, VerticalPosition};
-use crate::emulator::{EmuAction, Emulator, Request};
+use crate::emulator::{EmuAction, Emulator, Request, Typist};
 use crate::i18n::Translator;
 use crate::input::{self, Input, Nav, Pad};
 use crate::manual::Manual;
@@ -81,7 +81,7 @@ use crate::ui::audio::AudioMenu;
 use crate::ui::clock::Clock;
 use crate::ui::help::{Help, Prompt};
 use crate::ui::layout::Layout;
-use crate::ui::osk::{Action as OskAction, Direction, Osk};
+use crate::ui::osk::{Action as OskAction, Direction, Labels, Osk};
 use crate::ui::panel::{MenuAction, MenuItem, Panel, StatusBar, Target};
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
@@ -182,6 +182,10 @@ struct State {
     osk_press: Option<OskPress>,
     /// The compositor's keymap, as a layout (Wayland).
     keymap: Option<Layout>,
+    /// Types for the on-screen keyboard, off the event loop.
+    typist: Option<Typist>,
+    /// When the on-screen keyboard started to slide out.
+    closing: Option<Instant>,
     clock: Option<(Clock, Piece)>,
     /// The help style, at this screen's size.
     help: Option<Help>,
@@ -357,6 +361,8 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         osk: None,
         osk_press: None,
         keymap: None,
+        typist: None,
+        closing: None,
         clock: None,
         help: None,
         menu_help: None,
@@ -385,6 +391,9 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
             .context("event loop error")?;
     }
     let outcome = state.outcome.unwrap_or(Outcome::Back);
+    state.slide_out(&mut event_loop);
+    // what is still to be typed goes out before the keyboard is gone
+    drop(state.typist.take());
     // Hide the overlay first, then hand the controllers back once the button
     // that closed it is up (see input.rs).
     let mut pads = std::mem::take(&mut state.content.pads);
@@ -629,7 +638,16 @@ impl State {
     /// The on-screen keyboard: at the bottom, hidden below the screen's edge;
     /// it slides in (see animate), without a fade.
     fn create_osk(&mut self, screen: (u32, u32)) {
-        let osk = Osk::new(&self.content.theme, screen, self.layout());
+        let texts = &self.content.translator;
+        let labels = Labels {
+            backspace: texts.text("osk-delete"),
+            space: texts.text("osk-space"),
+            enter: texts.text("osk-enter"),
+            shift: texts.text("osk-shift"),
+            close: texts.text("osk-close"),
+            accents: texts.text("osk-accents"),
+        };
+        let osk = Osk::new(&self.content.theme, screen, self.layout(), labels);
         let piece = self.display.create_piece(Spec {
             anchor: Anchor::BOTTOM,
             size: (osk.width, osk.height),
@@ -669,6 +687,9 @@ impl State {
 
     /// One animation frame: opacities and the panel's position.
     fn animate(&mut self) -> TimeoutAction {
+        if self.closing.is_some() {
+            return TimeoutAction::Drop;
+        }
         let t = ease_out(self.progress());
         if let Some((osk, piece)) = &mut self.osk {
             let margin = (-(osk.height as f32) * (1.0 - t)).round() as i32;
@@ -696,6 +717,36 @@ impl State {
             TimeoutAction::Drop
         } else {
             TimeoutAction::ToDuration(FRAME)
+        }
+    }
+
+    /// The on-screen keyboard slides back down, as quickly as it came up.
+    fn slide_out(&mut self, event_loop: &mut EventLoop<'static, Self>) {
+        let Some(height) = self.osk.as_ref().map(|(osk, _)| osk.height as f32) else {
+            return;
+        };
+        let total = self.content.config.animation_ms;
+        let from = ease_out(self.progress());
+        let start = Instant::now();
+        self.closing = Some(start);
+        if total == 0 {
+            return;
+        }
+        loop {
+            let elapsed = start.elapsed().as_millis() as f32 / total as f32;
+            if elapsed >= 1.0 {
+                break;
+            }
+            let t = from * (1.0 - ease_out(elapsed));
+            if let Some((_, piece)) = &mut self.osk {
+                let margin = (-height * (1.0 - t)).round() as i32;
+                piece.set_margin(&self.display, [0, 0, margin, 0]);
+                piece.commit();
+            }
+            self.display.flush();
+            if event_loop.dispatch(Some(FRAME), self).is_err() {
+                break;
+            }
         }
     }
 
@@ -1238,6 +1289,8 @@ impl State {
     /// held key does (the compositor repeats the keyboard's).
     fn pad_input(&mut self, input: Input) {
         let repeats = matches!(input.nav, Nav::Up | Nav::Down | Nav::Left | Nav::Right)
+            || (self.osk.is_some()
+                && matches!(input.nav, Nav::Backspace | Nav::ZoomOut | Nav::ZoomIn))
             || (self.manual_is_open() && matches!(input.nav, Nav::PrevPage | Nav::NextPage));
         if repeats && (input.pressed || self.repeat.is_some_and(|(nav, _)| nav == input.nav)) {
             if let Some((_, token)) = self.repeat.take() {
@@ -1387,7 +1440,12 @@ impl State {
         let activation = osk.activate(key);
         if !activation.taps.is_empty() {
             // the game keeps the focus: the keys go to it
-            self.content.emulator.type_keys(&activation.taps);
+            if self.typist.is_none() {
+                self.typist = self.content.emulator.typist();
+            }
+            if let Some(typist) = &self.typist {
+                typist.type_keys(activation.taps);
+            }
         }
         if activation.redraw {
             self.draw_osk();

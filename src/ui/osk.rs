@@ -14,6 +14,9 @@
 use cosmic_text::Align;
 use tiny_skia::{Paint, PathBuilder, Pixmap, Stroke, Transform};
 
+use std::collections::HashMap;
+use std::path::Path;
+
 use super::layout::{Layout, Page, Slot, Step};
 use super::text::{FontRef, Fonts, TextBox};
 use crate::theme::{MenuTheme, Rgba};
@@ -38,6 +41,31 @@ const HOVER_ALPHA: u8 = 0x50;
 const ACTIVE_ALPHA: u8 = 0x70;
 /// Where the grid starts, in keys: the first letter column.
 const LEFT: f32 = SIDE;
+
+/// The names of the keys that have a word on them.
+#[derive(Debug, Clone)]
+pub struct Labels {
+    pub backspace: String,
+    pub space: String,
+    pub enter: String,
+    pub shift: String,
+    pub close: String,
+    pub accents: String,
+}
+
+/// The help icon (as the theme names it) that stands for a controller
+/// button on the keys; the others are written.
+const BADGE_ICONS: [(&str, &str, &str); 6] = [
+    ("A", "a", "button_a.svg"),
+    ("X", "x", "button_x.svg"),
+    ("Y", "y", "button_y.svg"),
+    ("L", "l", "button_l.svg"),
+    ("R", "r", "button_r.svg"),
+    ("+", "start", "button_start.svg"),
+];
+
+/// A badge's icon, plain and on a selected key.
+type BadgeIcon = (Pixmap, Pixmap);
 
 /// What a key does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +145,8 @@ pub struct Osk {
     selected: usize,
     hovered: Option<usize>,
     layout: Layout,
+    labels: Labels,
+    icons: HashMap<&'static str, BadgeIcon>,
     layer: Layer,
     /// Shift is on for the next character.
     shift: bool,
@@ -132,7 +162,7 @@ pub struct Osk {
 
 impl Osk {
     /// A keyboard sized for a screen, in the theme's colours and font.
-    pub fn new(theme: &MenuTheme, screen: (u32, u32), layout: Layout) -> Self {
+    pub fn new(theme: &MenuTheme, screen: (u32, u32), layout: Layout, labels: Labels) -> Self {
         let (screen_width, screen_height) = (screen.0 as f32, screen.1 as f32);
         // the key's width: the height limit, or the screen's width
         let unit = (screen_height * MAX_HEIGHT / (ROWS * ROW_PITCH + 2.0 * PADDING))
@@ -160,6 +190,8 @@ impl Osk {
             selected,
             hovered: None,
             layout,
+            labels,
+            icons: Self::badge_icons(theme, (unit * 0.26).round() as u32),
             layer: Layer::Letters,
             shift: false,
             background: theme.background.center_color,
@@ -171,6 +203,27 @@ impl Osk {
             badge_font: font(unit * 0.2),
             unit,
         }
+    }
+
+    /// The theme's icons for the controller buttons, drawn in the text
+    /// colour and in the selected one.
+    fn badge_icons(theme: &MenuTheme, height: u32) -> HashMap<&'static str, BadgeIcon> {
+        let fallback = Path::new(crate::theme::ES_HELP_ICONS);
+        BADGE_ICONS
+            .iter()
+            .filter_map(|(badge, name, file)| {
+                let path = theme
+                    .help
+                    .icons
+                    .get(*name)
+                    .cloned()
+                    .unwrap_or_else(|| fallback.join(file));
+                let draw = |tint| super::help::draw_svg(&path, height, tint);
+                let normal = draw(theme.text.color.with_alpha(0xB0))?;
+                let selected = draw(theme.text.selected_color.with_alpha(0xB0))?;
+                Some((*badge, (normal, selected)))
+            })
+            .collect()
     }
 
     /// The keys' places, in pixels.
@@ -353,15 +406,15 @@ impl Osk {
     fn label(&self, action: Action) -> &str {
         match action {
             Action::Char(slot) => &self.slot(slot).label,
-            Action::Backspace => "Del",
-            Action::Space => "Space",
-            Action::Enter => "Enter",
+            Action::Backspace => &self.labels.backspace,
+            Action::Space => &self.labels.space,
+            Action::Enter => &self.labels.enter,
             Action::CursorLeft => "<",
             Action::CursorRight => ">",
-            Action::Shift => "Shift",
+            Action::Shift => &self.labels.shift,
             Action::Symbols => "#+=",
-            Action::Close => "Close",
-            Action::Accents => "Accents",
+            Action::Close => &self.labels.close,
+            Action::Accents => &self.labels.accents,
         }
     }
 
@@ -425,7 +478,7 @@ impl Osk {
                 text,
             );
             if let Some(badge) = key.badge {
-                self.draw_badge(&mut pixmap, fonts, badge, key.rect, text);
+                self.draw_badge(&mut pixmap, fonts, badge, key.rect, (text, selected));
             }
         }
         Some(pixmap)
@@ -439,8 +492,22 @@ impl Osk {
         fonts: &mut Fonts,
         badge: &str,
         (x, y, w, h): (f32, f32, f32, f32),
-        color: Rgba,
+        (color, selected): (Rgba, bool),
     ) {
+        if let Some((normal, highlighted)) = self.icons.get(badge) {
+            let icon = if selected { highlighted } else { normal };
+            let left = x + (w - icon.width() as f32) / 2.0;
+            let top = y + h * 0.62 + (self.badge_font.line_height - icon.height() as f32) / 2.0;
+            pixmap.draw_pixmap(
+                left.round() as i32,
+                top.round() as i32,
+                icon.as_ref(),
+                &tiny_skia::PixmapPaint::default(),
+                Transform::identity(),
+                None,
+            );
+            return;
+        }
         let text_width = fonts.measure(&self.badge_font, badge);
         let line = self.badge_font.line_height;
         let box_width = (text_width + self.unit * 0.2).max(line);
@@ -515,8 +582,25 @@ fn rounded_rect(x: f32, y: f32, width: f32, height: f32, radius: f32) -> Option<
 mod tests {
     use super::*;
 
+    fn labels() -> Labels {
+        let label = |text: &str| text.to_owned();
+        Labels {
+            backspace: label("Del"),
+            space: label("Space"),
+            enter: label("Enter"),
+            shift: label("Shift"),
+            close: label("Close"),
+            accents: label("Accents"),
+        }
+    }
+
     fn osk() -> Osk {
-        Osk::new(&MenuTheme::default(), (1920, 1080), Layout::fallback())
+        Osk::new(
+            &MenuTheme::default(),
+            (1920, 1080),
+            Layout::fallback(),
+            labels(),
+        )
     }
 
     fn selected_action(osk: &Osk) -> Action {

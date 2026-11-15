@@ -222,42 +222,20 @@ impl Emulator {
         self.ask(&Request::Action(action).line())
     }
 
-    /// Type keys on the launcher's virtual keyboard (`key down|up`
-    /// requests on one connection), each with its modifiers and released
-    /// before the next; true when all were typed. Keys still down when
-    /// something fails are released.
-    pub fn type_keys(&self, steps: &[Step]) -> bool {
-        let Some(control) = self.control.as_ref() else {
-            return false;
-        };
-        let typed = UnixStream::connect(&control.socket).and_then(|stream| {
-            stream.set_read_timeout(Some(ANSWER_TIMEOUT))?;
-            let mut keys = Keys {
-                reader: BufReader::new(stream.try_clone()?),
-                stream,
-                down: Vec::new(),
-            };
-            let mut result = Ok(true);
-            for step in steps {
-                result = keys.tap(*step);
-                keys.release();
-                if !matches!(result, Ok(true)) {
-                    break;
-                }
+    /// A thread that types on the launcher's virtual keyboard, so that the
+    /// overlay does not wait for each key; None without a control channel.
+    pub fn typist(&self) -> Option<Typist> {
+        let socket = self.control.as_ref()?.socket.clone();
+        let (sender, receiver) = std::sync::mpsc::channel::<Vec<Step>>();
+        let thread = std::thread::spawn(move || {
+            while let Ok(steps) = receiver.recv() {
+                type_keys(&socket, &steps);
             }
-            result
         });
-        match typed {
-            Ok(true) => true,
-            Ok(false) => {
-                log::warn!("the control channel did not type {steps:?}");
-                false
-            }
-            Err(err) => {
-                log::error!("control channel {}: {err}", control.socket);
-                false
-            }
-        }
+        Some(Typist {
+            sender: Some(sender),
+            thread: Some(thread),
+        })
     }
 
     /// Send one request; true when it was done.
@@ -341,6 +319,60 @@ impl Keys {
                 return;
             }
         }
+    }
+}
+
+/// Types what it is given, in order, on its own thread. Dropping it waits
+/// for what is queued to be typed.
+pub struct Typist {
+    sender: Option<std::sync::mpsc::Sender<Vec<Step>>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Typist {
+    pub fn type_keys(&self, steps: Vec<Step>) {
+        if let Some(sender) = &self.sender
+            && sender.send(steps).is_err()
+        {
+            log::warn!("the typing thread is gone");
+        }
+    }
+}
+
+impl Drop for Typist {
+    fn drop(&mut self) {
+        self.sender.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Type keys on the launcher's virtual keyboard (`key down|up` requests on
+/// one connection), each with its modifiers and released before the next.
+/// Keys still down when something fails are released.
+fn type_keys(socket: &str, steps: &[Step]) {
+    let typed = UnixStream::connect(socket).and_then(|stream| {
+        stream.set_read_timeout(Some(ANSWER_TIMEOUT))?;
+        let mut keys = Keys {
+            reader: BufReader::new(stream.try_clone()?),
+            stream,
+            down: Vec::new(),
+        };
+        let mut result = Ok(true);
+        for step in steps {
+            result = keys.tap(*step);
+            keys.release();
+            if !matches!(result, Ok(true)) {
+                break;
+            }
+        }
+        result
+    });
+    match typed {
+        Ok(true) => {}
+        Ok(false) => log::warn!("the control channel did not type {steps:?}"),
+        Err(err) => log::error!("control channel {socket}: {err}"),
     }
 }
 

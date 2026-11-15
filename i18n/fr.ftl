@@ -50,3 +50,10 @@ audio-profile = Profil
 audio-no-outputs = Aucune sortie audio trouvée
 audio-loading = Chargement…
 help-audio = AUDIO
+# the on-screen keyboard's keys
+osk-delete = Suppr
+osk-space = Espace
+osk-enter = Entrée
+osk-shift = Maj
+osk-close = Fermer
+osk-accents = Accents

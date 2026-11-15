@@ -50,3 +50,10 @@ audio-profile = Profila
 audio-no-outputs = Ez da audio-irteerarik aurkitu
 audio-loading = Kargatzen…
 help-audio = AUDIOA
+# the on-screen keyboard's keys
+osk-delete = Ezabatu
+osk-space = Zuriunea
+osk-enter = Sartu
+osk-shift = Maius
+osk-close = Itxi
+osk-accents = Azentuak

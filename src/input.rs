@@ -89,6 +89,9 @@ enum Role {
     Menu,
     /// The on-screen keyboard.
     Keyboard,
+    /// A physical keyboard, while the on-screen one is open: the arrow keys,
+    /// Enter and Escape, and nothing else.
+    Typewriter,
 }
 
 /// A grabbed controller.
@@ -282,6 +285,17 @@ impl Pad {
         } else {
             (KeyCode::BTN_SOUTH, KeyCode::BTN_EAST)
         };
+        if self.role == Role::Typewriter {
+            return match code {
+                KeyCode::KEY_UP => Some(Nav::Up),
+                KeyCode::KEY_DOWN => Some(Nav::Down),
+                KeyCode::KEY_LEFT => Some(Nav::Left),
+                KeyCode::KEY_RIGHT => Some(Nav::Right),
+                KeyCode::KEY_ENTER | KeyCode::KEY_KPENTER => Some(Nav::Confirm),
+                KeyCode::KEY_ESC => Some(Nav::Close),
+                _ => None,
+            };
+        }
         if self.role == Role::Keyboard {
             match code {
                 KeyCode::BTN_WEST => return Some(Nav::Backspace),
@@ -360,6 +374,34 @@ impl Pad {
             .chain(nav(direction).map(Input::press))
             .collect()
     }
+}
+
+/// Open and grab the physical keyboards, for the on-screen keyboard to be
+/// moved with: not the virtual ones (the launcher's, which is what the
+/// on-screen keyboard types on, would be grabbed from itself).
+pub fn open_keyboards() -> Vec<Pad> {
+    evdev::enumerate()
+        .filter(|(_, device)| is_physical_keyboard(device))
+        .filter_map(|(path, _)| Pad::open(&path, false))
+        .map(|mut pad| {
+            pad.role = Role::Typewriter;
+            pad
+        })
+        .collect()
+}
+
+fn is_physical_keyboard(device: &Device) -> bool {
+    let letters = device.supported_keys().is_some_and(|keys| {
+        keys.contains(KeyCode::KEY_A)
+            && keys.contains(KeyCode::KEY_ENTER)
+            && keys.contains(KeyCode::KEY_LEFT)
+            && !keys.contains(KeyCode::BTN_SOUTH)
+    });
+    letters
+        && device.input_id().bus_type() != evdev::BusType::BUS_VIRTUAL
+        && !device
+            .name()
+            .is_some_and(|name| name.to_lowercase().contains("retrobox"))
 }
 
 /// Wait (a few seconds at most) until no controller has a button down, so the
