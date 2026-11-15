@@ -448,17 +448,9 @@ impl Faces {
 /// moved with: not the virtual ones (the launcher's, which is what the
 /// on-screen keyboard types on, would be grabbed from itself).
 pub fn open_keyboards() -> Vec<Pad> {
-    let started = Instant::now();
-    let devices: Vec<_> = evdev::enumerate().collect();
-    log::info!(
-        "{} input devices listed in {} ms",
-        devices.len(),
-        started.elapsed().as_millis()
-    );
-    devices
+    keyboard_nodes()
         .into_iter()
-        .filter(|(_, device)| is_physical_keyboard(device))
-        .filter_map(|(path, _)| Pad::open(&path, false))
+        .filter_map(|path| Pad::open(&path, false))
         .map(|mut pad| {
             pad.role = Role::Typewriter;
             pad
@@ -466,18 +458,51 @@ pub fn open_keyboards() -> Vec<Pad> {
         .collect()
 }
 
-fn is_physical_keyboard(device: &Device) -> bool {
-    let letters = device.supported_keys().is_some_and(|keys| {
-        keys.contains(KeyCode::KEY_A)
-            && keys.contains(KeyCode::KEY_ENTER)
-            && keys.contains(KeyCode::KEY_LEFT)
-            && !keys.contains(KeyCode::BTN_SOUTH)
-    });
-    letters
-        && device.input_id().bus_type() != evdev::BusType::BUS_VIRTUAL
-        && !device
-            .name()
-            .is_some_and(|name| name.to_lowercase().contains("retrobox"))
+/// The device nodes of the physical keyboards, found in sysfs: opening a
+/// device just to look at it is slow (closing it waits for the kernel's RCU
+/// grace period, tens of milliseconds each, for every device in the machine).
+fn keyboard_nodes() -> Vec<PathBuf> {
+    /// `BUS_VIRTUAL`
+    const BUS_VIRTUAL: u64 = 0x06;
+    let Ok(entries) = std::fs::read_dir("/sys/class/input") else {
+        return Vec::new();
+    };
+    let mut nodes: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("event"))
+        .filter(|entry| {
+            let device = entry.path().join("device");
+            let read = |file: &str| std::fs::read_to_string(device.join(file)).unwrap_or_default();
+            let keys = key_bits(&read("capabilities/key"));
+            let has = |code: KeyCode| bit(&keys, code.code());
+            let bus = u64::from_str_radix(read("id/bustype").trim(), 16).unwrap_or(BUS_VIRTUAL);
+            has(KeyCode::KEY_A)
+                && has(KeyCode::KEY_ENTER)
+                && has(KeyCode::KEY_LEFT)
+                && !has(KeyCode::BTN_SOUTH)
+                && bus != BUS_VIRTUAL
+                && !read("name").to_lowercase().contains("retrobox")
+        })
+        .map(|entry| Path::new("/dev/input").join(entry.file_name()))
+        .collect();
+    nodes.sort();
+    nodes
+}
+
+/// A sysfs capability bitmap (`capabilities/key`: hexadecimal words, the
+/// highest first) as words, the lowest first.
+fn key_bits(text: &str) -> Vec<u64> {
+    text.split_whitespace()
+        .rev()
+        .map(|word| u64::from_str_radix(word, 16).unwrap_or(0))
+        .collect()
+}
+
+/// Whether bit `index` of the words is set.
+fn bit(words: &[u64], index: u16) -> bool {
+    words
+        .get(usize::from(index) / 64)
+        .is_some_and(|word| word >> (index % 64) & 1 == 1)
 }
 
 /// Wait (a few seconds at most) until no controller has a button down, so the
@@ -504,5 +529,20 @@ impl Drop for Pad {
         {
             log::debug!("ungrab: {err}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_a_sysfs_key_bitmap() {
+        // KEY_A (30) and KEY_LEFT (105), the highest word first
+        let keys = key_bits("0 20000000000 40000000");
+        assert!(bit(&keys, 30));
+        assert!(bit(&keys, 105));
+        assert!(!bit(&keys, 29));
+        assert!(!bit(&keys, 1000));
     }
 }
