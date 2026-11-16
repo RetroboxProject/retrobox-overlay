@@ -8,6 +8,7 @@
 
 mod daemon;
 mod mapper;
+mod parent;
 
 use std::process::ExitCode;
 
@@ -16,7 +17,7 @@ use retrobox_input::{hold, logging, paths};
 const HELP: &str = "\
 retrobox-inputd: Retrobox's input daemon
 
-Usage: retrobox-inputd [--version] [--help]
+Usage: retrobox-inputd [--parent PID] [--version] [--help]
 
 Opens the overlay (retrobox-overlay) when a controller's Home/Guide button is
 held, on Hotkey+B, or on Ctrl+Shift+O or Shift+F7, until stopped; started
@@ -25,9 +26,17 @@ SIGUSR1 opens or closes the overlay. While a game runs with a pad profile
 (pad_profile in session.json), it maps the game's controllers and the
 keyboards to keys, mouse and commands, as gamepadly did.
 
+  --parent PID   stop when the process PID (Retrobox's) ends; without it,
+                 RETROBOX_PARENT_PID in the environment (how systemd's
+                 retrobox-inputd.service passes it)
+
+Under systemd, Retrobox starts the user unit retrobox-inputd.service, which
+reads $XDG_RUNTIME_DIR/retrobox/inputd.env (the display and the parent).
+
 Settings: hold_ms in the [overlay] section of overlay.ini, in /etc/retrobox
 and ~/.config/retrobox.
-Log: stderr from a terminal, else ~/.local/state/retrobox/logs/inputd.log;
+Log: stderr from a terminal or systemd's journal, else
+~/.local/state/retrobox/logs/inputd.log;
 RUST_LOG=debug for details.";
 
 fn main() -> ExitCode {
@@ -40,14 +49,27 @@ fn main() -> ExitCode {
         println!("retrobox-inputd {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
-    if let Some(unknown) = args.first() {
-        eprintln!("retrobox-inputd: unknown argument {unknown:?} (see --help)");
-        return ExitCode::from(2);
-    }
+    let parent = match args.as_slice() {
+        [] => std::env::var(parent::PARENT_VARIABLE)
+            .ok()
+            .and_then(|pid| parent::parse(&pid)),
+        [flag, pid] if flag == "--parent" => {
+            let Some(pid) = parent::parse(pid) else {
+                eprintln!("retrobox-inputd: --parent needs a PID");
+                return ExitCode::from(2);
+            };
+            Some(pid)
+        }
+        _ => {
+            eprintln!("retrobox-inputd: unknown arguments {args:?} (see --help)");
+            return ExitCode::from(2);
+        }
+    };
     let _log = logging::init("inputd.log");
     match daemon::run(
         &paths::runtime_dir(),
         hold::hold_time(&paths::config_dirs()),
+        parent,
     ) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

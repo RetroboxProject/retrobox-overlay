@@ -52,6 +52,7 @@ use retrobox_input::paths;
 use retrobox_input::probe::{self, Found, Kind};
 
 use crate::mapper::{self, Mapper};
+use crate::parent;
 
 /// Where the input devices appear.
 const INPUT_DIR: &str = "/dev/input";
@@ -237,8 +238,9 @@ struct State {
     ticking: bool,
 }
 
-/// Run until stopped (SIGTERM, SIGINT): open the overlay on its triggers.
-pub fn run(runtime_dir: &Path, hold: Duration) -> Result<()> {
+/// Run until stopped (SIGTERM, SIGINT), or until `parent` (Retrobox's
+/// process) ends: open the overlay on its triggers.
+pub fn run(runtime_dir: &Path, hold: Duration, parent: Option<i32>) -> Result<()> {
     let _lock = match instance::acquire_named(runtime_dir, instance::DAEMON_LOCK_FILE)? {
         Instance::First(lock) => lock,
         Instance::Running(pid) => {
@@ -287,6 +289,16 @@ pub fn run(runtime_dir: &Path, hold: Duration) -> Result<()> {
         .map_err(|err| anyhow!("cannot watch /dev/input: {}", err.error))?;
 
     watch_session(&handle, runtime_dir)?;
+    if let Some(pid) = parent {
+        if let Err(err) = parent::watch(&handle, pid, |state: &mut State| {
+            log::info!("Retrobox has ended: stopping");
+            state.stop = true;
+        }) {
+            log::info!("{err:#}: not starting");
+            return Ok(());
+        }
+        log::info!("living with Retrobox's process {pid}");
+    }
 
     let mut state = State {
         handle,

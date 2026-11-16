@@ -23,6 +23,7 @@ log = "0.4"
 nix = { version = "0.31", features = ["signal", "fs", "process", "user", "inotify", "poll", "term"] }
 roxmltree = "0.21"
 rust-ini = "0.21"
+rustix = { version = "1", features = ["process"] }
 serde_json = { version = "1", features = ["raw_value"] }
 
 [workspace.lints.rust]
@@ -104,6 +105,7 @@ theme's menu style, and a clock. Needs a Wayland compositor with layer-shell
 assets = [
     ["target/release/retrobox-overlay", "usr/bin/", "755"],
     ["target/release/retrobox-inputd", "usr/bin/", "755"],
+    ["data/retrobox-inputd.service", "usr/lib/systemd/user/", "644"],
     ["README.md", "usr/share/doc/retrobox-overlay/", "644"],
     ["data/overlay.ini", "usr/share/doc/retrobox-overlay/overlay.ini.example", "644"],
 ]
@@ -113,6 +115,7 @@ license = "GPL-2.0-only"
 assets = [
     { source = "target/release/retrobox-overlay", dest = "/usr/bin/retrobox-overlay", mode = "755" },
     { source = "target/release/retrobox-inputd", dest = "/usr/bin/retrobox-inputd", mode = "755" },
+    { source = "data/retrobox-inputd.service", dest = "/usr/lib/systemd/user/retrobox-inputd.service", mode = "644" },
     { source = "README.md", dest = "/usr/share/doc/retrobox-overlay/README.md", mode = "644", doc = true },
     { source = "data/overlay.ini", dest = "/usr/share/doc/retrobox-overlay/overlay.ini.example", mode = "644", doc = true },
     { source = "LICENSE", dest = "/usr/share/licenses/retrobox-overlay/LICENSE", mode = "644", doc = true },

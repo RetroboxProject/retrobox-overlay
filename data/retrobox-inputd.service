@@ -1,0 +1,25 @@
+# Retrobox's input daemon, as a systemd user service.
+#
+# Retrobox starts it with EmulationStation (systemctl --user start) and stops it
+# when it ends: it is not meant to run on its own, so it has no [Install]
+# section and nothing enables it. Before starting it, Retrobox writes
+# $XDG_RUNTIME_DIR/retrobox/inputd.env: the display the overlay opens on
+# (WAYLAND_DISPLAY, DISPLAY, XDG_*) and RETROBOX_PARENT_PID, its own process
+# (the daemon stops when it ends, even if Retrobox could not stop it).
+#
+# Without systemd, Retrobox runs `retrobox-inputd --parent PID` itself.
+
+[Unit]
+Description=Retrobox input daemon: the overlay's hotkeys and the pads' key mappings
+Documentation=https://github.com/RetroboxProject/retrobox-overlay
+
+[Service]
+Type=exec
+EnvironmentFile=-%t/retrobox/inputd.env
+ExecStart=/usr/bin/retrobox-inputd
+# a crash is restarted; Retrobox gone is a clean exit, which is not
+Restart=on-failure
+RestartSec=1s
+# the overlay it shows and the commands of its mappings go with it
+KillMode=control-group
+TimeoutStopSec=5s

@@ -312,6 +312,19 @@ the daemon with `RUST_LOG=debug retrobox-inputd` (its log, when not run from a t
 `~/.local/state/retrobox/logs/inputd.log`). The daemon needs read access to
 `/dev/input/event*` (the `input` group), like gamepadly.
 
+### How Retrobox runs the daemon
+
+The daemon lives as long as Retrobox. On systems with systemd, Retrobox starts the user unit
+`retrobox-inputd.service` (installed in `/usr/lib/systemd/user/`, never enabled: nothing starts
+it at login) and stops it when it ends; before starting it, it writes
+`$XDG_RUNTIME_DIR/retrobox/inputd.env` with the display (`WAYLAND_DISPLAY`, `DISPLAY`, `XDG_*`)
+and `RETROBOX_PARENT_PID`. systemd then restarts it if it crashes, logs it to the journal
+(`journalctl --user -u retrobox-inputd`) and, when it stops, takes the overlay and the
+commands of the mappings with it. Without systemd, Retrobox runs
+`retrobox-inputd --parent PID` itself. Either way, the daemon stops on its own when Retrobox's
+process ends (a pidfd; every two seconds on kernels without them), so a Retrobox that crashed
+never leaves it behind.
+
 ## License
 
 GPL-2.0-only, like Retrobox.
