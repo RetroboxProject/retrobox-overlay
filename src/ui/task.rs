@@ -14,7 +14,7 @@ use cosmic_text::Align;
 use tiny_skia::{FilterQuality, Paint, Pixmap, PixmapPaint, Rect as SkiaRect, Stroke, Transform};
 
 use super::help::{Help, Prompt};
-use super::panel::rounded_rect;
+use super::panel::{HOVER_ALPHA, rounded_rect, selector_paint};
 use super::text::{FontRef, Fonts, TextBox};
 use crate::task::terminal::{Position, Row, Terminal};
 use crate::theme::{MenuTheme, Rgba};
@@ -22,8 +22,12 @@ use crate::theme::{MenuTheme, Rgba};
 /// The window with the installer's output: its left edge, top and width,
 /// relative to the screen.
 const FULL_WINDOW: (f32, f32, f32) = (0.08, 0.06, 0.84);
-/// The window of the question alone: its width, relative to the screen.
-const COMPACT_WIDTH: f32 = 0.5;
+/// The window of the question alone is as wide as the question needs, from
+/// the first to the second of these (relative to the screen's width); a
+/// longer question goes on more lines.
+const COMPACT_WIDTH: (f32, f32) = (0.3, 0.5);
+/// The most lines the question takes.
+const MAX_MESSAGE_LINES: usize = 4;
 /// The windows' corners, relative to the screen's smaller side.
 const RADIUS: f32 = 0.012;
 /// A button's least width, and the gap between buttons, relative to the
@@ -74,7 +78,6 @@ impl Rect {
 
 /// What a frame shows.
 pub struct Frame<'a> {
-    pub message: &'a str,
     pub buttons: &'a [String],
     /// The button chosen with a controller or the keyboard.
     pub focus: Option<usize>,
@@ -141,10 +144,15 @@ pub struct TaskUi {
     message_font: FontRef,
     button_font: FontRef,
     terminal_font: FontRef,
-    /// The window with the installer's output, and the one of the question
-    /// alone.
-    full: Layout,
-    compact: Layout,
+    padding: f32,
+    button_height: f32,
+    /// How far down the windows may reach (the help is below).
+    room: f32,
+    /// The window with the installer's output.
+    full_window: Rect,
+    /// Where the parts of the window being shown go, and the question's lines.
+    layout: Layout,
+    message_lines: Vec<String>,
     /// The output box: taller while there are no buttons under it.
     terminal: Rect,
     /// The room under the output box that buttons use.
@@ -224,6 +232,60 @@ fn cover(pixmap: &mut Pixmap, picture: &Pixmap) {
     );
 }
 
+/// The labels in capitals, as everything in EmulationStation's menus.
+fn capitals(labels: &[String]) -> Vec<String> {
+    labels.iter().map(|label| label.to_uppercase()).collect()
+}
+
+/// The selector (the theme's colour or its gradient) over a rounded rectangle.
+fn fill_selector(pixmap: &mut Pixmap, area: Rect, radius: f32, style: &crate::theme::TextStyle) {
+    if let Some(path) = rounded_rect(area.x, area.y, area.width, area.height, radius) {
+        let mut paint = selector_paint(style, (area.x, area.y, area.width, area.height));
+        paint.anti_alias = true;
+        pixmap.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
+}
+
+/// Break a text into lines no wider than `width`, at its spaces (a word
+/// wider than that stays whole). When it takes more than `max_lines`, the
+/// last line holds all the rest.
+fn wrap(
+    fonts: &mut Fonts,
+    font: &FontRef,
+    text: &str,
+    width: f32,
+    max_lines: usize,
+) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_owned()
+        } else {
+            format!("{current} {word}")
+        };
+        if current.is_empty() || fonts.measure(font, &candidate) <= width {
+            current = candidate;
+        } else {
+            lines.push(std::mem::replace(&mut current, word.to_owned()));
+        }
+    }
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    if lines.len() > max_lines.max(1) {
+        let rest = lines.split_off(max_lines.max(1) - 1).join(" ");
+        lines.push(rest);
+    }
+    lines
+}
+
 impl TaskUi {
     pub fn new(
         theme: &MenuTheme,
@@ -261,19 +323,6 @@ impl TaskUi {
             message_height,
             button_height,
         );
-        let compact_height = padding * 3.4 + message_height + button_height;
-        let compact_width = width * COMPACT_WIDTH;
-        let compact = Layout::new(
-            Rect {
-                x: (width - compact_width) / 2.0,
-                y: ((room - compact_height) / 2.0).max(0.0),
-                width: compact_width,
-                height: compact_height,
-            },
-            padding,
-            message_height,
-            button_height,
-        );
         // a fixed-width font small enough for the least columns: they are
         // then exact, and so is where a click lands
         let advance = fonts.measure(&FontRef::monospace(100.0, 100.0), "M") / 100.0;
@@ -293,10 +342,14 @@ impl TaskUi {
             message_font,
             button_font,
             terminal_font,
+            padding,
+            button_height,
+            room,
+            full_window: full.window,
+            layout: full,
+            message_lines: Vec::new(),
             terminal: full.terminal,
             buttons_band: padding * 0.5 + button_height,
-            full,
-            compact,
             cell,
             line_width: (smaller * LINE_WIDTH).max(1.0),
             radius: smaller * RADIUS,
@@ -322,13 +375,73 @@ impl TaskUi {
         self.cell.0
     }
 
-    /// Whether buttons share the window with the output box: without them
-    /// the box takes their room. Call it before anything asks for rows.
-    pub fn show_buttons(&mut self, shown: bool) {
-        self.terminal = self.full.terminal;
-        if !shown {
+    /// Place what a frame shows: the question's lines (the window of the
+    /// question alone is as wide as it needs, up to half the screen, and
+    /// more lines when that is not enough) and the output box (it takes the
+    /// buttons' room when there are none). Call it before anything asks for
+    /// rows, and before `render`.
+    pub fn arrange(
+        &mut self,
+        fonts: &mut Fonts,
+        message: &str,
+        buttons: &[String],
+        with_terminal: bool,
+    ) {
+        let message = message.to_uppercase();
+        let screen = (self.size.0 as f32, self.size.1 as f32);
+        let window_width = if with_terminal {
+            self.full_window.width
+        } else {
+            let labels = capitals(buttons);
+            let least = (self.buttons_width(fonts, &labels) + self.padding * 2.0)
+                .max(screen.0 * COMPACT_WIDTH.0);
+            let wanted = fonts.measure(&self.message_font, &message) + self.padding * 2.0;
+            wanted.max(least).min(screen.0 * COMPACT_WIDTH.1)
+        };
+        self.message_lines = wrap(
+            fonts,
+            &self.message_font,
+            &message,
+            window_width - self.padding * 2.0,
+            MAX_MESSAGE_LINES,
+        );
+        let message_height = self.message_font.line_height * self.message_lines.len() as f32;
+        let window = if with_terminal {
+            self.full_window
+        } else {
+            let height = self.padding * 3.4 + message_height + self.button_height;
+            Rect {
+                x: (screen.0 - window_width) / 2.0,
+                y: ((self.room - height) / 2.0).max(0.0),
+                width: window_width,
+                height,
+            }
+        };
+        self.layout = Layout::new(window, self.padding, message_height, self.button_height);
+        self.terminal = self.layout.terminal;
+        if buttons.is_empty() {
             self.terminal.height += self.buttons_band;
         }
+    }
+
+    /// The width of every button: as wide as the widest label, and not
+    /// narrower than a least; and how wide they all are together.
+    fn button_width(&self, fonts: &mut Fonts, labels: &[String]) -> f32 {
+        let padding = self.button_font.size;
+        labels
+            .iter()
+            .map(|label| fonts.measure(&self.button_font, label) + padding * 2.0)
+            .fold(self.size.0 as f32 * BUTTON_MIN_WIDTH, f32::max)
+    }
+
+    fn button_gap(&self) -> f32 {
+        self.size.0 as f32 * BUTTON_GAP
+    }
+
+    /// How wide the row of buttons is.
+    fn buttons_width(&self, fonts: &mut Fonts, labels: &[String]) -> f32 {
+        let count = labels.len() as f32;
+        self.button_width(fonts, labels) * count + self.button_gap() * (count - 1.0).max(0.0)
     }
 
     /// The rows the output box shows.
@@ -396,32 +509,27 @@ impl TaskUi {
         })
     }
 
-    /// Draw a frame.
+    /// Draw a frame (after `arrange`).
     pub fn render(&mut self, fonts: &mut Fonts, frame: &Frame) -> Pixmap {
         let mut pixmap = self.base.clone();
-        let layout = if frame.terminal.is_some() {
-            self.full
-        } else {
-            self.compact
-        };
+        let layout = self.layout;
         fill_rounded(&mut pixmap, layout.window, self.radius, self.window_color);
-        // capitals, as everything in EmulationStation's menus
-        let message = frame.message.to_uppercase();
-        let (message_font, message) =
-            fonts.fit(&self.message_font, &message, layout.message.width, 0.6);
-        fonts.draw(
-            &mut pixmap,
-            &message_font,
-            &message,
-            TextBox {
-                x: layout.message.x,
-                y: layout.message.y,
-                width: layout.message.width,
-                height: layout.message.height,
-                align: Align::Center,
-            },
-            self.text.color,
-        );
+        for (index, line) in self.message_lines.iter().enumerate() {
+            let (font, line) = fonts.fit(&self.message_font, line, layout.message.width, 0.6);
+            fonts.draw(
+                &mut pixmap,
+                &font,
+                &line,
+                TextBox {
+                    x: layout.message.x,
+                    y: layout.message.y + index as f32 * self.message_font.line_height,
+                    width: layout.message.width,
+                    height: self.message_font.line_height,
+                    align: Align::Center,
+                },
+                self.text.color,
+            );
+        }
         fill(
             &mut pixmap,
             Rect {
@@ -441,20 +549,10 @@ impl TaskUi {
     }
 
     fn draw_buttons(&mut self, pixmap: &mut Pixmap, fonts: &mut Fonts, frame: &Frame, row: Rect) {
-        let labels: Vec<String> = frame
-            .buttons
-            .iter()
-            .map(|label| label.to_uppercase())
-            .collect();
-        let padding = self.button_font.size;
-        let screen_width = self.size.0 as f32;
-        // all of them as wide as the widest, and not narrower than a least
-        let width = labels
-            .iter()
-            .map(|label| fonts.measure(&self.button_font, label) + padding * 2.0)
-            .fold(screen_width * BUTTON_MIN_WIDTH, f32::max);
-        let gap = screen_width * BUTTON_GAP;
-        let total = width * labels.len() as f32 + gap * labels.len().saturating_sub(1) as f32;
+        let labels = capitals(frame.buttons);
+        let width = self.button_width(fonts, &labels);
+        let gap = self.button_gap();
+        let total = self.buttons_width(fonts, &labels);
         let mut x = row.x + (row.width - total) / 2.0;
         self.buttons.clear();
         for (index, label) in labels.iter().enumerate() {
@@ -464,13 +562,22 @@ impl TaskUi {
                 width,
                 height: row.height,
             };
-            // as in ES: the chosen one (controller, keyboard, or under the
-            // pointer) is filled, the others have a border
-            let chosen = frame.focus == Some(index) || frame.hover == Some(index);
+            // the colours of the rest of the overlay: the chosen one (controller
+            // or keyboard) has the selector and the selected text colour; the
+            // one under the pointer, the faint tint; the others a border, as ES
+            let focused = frame.focus == Some(index);
             let corner = self.radius * 0.6;
-            if chosen {
-                fill_rounded(pixmap, rect, corner, self.text.selector_color);
+            if focused {
+                fill_selector(pixmap, rect, corner, &self.text);
             } else {
+                if frame.hover == Some(index) {
+                    fill_rounded(
+                        pixmap,
+                        rect,
+                        corner,
+                        self.text.selector_color.with_alpha(HOVER_ALPHA),
+                    );
+                }
                 let border = self.line_width * 1.5;
                 outline(
                     pixmap,
@@ -496,7 +603,7 @@ impl TaskUi {
                     height: self.button_font.line_height,
                     align: Align::Center,
                 },
-                if chosen {
+                if focused {
                     self.text.selected_color
                 } else {
                     self.text.color

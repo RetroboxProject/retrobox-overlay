@@ -350,13 +350,12 @@ impl State {
             .map(|choice| texts.text(choice.text_key()))
             .collect();
         let show_output = task.model.phase() != Phase::Ask;
-        ui.show_buttons(!buttons.is_empty());
+        ui.arrange(&mut self.content.fonts, &message, &buttons, show_output);
         let (_, furthest) = ui.rows(&task.terminal, task.scroll);
         task.scroll = task.scroll.min(furthest);
         let pixmap = ui.render(
             &mut self.content.fonts,
             &Frame {
-                message: &message,
                 buttons: &buttons,
                 focus: (!buttons.is_empty()).then(|| task.model.focus()),
                 hover: task.hover,

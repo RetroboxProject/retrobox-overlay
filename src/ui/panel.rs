@@ -44,7 +44,7 @@ const FONT_SIZE_LARGE: f32 = 0.085;
 const LINE_SPACING: f32 = 1.5;
 const WIDTH_IN_LETTERS: f32 = 33.0;
 /// Opacity of the mouse hover highlight: the selector colour, faint.
-const HOVER_ALPHA: u8 = 0x50;
+pub(super) const HOVER_ALPHA: u8 = 0x50;
 
 /// What a menu entry does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -431,10 +431,31 @@ impl Panel {
         self.set_selected_value(|_| value)
     }
 
+    /// Move the volume slider by `delta` wherever the selection is: what
+    /// changed, if the volume is there and no page is open.
+    pub fn adjust_volume(&mut self, delta: f32) -> Option<(SliderKind, f32)> {
+        if self.page.is_some() {
+            return None;
+        }
+        let index = self
+            .sliders
+            .iter()
+            .position(|item| item.action == MenuAction::Slider(SliderKind::Volume))?;
+        self.set_slider_value(index, |value| value + delta)
+    }
+
     fn set_selected_value(&mut self, change: impl Fn(f32) -> f32) -> Option<(SliderKind, f32)> {
         let (None, Target::Slider(index)) = (&self.page, self.selected) else {
             return None;
         };
+        self.set_slider_value(index, change)
+    }
+
+    fn set_slider_value(
+        &mut self,
+        index: usize,
+        change: impl Fn(f32) -> f32,
+    ) -> Option<(SliderKind, f32)> {
         let item = self.sliders.get_mut(index)?;
         let (MenuAction::Slider(kind), Some(value), true) = (item.action, item.value, item.enabled)
         else {
@@ -1821,6 +1842,16 @@ fn fill_selector(pixmap: &mut Pixmap, y: f32, width: f32, height: f32, style: &T
     let Some(rect) = Rect::from_xywh(0.0, y, width, height) else {
         return;
     };
+    let paint = selector_paint(style, (0.0, y, width, height));
+    pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+}
+
+/// What paints the selector over a rectangle (x, y, width, height): the
+/// theme's selector colour, or its gradient.
+pub(super) fn selector_paint(
+    style: &TextStyle,
+    (x, y, width, height): (f32, f32, f32, f32),
+) -> Paint<'static> {
     let start: Color = style.selector_color.to_color();
     let end: Color = style.selector_color_end.to_color();
     let mut paint = Paint::default();
@@ -1828,9 +1859,9 @@ fn fill_selector(pixmap: &mut Pixmap, y: f32, width: f32, height: f32, style: &T
         paint.set_color(start);
     } else {
         let (from, to) = if style.selector_gradient_type == "horizontal" {
-            (Point::from_xy(0.0, y), Point::from_xy(width, y))
+            (Point::from_xy(x, y), Point::from_xy(x + width, y))
         } else {
-            (Point::from_xy(0.0, y), Point::from_xy(0.0, y + height))
+            (Point::from_xy(x, y), Point::from_xy(x, y + height))
         };
         match LinearGradient::new(
             from,
@@ -1843,5 +1874,5 @@ fn fill_selector(pixmap: &mut Pixmap, y: f32, width: f32, height: f32, style: &T
             None => paint.shader = Shader::SolidColor(start),
         }
     }
-    pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+    paint
 }

@@ -386,7 +386,10 @@ impl State {
             | Nav::Audio
             | Nav::Backspace
             | Nav::Space
-            | Nav::Enter => {}
+            | Nav::Enter
+            | Nav::StickUp
+            | Nav::StickDown
+            | Nav::Flip => {}
         }
     }
 

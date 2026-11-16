@@ -30,10 +30,17 @@
 //!
 //! [manual]
 //! scaling = compositor    ; compositor | overlay
+//!
+//! [osk]                   ; the on-screen keyboard
+//! width = 0.75            ; its width, 0.1 to 0.75 of the screen's (the right stick
+//!                         ; changes it; saved here when the keyboard closes)
+//! position = bottom       ; bottom | top (R3 flips it; saved here too)
 //! ```
 
 use std::path::Path;
 use std::time::Duration;
+
+use anyhow::{Context as _, Result};
 
 use ini::Ini;
 
@@ -100,15 +107,57 @@ pub struct Config {
     pub row_scale: f32,
 }
 
-/// The keyboard layout of the on-screen keyboard (xkb names), when
-/// `overlay.ini` sets it: else the compositor's, the environment's or the
-/// system's.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// The on-screen keyboard's width, relative to the screen's: the least, the
+/// most and the default.
+pub const OSK_WIDTH: (f32, f32, f32) = (0.1, 0.75, 0.75);
+
+/// Where the on-screen keyboard is, and how big.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OskView {
+    /// Its width, relative to the screen's (`OSK_WIDTH`'s range).
+    pub width: f32,
+    /// At the top of the screen instead of the bottom.
+    pub top: bool,
+}
+
+impl Default for OskView {
+    fn default() -> Self {
+        Self {
+            width: OSK_WIDTH.2,
+            top: false,
+        }
+    }
+}
+
+impl OskView {
+    /// The same view with its width moved by `delta`, kept in range and in
+    /// whole percents (what `overlay.ini` holds).
+    #[must_use]
+    pub fn resized(self, delta: f32) -> Self {
+        let width = ((self.width + delta).clamp(OSK_WIDTH.0, OSK_WIDTH.1) * 100.0).round() / 100.0;
+        Self { width, ..self }
+    }
+
+    /// The same view at the other edge of the screen.
+    #[must_use]
+    pub const fn flipped(self) -> Self {
+        Self {
+            top: !self.top,
+            ..self
+        }
+    }
+}
+
+/// The on-screen keyboard's settings: the keyboard layout (xkb names), when
+/// `overlay.ini` sets it (else the compositor's, the environment's or the
+/// system's), and where it is and how big.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct OskConfig {
     pub model: Option<String>,
     pub layout: Option<String>,
     pub variant: Option<String>,
     pub options: Option<String>,
+    pub view: OskView,
 }
 
 impl OskConfig {
@@ -128,7 +177,7 @@ impl OskConfig {
 /// cannot tell another window taking the focus, so it stays until closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TakeKeyboard {
-    /// Only when opened from the keyboard (Ctrl+Shift+O, Ctrl+Shift+O, or by hand).
+    /// Only when opened from the keyboard (Ctrl+Shift+O, Shift+F7, or by hand).
     Auto,
     Always,
     Never,
@@ -326,19 +375,155 @@ impl Config {
                     .filter(|value| !value.is_empty())
                     .map(str::to_owned)
             };
+            let mut view = OskView::default();
+            if let Some(width) = name("width").and_then(|value| value.parse::<f32>().ok()) {
+                // 0.45 or 45 (percent)
+                let fraction = if width > 1.0 { width / 100.0 } else { width };
+                view = view.resized(fraction - view.width);
+            }
+            view.top = name("position").is_some_and(|value| value.eq_ignore_ascii_case("top"));
             self.osk = OskConfig {
                 model: name("model"),
                 layout: name("layout"),
                 variant: name("variant"),
                 options: name("options"),
+                view,
             };
         }
     }
 }
 
+/// Write the on-screen keyboard's view in the `overlay.ini` of `dir` (the
+/// user's), when it is not what the file says already: only those two keys
+/// are touched, and the rest of the file (comments included) stays as it is.
+pub fn save_osk_view(dir: &Path, view: OskView) -> Result<()> {
+    let path = dir.join(FILE_NAME);
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let width = format!("{:.2}", view.width);
+    let position = if view.top { "top" } else { "bottom" };
+    let new = set_keys(&text, "osk", &[("width", &width), ("position", position)]);
+    if new == text {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    // all or nothing: a half-written file would lose the user's settings
+    let temporary = dir.join(format!("{FILE_NAME}.tmp"));
+    std::fs::write(&temporary, new)
+        .with_context(|| format!("cannot write {}", temporary.display()))?;
+    std::fs::rename(&temporary, &path).with_context(|| format!("cannot replace {}", path.display()))
+}
+
+/// `text` (an ini file) with the `keys` set in `section`: a key that is
+/// there changes its value, the others are added at the end of the section,
+/// and the section itself at the end of the file, when it is missing.
+fn set_keys(text: &str, section: &str, keys: &[(&str, &str)]) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let header = |line: &str| {
+        line.trim()
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+            .map(|name| name.trim().to_ascii_lowercase())
+    };
+    let Some(start) = lines
+        .iter()
+        .position(|line| header(line).is_some_and(|name| name == section))
+    else {
+        if lines.last().is_some_and(|line| !line.trim().is_empty()) {
+            lines.push(String::new());
+        }
+        lines.push(format!("[{section}]"));
+        lines.extend(keys.iter().map(|(key, value)| format!("{key} = {value}")));
+        return lines.join("\n") + "\n";
+    };
+    let end = lines[start + 1..]
+        .iter()
+        .position(|line| header(line).is_some())
+        .map_or(lines.len(), |offset| start + 1 + offset);
+    // new keys go after the section's last line that says something
+    let mut insert = (start + 1..end)
+        .rev()
+        .find(|&index| !lines[index].trim().is_empty())
+        .map_or(start + 1, |index| index + 1);
+    for (key, value) in keys {
+        let line = format!("{key} = {value}");
+        let found = (start + 1..end).find(|&index| {
+            let text = lines[index].trim();
+            !text.starts_with([';', '#'])
+                && text
+                    .split_once('=')
+                    .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case(key))
+        });
+        if let Some(index) = found {
+            lines[index] = line;
+        } else {
+            lines.insert(insert, line);
+            insert += 1;
+        }
+    }
+    lines.join("\n") + "\n"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const VIEW: OskView = OskView {
+        width: 0.42,
+        top: true,
+    };
+
+    #[test]
+    fn the_keyboard_width_stays_in_range() {
+        let view = OskView::default();
+        assert!((view.resized(0.5).width - 0.75).abs() < 1e-6);
+        assert!((view.resized(-1.0).width - 0.1).abs() < 1e-6);
+        assert!((view.resized(-0.02).width - 0.73).abs() < 1e-6);
+        assert!(view.flipped().top && !view.flipped().flipped().top);
+    }
+
+    #[test]
+    fn keys_are_added_or_changed_where_they_belong() {
+        let text = "[overlay]\nside = left ; mine\n\n[osk]\nlayout = es\n; a note\n\n[clock]\nenabled = no\n";
+        let new = set_keys(text, "osk", &[("width", "0.42"), ("position", "top")]);
+        assert_eq!(
+            new,
+            "[overlay]\nside = left ; mine\n\n[osk]\nlayout = es\n; a note\nwidth = 0.42\nposition = top\n\n[clock]\nenabled = no\n"
+        );
+        // again: nothing to add, the values change in place
+        let again = set_keys(&new, "osk", &[("width", "0.5"), ("position", "top")]);
+        assert!(again.contains("width = 0.5\n") && !again.contains("0.42"));
+        assert_eq!(set_keys(&again, "osk", &[("width", "0.5")]), again);
+    }
+
+    #[test]
+    fn a_missing_section_is_added_at_the_end() {
+        assert_eq!(
+            set_keys("", "osk", &[("width", "0.3")]),
+            "[osk]\nwidth = 0.3\n"
+        );
+        assert_eq!(
+            set_keys("[clock]\nenabled = no", "osk", &[("width", "0.3")]),
+            "[clock]\nenabled = no\n\n[osk]\nwidth = 0.3\n"
+        );
+    }
+
+    #[test]
+    fn the_view_is_saved_only_when_it_changed() {
+        let dir = std::env::temp_dir().join(format!("overlay-osk-{}", std::process::id()));
+        let file = dir.join(FILE_NAME);
+        std::fs::remove_dir_all(&dir).ok();
+        save_osk_view(&dir, VIEW).unwrap();
+        let config = Config::load(&[&dir]);
+        assert_eq!(config.osk.view, VIEW);
+        let written = std::fs::metadata(&file).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        save_osk_view(&dir, VIEW).unwrap();
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().modified().unwrap(),
+            written
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn later_files_win() {

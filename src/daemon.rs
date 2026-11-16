@@ -38,6 +38,8 @@ use calloop::signals::{Signal, Signals};
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use evdev::{AbsoluteAxisCode, Device, EventSummary, KeyCode};
+
+use crate::probe::{self, Found, Kind};
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
@@ -327,38 +329,24 @@ impl State {
         for path in gone {
             self.forget(&path);
         }
-        let Ok(entries) = std::fs::read_dir(INPUT_DIR) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let is_event = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("event"));
-            if is_event && !self.inputs.contains_key(&path) {
-                self.watch(path);
+        for found in probe::scan() {
+            if !self.inputs.contains_key(&found.path) {
+                self.watch(found);
             }
         }
     }
 
-    /// Watch a device if it is a controller or a keyboard that can be read.
-    fn watch(&mut self, path: PathBuf) {
+    /// Watch a controller or a keyboard.
+    fn watch(&mut self, found: Found) {
+        let path = found.path;
         // not readable yet (udev sets the permissions just after): IN_ATTRIB
         // brings it back
         let Ok(device) = Device::open(&path) else {
             return;
         };
-        let watched = match device.supported_keys() {
-            Some(keys) if keys.contains(KeyCode::BTN_SOUTH) && keys.contains(KeyCode::BTN_EAST) => {
-                Watched::Pad(Hold::new(&device))
-            }
-            Some(keys)
-                if keys.contains(KeyCode::KEY_F7) && keys.contains(KeyCode::KEY_LEFTSHIFT) =>
-            {
-                Watched::Keyboard(Modifiers::default())
-            }
-            _ => return,
+        let watched = match found.kind {
+            Kind::Pad => Watched::Pad(Hold::new(&device)),
+            Kind::Keyboard => Watched::Keyboard(Modifiers::default()),
         };
         if device.set_nonblocking(true).is_err() {
             return;

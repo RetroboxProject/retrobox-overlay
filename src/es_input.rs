@@ -37,6 +37,8 @@ fn standard_code(name: &str) -> Option<KeyCode> {
         "pagedown" => KeyCode::BTN_TR,
         "l2" => KeyCode::BTN_TL2,
         "r2" => KeyCode::BTN_TR2,
+        "l3" => KeyCode::BTN_THUMBL,
+        "r3" => KeyCode::BTN_THUMBR,
         "hotkey" => KeyCode::BTN_MODE,
         "up" => KeyCode::BTN_DPAD_UP,
         "down" => KeyCode::BTN_DPAD_DOWN,

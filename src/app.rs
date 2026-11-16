@@ -65,11 +65,13 @@ use x11rb::connection::Connection as _;
 use x11rb::protocol::Event as XEvent;
 use x11rb::protocol::xproto::{self, NotifyDetail, NotifyMode};
 
-use crate::config::{Config, Side, TakeKeyboard, VerticalPosition};
+use crate::config::{self, Config, OskView, Side, TakeKeyboard, VerticalPosition};
 use crate::emulator::{EmuAction, Emulator, Request, Typist};
+use crate::es_settings;
 use crate::i18n::Translator;
 use crate::input::{self, Input, Nav, Pad};
 use crate::manual::Manual;
+use crate::paths;
 use crate::savestates::StateMode;
 use crate::system::audio::devices::{Action, Snapshot};
 use crate::system::audio::hub::Hub;
@@ -99,6 +101,9 @@ const FRAME: Duration = Duration::from_millis(16);
 /// it does then.
 const REPEAT_DELAY: Duration = Duration::from_millis(400);
 const REPEAT_INTERVAL: Duration = Duration::from_millis(70);
+/// How much of the screen's width the right stick adds to (or takes from)
+/// the on-screen keyboard's per step.
+const OSK_STEP: f32 = 0.02;
 /// Space between the clock and the screen edge when it is at the top or bottom.
 const CLOCK_MARGIN: f32 = crate::ui::clock::MARGIN;
 /// How long the panel waits, at most, for the volume before it shows.
@@ -212,6 +217,8 @@ struct State {
     outcome: Option<Outcome>,
     /// What applies each slider's changes.
     setters: Vec<Setter>,
+    /// Whether ES's option to set the volume with the right stick is on.
+    stick_volume: bool,
     /// What the menu's help prompts were drawn for (a page open, what kind
     /// of thing selected).
     menu_help_shown: Option<(bool, Focus, bool)>,
@@ -396,6 +403,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         setters: Vec::new(),
         press: None,
         finger: None,
+        stick_volume: es_settings::right_stick_volume(),
         menu_help_shown: None,
         audio: None,
         devices: None,
@@ -709,11 +717,12 @@ impl State {
         let labels = Labels {
             accents: self.content.translator.text("osk-accents"),
         };
-        let osk = Osk::new(&self.content.theme, screen, self.layout(), labels);
+        let view = self.content.config.osk.view;
+        let osk = Osk::new(&self.content.theme, screen, view, self.layout(), labels);
         let piece = self.display.create_piece(Spec {
-            anchor: Anchor::BOTTOM,
+            anchor: osk_anchor(view.top),
             size: (osk.width, osk.height),
-            margin: [0, 0, -(osk.height as i32), 0],
+            margin: osk_margin(view.top, -(osk.height as i32)),
             keyboard: false,
             fade: false,
         });
@@ -724,6 +733,35 @@ impl State {
                 state.animate()
             })
             .ok();
+    }
+
+    /// Change the on-screen keyboard's size or edge, keeping what the user
+    /// has done on it.
+    fn osk_set_view(&mut self, view: OskView) {
+        let screen = self.dim.size;
+        let t = ease_out(self.progress());
+        let Some((osk, piece)) = self.osk.as_mut() else {
+            return;
+        };
+        if view == osk.view {
+            return;
+        }
+        let old_size = (osk.width, osk.height);
+        *osk = osk.reshaped(&self.content.theme, screen, view);
+        let size = (osk.width, osk.height);
+        let margin = (-(osk.height as f32) * (1.0 - t)).round() as i32;
+        piece.reshape(
+            &self.display,
+            osk_anchor(view.top),
+            size,
+            osk_margin(view.top, margin),
+        );
+        // Wayland says the new size with a configure; an edge change alone
+        // (same size) may not bring one
+        if size == old_size || matches!(self.display, Display::X11(_)) {
+            piece.size = size;
+            self.draw_osk();
+        }
     }
 
     /// What the on-screen keyboard types: the layout `overlay.ini` names,
@@ -761,7 +799,7 @@ impl State {
         let t = ease_out(self.progress());
         if let Some((osk, piece)) = &mut self.osk {
             let margin = (-(osk.height as f32) * (1.0 - t)).round() as i32;
-            piece.set_margin(&self.display, [0, 0, margin, 0]);
+            piece.set_margin(&self.display, osk_margin(osk.view.top, margin));
             piece.commit();
         }
         self.dim.set_opacity(&self.display, t);
@@ -790,9 +828,14 @@ impl State {
 
     /// The on-screen keyboard slides back down, as quickly as it came up.
     fn slide_out(&mut self, event_loop: &mut EventLoop<'static, Self>) {
-        let Some(height) = self.osk.as_ref().map(|(osk, _)| osk.height as f32) else {
+        let Some((height, top)) = self
+            .osk
+            .as_ref()
+            .map(|(osk, _)| (osk.height as f32, osk.view.top))
+        else {
             return;
         };
+        self.save_osk_view();
         let total = self.content.config.animation_ms;
         let from = ease_out(self.progress());
         let start = Instant::now();
@@ -808,13 +851,30 @@ impl State {
             let t = from * (1.0 - ease_out(elapsed));
             if let Some((_, piece)) = &mut self.osk {
                 let margin = (-height * (1.0 - t)).round() as i32;
-                piece.set_margin(&self.display, [0, 0, margin, 0]);
+                piece.set_margin(&self.display, osk_margin(top, margin));
                 piece.commit();
             }
             self.display.flush();
             if event_loop.dispatch(Some(FRAME), self).is_err() {
                 break;
             }
+        }
+    }
+
+    /// Remember the on-screen keyboard's size and edge in the user's
+    /// `overlay.ini`, if the user changed them (it is written only then).
+    fn save_osk_view(&self) {
+        let Some((osk, _)) = &self.osk else {
+            return;
+        };
+        if osk.view == self.content.config.osk.view {
+            return;
+        }
+        let Some(dir) = paths::config_dirs().pop() else {
+            return;
+        };
+        if let Err(err) = config::save_osk_view(&dir, osk.view) {
+            log::warn!("cannot save the keyboard's size: {err:#}");
         }
     }
 
@@ -1357,6 +1417,7 @@ impl State {
     /// held key does (the compositor repeats the keyboard's).
     fn pad_input(&mut self, input: Input) {
         let repeats = matches!(input.nav, Nav::Up | Nav::Down | Nav::Left | Nav::Right)
+            || (self.stick_active() && matches!(input.nav, Nav::StickUp | Nav::StickDown))
             || self.osk_repeats(input.nav)
             || (self.manual_is_open() && matches!(input.nav, Nav::PrevPage | Nav::NextPage));
         if repeats && (input.pressed || self.repeat.is_some_and(|(nav, _)| nav == input.nav)) {
@@ -1379,6 +1440,27 @@ impl State {
             }
         }
         self.input(input);
+    }
+
+    /// Whether the right stick does something now: it sizes the on-screen
+    /// keyboard, and sets the menu's volume when ES's option for that is on,
+    /// except in the pages (the slots, the audio devices) and the manual.
+    fn stick_active(&self) -> bool {
+        self.osk.is_some()
+            || (self.task.is_none()
+                && !self.manual_is_open()
+                && self.stick_volume
+                && self
+                    .panel
+                    .as_ref()
+                    .is_some_and(|(panel, _)| !panel.page_open()))
+    }
+
+    /// Stop the repeat of `nav`, if it is the one repeating.
+    fn stop_repeat(&mut self, nav: Nav) {
+        if let Some((_, token)) = self.repeat.take_if(|(repeating, _)| *repeating == nav) {
+            self.handle.remove(token);
+        }
     }
 
     /// A press or release, from a controller or the keyboard.
@@ -1443,7 +1525,21 @@ impl State {
                 }
             }
             Nav::Audio => self.open_audio(),
-            Nav::Backspace | Nav::Space | Nav::Enter => {}
+            // the volume, wherever the selection is; a page that opened with
+            // the stick held takes no more of it
+            Nav::StickUp | Nav::StickDown => {
+                if self.stick_active() {
+                    let delta = if nav == Nav::StickUp { STEP } else { -STEP };
+                    let change = self
+                        .panel
+                        .as_mut()
+                        .and_then(|(panel, _)| panel.adjust_volume(delta));
+                    self.slid(change);
+                } else {
+                    self.stop_repeat(nav);
+                }
+            }
+            Nav::Backspace | Nav::Space | Nav::Enter | Nav::Flip => {}
             // the shortcut that opened the overlay, again: back to the game
             Nav::Close => self.outcome = Some(Outcome::Back),
             // R1 (Page Down): to the buttons and sliders and back; L1
@@ -1469,7 +1565,21 @@ impl State {
         let Some((osk, _)) = self.osk.as_mut() else {
             return;
         };
+        let view = osk.view;
         let key = match nav {
+            // the right stick: up makes the keyboard bigger; R3: the other edge
+            Nav::StickUp => {
+                self.osk_set_view(view.resized(OSK_STEP));
+                return;
+            }
+            Nav::StickDown => {
+                self.osk_set_view(view.resized(-OSK_STEP));
+                return;
+            }
+            Nav::Flip => {
+                self.osk_set_view(view.flipped());
+                return;
+            }
             Nav::Up | Nav::Down | Nav::Left | Nav::Right => {
                 let direction = match nav {
                     Nav::Up => Direction::Up,
@@ -1510,7 +1620,13 @@ impl State {
             return false;
         };
         match nav {
-            Nav::Backspace | Nav::Space | Nav::Enter | Nav::ZoomOut | Nav::ZoomIn => true,
+            Nav::Backspace
+            | Nav::Space
+            | Nav::Enter
+            | Nav::ZoomOut
+            | Nav::ZoomIn
+            | Nav::StickUp
+            | Nav::StickDown => true,
             Nav::Confirm => osk.types(osk.selected()),
             _ => false,
         }
@@ -1591,6 +1707,21 @@ impl State {
 }
 
 /// The panel's margins (top, right, bottom, left): `margin` on its edge.
+/// The edge of the screen the on-screen keyboard is at.
+const fn osk_anchor(top: bool) -> Anchor {
+    if top { Anchor::TOP } else { Anchor::BOTTOM }
+}
+
+/// The margin that pushes the keyboard `margin` pixels (negative) past its
+/// edge, to slide it in and out.
+const fn osk_margin(top: bool, margin: i32) -> [i32; 4] {
+    if top {
+        [margin, 0, 0, 0]
+    } else {
+        [0, 0, margin, 0]
+    }
+}
+
 const fn edge_margin(side: Side, margin: i32) -> [i32; 4] {
     match side {
         Side::Right => [0, margin, 0, 0],

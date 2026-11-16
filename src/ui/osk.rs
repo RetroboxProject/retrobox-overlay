@@ -20,6 +20,7 @@ use std::path::Path;
 use super::icons::Icon;
 use super::layout::{Layout, Page, Slot, Step};
 use super::text::{FontRef, Fonts, TextBox};
+use crate::config::OskView;
 use crate::theme::{MenuTheme, Rgba};
 
 /// The grid's width in keys: ten keys between two side columns.
@@ -141,6 +142,8 @@ pub struct Osk {
     /// The keyboard's size in pixels.
     pub width: u32,
     pub height: u32,
+    /// How big it is and which edge it is at.
+    pub view: OskView,
     keys: Vec<Key>,
     selected: usize,
     hovered: Option<usize>,
@@ -164,11 +167,17 @@ pub struct Osk {
 
 impl Osk {
     /// A keyboard sized for a screen, in the theme's colours and font.
-    pub fn new(theme: &MenuTheme, screen: (u32, u32), layout: Layout, labels: Labels) -> Self {
+    pub fn new(
+        theme: &MenuTheme,
+        screen: (u32, u32),
+        view: OskView,
+        layout: Layout,
+        labels: Labels,
+    ) -> Self {
         let (screen_width, screen_height) = (screen.0 as f32, screen.1 as f32);
-        // the key's width: the height limit, or the screen's width
+        // the key's width: the height limit, or the width the view asks for
         let unit = (screen_height * MAX_HEIGHT / (ROWS * ROW_PITCH + 2.0 * PADDING))
-            .min(screen_width / (COLUMNS + 2.0 * PADDING))
+            .min(screen_width * view.width / (COLUMNS + 2.0 * PADDING))
             .floor()
             .max(8.0);
         let width = ((COLUMNS + 2.0 * PADDING) * unit).round();
@@ -189,6 +198,7 @@ impl Osk {
         Self {
             width: width as u32,
             height: height as u32,
+            view,
             keys,
             selected,
             hovered: None,
@@ -207,6 +217,23 @@ impl Osk {
             badge_font: font(unit * 0.2),
             unit,
         }
+    }
+
+    /// This keyboard in another view, with what the user has done to it (the
+    /// key selected, the layer, shift) kept.
+    #[must_use]
+    pub fn reshaped(&self, theme: &MenuTheme, screen: (u32, u32), view: OskView) -> Self {
+        let mut osk = Self::new(
+            theme,
+            screen,
+            view,
+            self.layout.clone(),
+            self.labels.clone(),
+        );
+        osk.selected = self.selected;
+        osk.layer = self.layer;
+        osk.shift = self.shift;
+        osk
     }
 
     /// The theme's icons for the controller buttons the keys name, drawn in
@@ -470,9 +497,16 @@ impl Osk {
     pub fn render(&self, fonts: &mut Fonts) -> Option<Pixmap> {
         let mut pixmap = Pixmap::new(self.width, self.height)?;
         pixmap.fill(self.background.to_color());
+        // the line on the edge that faces the screen
+        let line = (self.unit * 0.03).max(1.0);
+        let line_y = if self.view.top {
+            self.height as f32 - line
+        } else {
+            0.0
+        };
         fill_rect(
             &mut pixmap,
-            (0.0, 0.0, self.width as f32, (self.unit * 0.03).max(1.0)),
+            (0.0, line_y, self.width as f32, line),
             self.separator,
         );
         let radius = self.unit * 0.12;
@@ -549,18 +583,19 @@ impl Osk {
                 self.draw_badge(&mut pixmap, fonts, badge, key.rect, (text, selected));
             }
         }
-        self.round_top_corners(&mut pixmap);
+        self.round_outer_corners(&mut pixmap);
         Some(pixmap)
     }
 
-    /// Round the keyboard's top corners (its bottom ones are past the
-    /// screen's edge), a little more than the keys': what is outside is
+    /// Round the keyboard's corners that face the screen (the others are past
+    /// its edge), a little more than the keys': what is outside is
     /// transparent.
-    fn round_top_corners(&self, pixmap: &mut Pixmap) {
+    fn round_outer_corners(&self, pixmap: &mut Pixmap) {
         let radius = self.unit * WINDOW_RADIUS;
         let (width, height) = (self.width as f32, self.height as f32);
-        // the path goes below the canvas: only its top corners show
-        let Some(path) = rounded_rect(0.0, 0.0, width, height + radius, radius) else {
+        // the path goes past the canvas: only the corners facing the screen show
+        let overshoot = if self.view.top { -radius } else { 0.0 };
+        let Some(path) = rounded_rect(0.0, overshoot, width, height + radius, radius) else {
             return;
         };
         if let Some(mut mask) = tiny_skia::Mask::new(self.width, self.height) {
@@ -706,6 +741,7 @@ mod tests {
         Osk::new(
             &MenuTheme::default(),
             (1920, 1080),
+            OskView::default(),
             Layout::fallback(),
             labels(),
         )
@@ -713,6 +749,28 @@ mod tests {
 
     fn selected_action(osk: &Osk) -> Action {
         osk.keys[osk.selected()].action
+    }
+
+    #[test]
+    fn the_view_sizes_and_places_the_keyboard_and_keeps_its_state() {
+        let mut osk = osk();
+        osk.move_selection(Direction::Right);
+        let screen = (1920, 1080);
+        let narrow = osk.reshaped(
+            &MenuTheme::default(),
+            screen,
+            osk.view.resized(-0.3).flipped(),
+        );
+        assert!(narrow.width < osk.width && narrow.view.top);
+        assert!(f32::from(u16::try_from(narrow.width).unwrap()) <= 1920.0 * 0.46);
+        assert_eq!(narrow.selected(), osk.selected());
+        assert!(!narrow.shift);
+        let small = osk.reshaped(
+            &MenuTheme::default(),
+            screen,
+            OskView::default().resized(-1.0),
+        );
+        assert!(small.width >= 100 && small.width <= 1920 / 10 + 14);
     }
 
     #[test]

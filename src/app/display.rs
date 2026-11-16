@@ -840,6 +840,36 @@ impl Piece {
         }
     }
 
+    /// Change where it is and how big (the on-screen keyboard's size and
+    /// edge): the new size comes later on Wayland, with the compositor's
+    /// configure.
+    pub fn reshape(
+        &mut self,
+        display: &Display,
+        anchor: Anchor,
+        size: (u32, u32),
+        margin: [i32; 4],
+    ) {
+        self.spec.anchor = anchor;
+        self.spec.size = size;
+        self.spec.margin = margin;
+        match (&self.kind, display) {
+            (Kind::Layer { layer, .. }, _) => {
+                layer.set_anchor(anchor);
+                layer.set_size(size.0, size.1);
+                let [top, right, bottom, left] = margin;
+                layer.set_margin(top, right, bottom, left);
+                layer.commit();
+            }
+            (Kind::Window(window), Display::X11(x11)) => {
+                let (x, y, _, _) = x11.geometry(&self.spec);
+                window.move_to(x, y);
+                self.size = size;
+            }
+            _ => {}
+        }
+    }
+
     /// Apply what changed (Wayland's commit; X11 applies at once).
     pub fn commit(&self) {
         if let Kind::Layer { layer, .. } = &self.kind {

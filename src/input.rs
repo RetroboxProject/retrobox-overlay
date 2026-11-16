@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use evdev::AttributeSet;
 
 use crate::es_input::{self, Translation};
+use crate::probe::{self, Kind};
 use evdev::{AbsoluteAxisCode, Device, EventSummary, KeyCode};
 
 /// What the overlay does with a controller or keyboard input.
@@ -43,6 +44,13 @@ pub enum Nav {
     Options,
     /// F2: the audio page, wherever the selection is.
     Audio,
+    /// The right stick up and down: the volume of the menu, the size of the
+    /// on-screen keyboard.
+    StickUp,
+    StickDown,
+    /// The right stick pressed (R3): the on-screen keyboard to the other
+    /// edge of the screen.
+    Flip,
     /// The on-screen keyboard's keys on the face buttons: backspace (west),
     /// space (north) and enter (Start). Only a controller in keyboard mode
     /// (`Pad::keyboard_mode`) sends them.
@@ -137,14 +145,7 @@ impl Pad {
         let mut axes = HashMap::new();
         if let Ok(infos) = device.get_absinfo() {
             for (axis, info) in infos {
-                if [
-                    AbsoluteAxisCode::ABS_X,
-                    AbsoluteAxisCode::ABS_Y,
-                    AbsoluteAxisCode::ABS_HAT0X,
-                    AbsoluteAxisCode::ABS_HAT0Y,
-                ]
-                .contains(&axis)
-                {
+                if axis_navs(axis).is_some() {
                     let centre = i32::midpoint(info.minimum(), info.maximum());
                     let half = ((info.maximum() - info.minimum()) / 2).max(1);
                     axes.insert(axis, (centre, half, 0));
@@ -362,6 +363,7 @@ impl Pad {
             KeyCode::BTN_TL2 => Some(Nav::PrevPage),
             KeyCode::BTN_TR2 => Some(Nav::NextPage),
             KeyCode::BTN_MODE => Some(Nav::Close),
+            KeyCode::BTN_THUMBR => Some(Nav::Flip),
             KeyCode::BTN_START => Some(Nav::Confirm),
             // the top button: north on Nintendo and PlayStation pads, west on
             // Xbox ones (their Y), whose X is north
@@ -406,12 +408,10 @@ impl Pad {
             return Vec::new();
         }
         let left = std::mem::replace(last, direction);
-        let horizontal = [AbsoluteAxisCode::ABS_X, AbsoluteAxisCode::ABS_HAT0X].contains(&axis);
-        let nav = |direction| match (direction, horizontal) {
-            (-1, false) => Some(Nav::Up),
-            (1, false) => Some(Nav::Down),
-            (-1, true) => Some(Nav::Left),
-            (1, true) => Some(Nav::Right),
+        let (towards_low, towards_high) = axis_navs(axis).unzip();
+        let nav = |direction| match direction {
+            -1 => towards_low,
+            1 => towards_high,
             _ => None,
         };
         nav(left)
@@ -419,6 +419,18 @@ impl Pad {
             .into_iter()
             .chain(nav(direction).map(Input::press))
             .collect()
+    }
+}
+
+/// What an axis does when pushed to its low end and to its high end: the
+/// left stick and the hat are the arrows, the right stick's vertical axis
+/// the volume or size; the other axes do nothing.
+const fn axis_navs(axis: AbsoluteAxisCode) -> Option<(Nav, Nav)> {
+    match axis {
+        AbsoluteAxisCode::ABS_X | AbsoluteAxisCode::ABS_HAT0X => Some((Nav::Left, Nav::Right)),
+        AbsoluteAxisCode::ABS_Y | AbsoluteAxisCode::ABS_HAT0Y => Some((Nav::Up, Nav::Down)),
+        AbsoluteAxisCode::ABS_RY => Some((Nav::StickUp, Nav::StickDown)),
+        _ => None,
     }
 }
 
@@ -447,8 +459,8 @@ impl Faces {
 /// Open and grab the physical keyboards, for the on-screen keyboard to be
 /// moved with: not the virtual ones (the launcher's, which is what the
 /// on-screen keyboard types on, would be grabbed from itself).
-pub fn open_keyboards() -> Vec<Pad> {
-    keyboard_nodes()
+fn open_keyboards() -> Vec<Pad> {
+    probe::paths(Kind::Keyboard)
         .into_iter()
         .filter_map(|path| Pad::open(&path, false))
         .map(|mut pad| {
@@ -458,83 +470,41 @@ pub fn open_keyboards() -> Vec<Pad> {
         .collect()
 }
 
-/// The device nodes of the physical keyboards, found in sysfs: opening a
-/// device just to look at it is slow (closing it waits for the kernel's RCU
-/// grace period, tens of milliseconds each, for every device in the machine).
-fn keyboard_nodes() -> Vec<PathBuf> {
-    /// `BUS_VIRTUAL`
-    const BUS_VIRTUAL: u64 = 0x06;
-    let Ok(entries) = std::fs::read_dir("/sys/class/input") else {
-        return Vec::new();
+/// Open and grab the controllers at `paths`, each once (the same device may
+/// be named by two paths); every controller of the machine when `all_if_none`
+/// and there are no paths (a screen that runs outside a game has no list of
+/// its own). For the on-screen keyboard (`keyboard`) they are read as its
+/// keys, and the physical keyboards are opened too. The one way every mode
+/// of the overlay gets its devices.
+pub fn open_pads(
+    paths: &[PathBuf],
+    all_if_none: bool,
+    swap_confirm: bool,
+    keyboard: bool,
+) -> Vec<Pad> {
+    let all;
+    let paths = if paths.is_empty() && all_if_none {
+        all = probe::paths(Kind::Pad);
+        &all
+    } else {
+        paths
     };
-    let mut nodes: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("event"))
-        .filter(|entry| {
-            let device = entry.path().join("device");
-            let read = |file: &str| std::fs::read_to_string(device.join(file)).unwrap_or_default();
-            let keys = key_bits(&read("capabilities/key"));
-            let has = |code: KeyCode| bit(&keys, code.code());
-            let bus = u64::from_str_radix(read("id/bustype").trim(), 16).unwrap_or(BUS_VIRTUAL);
-            has(KeyCode::KEY_A)
-                && has(KeyCode::KEY_ENTER)
-                && has(KeyCode::KEY_LEFT)
-                && !has(KeyCode::BTN_SOUTH)
-                && bus != BUS_VIRTUAL
-                && !read("name").to_lowercase().contains("retrobox")
-        })
-        .map(|entry| Path::new("/dev/input").join(entry.file_name()))
-        .collect();
-    nodes.sort();
-    nodes
-}
-
-/// A sysfs capability bitmap (`capabilities/key`: hexadecimal words, the
-/// highest first) as words, the lowest first.
-fn key_bits(text: &str) -> Vec<u64> {
-    text.split_whitespace()
-        .rev()
-        .map(|word| u64::from_str_radix(word, 16).unwrap_or(0))
-        .collect()
-}
-
-/// Whether bit `index` of the words is set.
-fn bit(words: &[u64], index: u16) -> bool {
-    words
-        .get(usize::from(index) / 64)
-        .is_some_and(|word| word >> (index % 64) & 1 == 1)
-}
-
-/// Open and grab every controller (a device with the south button), for a
-/// screen that runs outside a game and so has no list of its own.
-pub fn open_all_pads(swap_confirm: bool) -> Vec<Pad> {
-    gamepad_nodes()
-        .into_iter()
-        .filter_map(|path| Pad::open(&path, swap_confirm))
-        .collect()
-}
-
-/// The device nodes of the controllers (sysfs, see `keyboard_nodes`).
-fn gamepad_nodes() -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir("/sys/class/input") else {
-        return Vec::new();
-    };
-    let mut nodes: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("event"))
-        .filter(|entry| {
-            let device = entry.path().join("device");
-            let read = |file: &str| std::fs::read_to_string(device.join(file)).unwrap_or_default();
-            let name = read("name").to_lowercase();
-            bit(
-                &key_bits(&read("capabilities/key")),
-                KeyCode::BTN_SOUTH.code(),
-            ) && !name.contains("retrobox")
-        })
-        .map(|entry| Path::new("/dev/input").join(entry.file_name()))
-        .collect();
-    nodes.sort();
-    nodes
+    let mut seen = std::collections::HashSet::new();
+    let pads = paths
+        .iter()
+        .filter(|path| seen.insert(std::fs::canonicalize(path).unwrap_or_else(|_| (*path).clone())))
+        .filter_map(|path| Pad::open(path, swap_confirm))
+        .map(|mut pad| {
+            if keyboard {
+                pad.keyboard_mode();
+            }
+            pad
+        });
+    if keyboard {
+        pads.chain(open_keyboards()).collect()
+    } else {
+        pads.collect()
+    }
 }
 
 /// Whether the user holds what asks for an emulator to be installed again
@@ -553,7 +523,7 @@ fn ctrl_and_shift(keys: &evdev::AttributeSet<KeyCode>) -> bool {
 /// Whether some keyboard has Ctrl and Shift down right now (the state comes
 /// from the kernel, nothing is grabbed).
 fn modifiers_held() -> bool {
-    keyboard_nodes().iter().any(|path| {
+    probe::paths(Kind::Keyboard).iter().any(|path| {
         Device::open(path)
             .ok()
             .and_then(|device| device.get_key_state().ok())
@@ -565,7 +535,7 @@ fn modifiers_held() -> bool {
 /// now, as EmulationStation numbers them. Reads the state from the kernel,
 /// without grabbing anything.
 fn shoulders_held() -> bool {
-    gamepad_nodes().iter().any(|path| {
+    probe::paths(Kind::Pad).iter().any(|path| {
         let Ok(device) = Device::open(path) else {
             return false;
         };
@@ -627,15 +597,5 @@ mod tests {
         assert!(!ctrl_and_shift(&keys(&[KeyCode::KEY_LEFTSHIFT])));
         assert!(!ctrl_and_shift(&keys(&[KeyCode::KEY_RIGHTCTRL])));
         assert!(!ctrl_and_shift(&keys(&[])));
-    }
-
-    #[test]
-    fn reads_a_sysfs_key_bitmap() {
-        // KEY_A (30) and KEY_LEFT (105), the highest word first
-        let keys = key_bits("0 20000000000 40000000");
-        assert!(bit(&keys, 30));
-        assert!(bit(&keys, 105));
-        assert!(!bit(&keys, 29));
-        assert!(!bit(&keys, 1000));
     }
 }

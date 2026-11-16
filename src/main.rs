@@ -14,11 +14,13 @@ mod config;
 mod daemon;
 mod emulator;
 mod es_input;
+mod es_settings;
 mod i18n;
 mod input;
 mod instance;
 mod manual;
 mod paths;
+mod probe;
 mod savestates;
 mod session;
 mod system;
@@ -244,14 +246,7 @@ fn open_task_pads_later(
     let (sender, channel) = calloop::channel::channel();
     let paths = paths.to_vec();
     std::thread::spawn(move || {
-        let pads = if paths.is_empty() {
-            input::open_all_pads(swap_confirm)
-        } else {
-            paths
-                .iter()
-                .filter_map(|path| Pad::open(path, swap_confirm))
-                .collect()
-        };
+        let pads = input::open_pads(&paths, true, swap_confirm, false);
         sender.send(pads).ok();
     });
     channel
@@ -545,35 +540,22 @@ fn osk_allowed(osk: bool, demo: bool, session: Option<&Session>) -> bool {
     allowed
 }
 
-/// The game's controllers and the ones the daemon passed (outside a game,
-/// every controller), each once; for the on-screen keyboard when `keyboard`.
+/// The controllers of the game and the ones the daemon passed (see
+/// `input::open_pads`), for the on-screen keyboard when `keyboard`.
 fn open_pads(
     session: Option<&Session>,
     extra: &[PathBuf],
     swap_confirm: bool,
     keyboard: bool,
 ) -> Vec<Pad> {
-    let mut seen = std::collections::HashSet::new();
-    session
+    let paths: Vec<PathBuf> = session
         .iter()
         .flat_map(|session| &session.controllers)
         .filter(|controller| !controller.device.is_empty())
         .map(|controller| PathBuf::from(&controller.device))
         .chain(extra.iter().cloned())
-        .filter(|path| seen.insert(std::fs::canonicalize(path).unwrap_or_else(|_| path.clone())))
-        .filter_map(|path| Pad::open(&path, swap_confirm))
-        .map(|mut pad| {
-            if keyboard {
-                pad.keyboard_mode();
-            }
-            pad
-        })
-        .chain(if keyboard {
-            input::open_keyboards()
-        } else {
-            Vec::new()
-        })
-        .collect()
+        .collect();
+    input::open_pads(&paths, false, swap_confirm, keyboard)
 }
 
 /// Log to stderr from a terminal, else to the log file `name` (the
