@@ -30,6 +30,15 @@ only while it is shown.
   overlay runs at a time (`overlay.lock` in Retrobox's runtime directory); a second start
   closes it. The `overlay` setting of retrobox-core (global, per system or per game) turns it
   off over a game.
+* **Pad-to-keyboard mappings** (what gamepadly did). When `session.json` names a profile
+  (`pad_profile`, which the launcher composes from the game's own and the standard hotkeys), the
+  daemon maps the game's controllers with it while the game runs: evmapy's `.keys` format with
+  gamepadly's additions (`condition`, `cooldown`, `tap`, `mouse` and `scroll` sticks), read the
+  way gamepadly reads it. Each controller gets its player's mappings (`actions_player<N>`, else
+  `mappings`), bound to its buttons by `es_input.cfg`; every keyboard gets `actions_keyboard`.
+  Keys and mouse buttons go to a virtual keyboard and mouse (`/dev/uinput`, the `input` group,
+  as for gamepadly), `exec` commands run in the background. Nothing is grabbed; while the overlay
+  is open (it grabs the controllers) what the mappings held is let go.
 * **The game.** The launcher publishes the running game in `session.json` (runtime directory):
   its controllers, how the emulator performs each standard action, and the paths below. Without
   a running game the overlay does nothing (`--demo` shows it anyway, to try a theme).

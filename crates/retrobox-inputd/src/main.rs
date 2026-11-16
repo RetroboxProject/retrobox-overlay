@@ -3,9 +3,11 @@
 //! Runs for the whole Retrobox session, reading every controller and
 //! keyboard without taking them from EmulationStation or the games, and
 //! opens the overlay (`retrobox-overlay`, which has the screen) when it is
-//! asked for (see `daemon.rs`). It has no screen of its own.
+//! asked for (see `daemon.rs`); while a game runs, it maps the game's
+//! controllers to keys (see `mapper`). It has no screen of its own.
 
 mod daemon;
+mod mapper;
 
 use std::process::ExitCode;
 
@@ -19,7 +21,9 @@ Usage: retrobox-inputd [--version] [--help]
 Opens the overlay (retrobox-overlay) when a controller's Home/Guide button is
 held, on Hotkey+B, or on Ctrl+Shift+O or Shift+F7, until stopped; started
 again while it runs, it does nothing. Retrobox runs it with EmulationStation.
-SIGUSR1 opens or closes the overlay.
+SIGUSR1 opens or closes the overlay. While a game runs with a pad profile
+(pad_profile in session.json), it maps the game's controllers and the
+keyboards to keys, mouse and commands, as gamepadly did.
 
 Settings: hold_ms in the [overlay] section of overlay.ini, in /etc/retrobox
 and ~/.config/retrobox.

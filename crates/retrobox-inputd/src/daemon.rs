@@ -25,6 +25,10 @@
 //! keyboard shortcut of the desktop, a script) asks this process to open or
 //! close it (SIGUSR1). New controllers and keyboards are picked up as they
 //! appear (inotify on `/dev/input`).
+//!
+//! While a game runs, the same events go to the mapper too (`mapper`: the
+//! game's pad-to-keyboard profile), which follows `session.json` in the
+//! runtime directory (inotify as well).
 
 use std::collections::{HashMap, HashSet};
 use std::os::fd::AsFd;
@@ -39,13 +43,15 @@ use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use evdev::{AbsoluteAxisCode, Device, EventSummary, KeyCode};
 
-use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
+use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify, InotifyEvent};
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
 
 use retrobox_input::instance::{self, Instance};
 use retrobox_input::paths;
 use retrobox_input::probe::{self, Found, Kind};
+
+use crate::mapper::{self, Mapper};
 
 /// Where the input devices appear.
 const INPUT_DIR: &str = "/dev/input";
@@ -54,6 +60,8 @@ const INPUT_DIR: &str = "/dev/input";
 const DEBOUNCE: Duration = Duration::from_millis(500);
 /// Fraction of an axis' half range past which a stick counts as pushed.
 const STICK_THRESHOLD: f32 = 0.5;
+/// What the launcher writes about the game being played.
+const SESSION_FILE: &str = "session.json";
 
 /// Which held buttons open the overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +223,7 @@ struct Input {
 
 struct State {
     handle: LoopHandle<'static, State>,
+    runtime_dir: PathBuf,
     hold: Duration,
     inputs: HashMap<PathBuf, Input>,
     /// The overlay, while it is shown.
@@ -223,6 +232,9 @@ struct State {
     stop: bool,
     /// Where events are read into.
     events: Vec<evdev::InputEvent>,
+    mapper: Mapper,
+    /// The mapper's tick is scheduled.
+    ticking: bool,
 }
 
 /// Run until stopped (SIGTERM, SIGINT): open the overlay on its triggers.
@@ -274,16 +286,22 @@ pub fn run(runtime_dir: &Path, hold: Duration) -> Result<()> {
         )
         .map_err(|err| anyhow!("cannot watch /dev/input: {}", err.error))?;
 
+    watch_session(&handle, runtime_dir)?;
+
     let mut state = State {
         handle,
+        runtime_dir: runtime_dir.to_owned(),
         hold,
         inputs: HashMap::new(),
         overlay: None,
         last_trigger: None,
         stop: false,
         events: Vec::new(),
+        mapper: Mapper::default(),
+        ticking: false,
     };
     state.scan();
+    state.load_session();
     log::info!(
         "overlay daemon: {} controller(s), {} keyboard(s), hold {} ms",
         state.pads().count(),
@@ -296,11 +314,48 @@ pub fn run(runtime_dir: &Path, hold: Duration) -> Result<()> {
             .dispatch(None, &mut state)
             .context("event loop error")?;
     }
+    state.mapper.release_all();
     if let Some(mut child) = state.overlay.take() {
         signal(&child, nix::sys::signal::Signal::SIGTERM);
         child.wait().ok();
     }
     Ok(())
+}
+
+/// Follow `session.json`: written, replaced or removed, the mapper reads it
+/// again.
+fn watch_session(handle: &LoopHandle<'static, State>, runtime_dir: &Path) -> Result<()> {
+    let inotify = Inotify::init(InitFlags::IN_NONBLOCK | InitFlags::IN_CLOEXEC)
+        .context("cannot watch the runtime directory")?;
+    inotify
+        .add_watch(
+            runtime_dir,
+            AddWatchFlags::IN_CLOSE_WRITE
+                | AddWatchFlags::IN_MOVED_TO
+                | AddWatchFlags::IN_MOVED_FROM
+                | AddWatchFlags::IN_DELETE,
+        )
+        .with_context(|| format!("cannot watch {}", runtime_dir.display()))?;
+    handle
+        .insert_source(
+            Generic::new(inotify, Interest::READ, Mode::Level),
+            |_, inotify, state| {
+                let changed = inotify.read_events().unwrap_or_default();
+                if changed.iter().any(is_session) {
+                    state.load_session();
+                }
+                Ok(PostAction::Continue)
+            },
+        )
+        .map_err(|err| anyhow!("cannot watch the runtime directory: {}", err.error))?;
+    Ok(())
+}
+
+fn is_session(event: &InotifyEvent) -> bool {
+    event
+        .name
+        .as_deref()
+        .is_some_and(|name| name == SESSION_FILE)
 }
 
 /// Send a signal to the overlay.
@@ -376,6 +431,9 @@ impl State {
                 Watched::Keyboard(_) => "keyboard",
             }
         );
+        if matches!(watched, Watched::Pad(_)) {
+            self.mapper.attach(&path, &device);
+        }
         self.inputs.insert(
             path.clone(),
             Input {
@@ -387,9 +445,42 @@ impl State {
         );
     }
 
+    /// The game started or ended: map its controllers, or stop.
+    fn load_session(&mut self) {
+        let pads = self
+            .inputs
+            .values()
+            .filter(|input| matches!(input.watched, Watched::Pad(_)))
+            .map(|input| (input.path.as_path(), &input.device));
+        self.mapper.load(&self.runtime_dir, pads);
+    }
+
+    /// Have the mapper ticked while it has something to do (a combination
+    /// held for its time, a stick moving the pointer).
+    fn schedule_tick(&mut self) {
+        if self.ticking || !self.mapper.needs_tick() {
+            return;
+        }
+        let timer =
+            self.handle
+                .insert_source(Timer::from_duration(mapper::TICK), |_, &mut (), state| {
+                    if state.mapper.tick() {
+                        TimeoutAction::ToDuration(mapper::TICK)
+                    } else {
+                        state.ticking = false;
+                        TimeoutAction::Drop
+                    }
+                });
+        self.ticking = timer.is_ok();
+    }
+
     fn forget(&mut self, path: &Path) {
         if let Some(input) = self.inputs.remove(path) {
             log::info!("{} gone", input.path.display());
+            match input.watched {
+                Watched::Pad(_) => self.mapper.detach(path),
+                Watched::Keyboard(_) => self.mapper.keyboard_gone(),
+            }
             self.handle.remove(input.token);
             if let Watched::Pad(Hold {
                 armed: Some((_, timer)),
@@ -431,6 +522,13 @@ impl State {
             let Some(input) = self.inputs.get_mut(path) else {
                 return;
             };
+            match &input.watched {
+                Watched::Pad(_) => self.mapper.pad_event(path, event),
+                Watched::Keyboard(_) => self.mapper.key_event(event),
+            }
+            let Some(input) = self.inputs.get_mut(path) else {
+                return;
+            };
             match (&mut input.watched, event.destructure()) {
                 (Watched::Keyboard(modifiers), EventSummary::Key(_, code, value)) => {
                     modifiers.update(code, value != 0);
@@ -454,6 +552,7 @@ impl State {
             }
         }
         self.events = events;
+        self.schedule_tick();
     }
 
     /// A gamepad button going down or up.
@@ -559,6 +658,9 @@ impl State {
             signal(child, nix::sys::signal::Signal::SIGUSR1);
             return;
         }
+        // it takes the controllers: what the mapper holds is let go now (their
+        // releases will not come here)
+        self.mapper.release_all();
         // the controller that asked first, then every other one: outside a
         // game, the overlay grabs them all
         let mut pads: Vec<&Path> = from.into_iter().collect();
@@ -593,6 +695,7 @@ impl State {
     /// The overlay closed: forget it, and read the controllers' buttons
     /// again (it had them grabbed: their releases never came here).
     fn reap(&mut self) {
+        self.mapper.reap();
         let finished = self
             .overlay
             .as_mut()

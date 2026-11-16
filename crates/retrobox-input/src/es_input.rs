@@ -75,10 +75,29 @@ fn guid_model(vendor: u16, product: u16, version: u16) -> String {
     format!("{}{}{}", le(vendor), le(product), le(version))
 }
 
-/// The translation for `device` from the `inputConfig` of `text` that is
-/// its own: by GUID, else by name. None when there is none, or it maps no
-/// button.
-fn parse(text: &str, device: &Device) -> Option<Translation> {
+/// What one input of an `inputConfig` is, as SDL numbers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EsKind {
+    Button,
+    /// `value` is the direction: 1 up, 2 right, 4 down, 8 left.
+    Hat,
+    /// `value` is the direction the input is at: -1 or 1.
+    Axis,
+}
+
+/// One `<input>` of a controller's `inputConfig`: `name` (`a`, `hotkey`,
+/// `joystick1up`...), its kind, SDL's number and the value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EsInput {
+    pub name: String,
+    pub kind: EsKind,
+    pub id: u16,
+    pub value: i32,
+}
+
+/// The inputs of the `inputConfig` of `text` that is `device`'s own: by
+/// GUID, else by name.
+fn parse_inputs(text: &str, device: &Device) -> Option<Vec<EsInput>> {
     let document = roxmltree::Document::parse(text).ok()?;
     let id = device.input_id();
     let model = guid_model(id.vendor(), id.product(), id.version());
@@ -101,39 +120,76 @@ fn parse(text: &str, device: &Device) -> Option<Translation> {
                     .is_some_and(|device_name| device_name.trim().to_lowercase() == name)
             })
         })?;
+    Some(
+        config
+            .children()
+            .filter(|node| node.has_tag_name("input"))
+            .filter_map(|node| {
+                let kind = match node.attribute("type")? {
+                    "button" => EsKind::Button,
+                    "hat" => EsKind::Hat,
+                    "axis" => EsKind::Axis,
+                    _ => return None,
+                };
+                Some(EsInput {
+                    name: node.attribute("name")?.to_owned(),
+                    kind,
+                    id: node.attribute("id")?.trim().parse().ok()?,
+                    value: node
+                        .attribute("value")
+                        .and_then(|value| value.trim().parse().ok())
+                        .unwrap_or(1),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// The button codes of `device` in SDL's numbering (what `es_input.cfg`'s
+/// button ids count).
+pub fn sdl_buttons(device: &Device) -> Vec<KeyCode> {
     let codes: Vec<u16> = device
-        .supported_keys()?
+        .supported_keys()
+        .map(|keys| {
+            keys.iter()
+                .map(KeyCode::code)
+                .filter(|code| (0..LAST_CODE).contains(code))
+                .collect()
+        })
+        .unwrap_or_default();
+    sdl_order(&codes).into_iter().map(KeyCode::new).collect()
+}
+
+/// The translation of a controller's buttons from its inputs.
+fn translation_of(inputs: &[EsInput], buttons: &[KeyCode]) -> Option<Translation> {
+    let translation: Translation = inputs
         .iter()
-        .map(KeyCode::code)
-        .filter(|code| (0..LAST_CODE).contains(code))
-        .collect();
-    let order = sdl_order(&codes);
-    let translation: Translation = config
-        .children()
-        .filter(|node| node.has_tag_name("input") && node.attribute("type") == Some("button"))
-        .filter_map(|node| {
-            let standard = standard_code(node.attribute("name")?)?;
-            let number: usize = node.attribute("id")?.parse().ok()?;
-            Some((KeyCode::new(*order.get(number)?), standard))
+        .filter(|input| input.kind == EsKind::Button)
+        .filter_map(|input| {
+            let standard = standard_code(&input.name)?;
+            Some((*buttons.get(usize::from(input.id))?, standard))
         })
         .collect();
     (!translation.is_empty()).then_some(translation)
 }
 
-/// What EmulationStation says the buttons of `device` are, if it knows it.
-pub fn translation(device: &Device) -> Option<Translation> {
+/// What EmulationStation says the inputs of `device` are, if it knows it.
+pub fn inputs(device: &Device) -> Option<Vec<EsInput>> {
     config_files().iter().find_map(|file| {
         let text = std::fs::read_to_string(file).ok()?;
-        let found = parse(&text, device);
-        if found.is_some() {
-            log::info!(
-                "buttons of {} from {}",
-                device.name().unwrap_or("?"),
-                file.display()
-            );
-        }
-        found
+        let found = parse_inputs(&text, device)?;
+        log::info!(
+            "inputs of {} from {}",
+            device.name().unwrap_or("?"),
+            file.display()
+        );
+        Some(found)
     })
+}
+
+/// What EmulationStation says the buttons of `device` are, if it knows it.
+pub fn translation(device: &Device) -> Option<Translation> {
+    translation_of(&inputs(device)?, &sdl_buttons(device))
 }
 
 #[cfg(test)]
