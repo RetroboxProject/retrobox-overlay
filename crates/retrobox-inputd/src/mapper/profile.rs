@@ -466,6 +466,9 @@ mod tests {
         assert!((read.sticks[1].speed - 8.0).abs() < f32::EPSILON);
         let keyboard = profile(json, Section::Keyboard);
         assert_eq!(keyboard.hotkeys.len(), 1);
-        assert!(profile(r#"{"mappings": []}"#, Section::Keyboard).is_empty());
+        assert_eq!(
+            profile(r#"{"mappings": []}"#, Section::Keyboard),
+            Profile::default()
+        );
     }
 }

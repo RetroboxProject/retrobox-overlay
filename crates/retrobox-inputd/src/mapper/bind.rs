@@ -452,7 +452,7 @@ mod tests {
         )
         .unwrap();
         let profile = read(value.as_object().unwrap(), Section::Player(1));
-        assert!(bind_pad(&profile, &names).combos.is_empty());
+        assert_eq!(bind_pad(&profile, &names).combos.len(), 0);
     }
 
     #[test]

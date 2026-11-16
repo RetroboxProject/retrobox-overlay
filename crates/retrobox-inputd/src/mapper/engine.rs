@@ -484,7 +484,7 @@ mod tests {
         engine.press(HOTKEY, now, &mut sink);
         assert!(engine.needs_tick());
         engine.tick(now + Duration::from_millis(500), Duration::ZERO, &mut sink);
-        assert!(sink.0.is_empty());
+        assert_eq!(sink.0, Vec::<String>::new());
         engine.tick(now + Duration::from_secs(1), Duration::ZERO, &mut sink);
         assert_eq!(sink.0, ["down [KEY_F1]"]);
         engine.release(HOTKEY, now, &mut sink);
