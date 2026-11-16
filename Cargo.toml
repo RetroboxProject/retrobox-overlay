@@ -1,29 +1,67 @@
-[package]
-name = "retrobox-overlay"
+# The overlay (this package), its input daemon (crates/retrobox-inputd) and
+# what both share (crates/retrobox-input). One version for all: the packaging
+# script writes it into the first "version" line, the workspace's.
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.91"
-description = "In-game overlay menu for Retrobox, styled like its EmulationStation theme"
 license = "GPL-2.0-only"
 authors = ["Manu Romero <manu4.2012@gmail.com>"]
 repository = "https://github.com/RetroboxProject/retrobox-overlay"
+
+[workspace]
+members = ["crates/retrobox-input", "crates/retrobox-inputd"]
+default-members = [".", "crates/retrobox-input", "crates/retrobox-inputd"]
+
+[workspace.dependencies]
+retrobox-input = { path = "crates/retrobox-input" }
+anyhow = "1"
+calloop = { version = "0.14", features = ["signals"] }
+env_logger = { version = "0.11", default-features = false }
+evdev = "0.13"
+log = "0.4"
+nix = { version = "0.31", features = ["signal", "fs", "process", "user", "inotify", "poll", "term"] }
+roxmltree = "0.21"
+rust-ini = "0.21"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# pixel and layout arithmetic converts between integer and float sizes all the time
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+
+[package]
+name = "retrobox-overlay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "In-game overlay menu for Retrobox, styled like its EmulationStation theme"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 readme = "README.md"
 keywords = ["retrobox", "emulation", "overlay", "wayland", "emulationstation"]
 categories = ["games", "gui"]
 
 [dependencies]
-anyhow = "1"
-calloop = { version = "0.14", features = ["signals"] }
+retrobox-input.workspace = true
+anyhow.workspace = true
+calloop.workspace = true
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "unstable-locales"] }
 cosmic-text = "0.19"
-env_logger = { version = "0.11", default-features = false }
-evdev = "0.13"
+env_logger.workspace = true
+evdev.workspace = true
 fluent-bundle = "0.16"
-log = "0.4"
-nix = { version = "0.31", features = ["signal", "fs", "process", "user", "inotify", "poll", "term"] }
+log.workspace = true
+nix.workspace = true
 resvg = { version = "0.49", default-features = false }
-roxmltree = "0.21"
-rust-ini = "0.21"
+roxmltree.workspace = true
+rust-ini.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 smithay-client-toolkit = "0.21"
@@ -34,16 +72,8 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 x11rb = { version = "0.14", default-features = false, features = ["randr"] }
 xkbcommon = "0.8"
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-pedantic = { level = "warn", priority = -1 }
-# pixel and layout arithmetic converts between integer and float sizes all the time
-cast_possible_truncation = "allow"
-cast_possible_wrap = "allow"
-cast_precision_loss = "allow"
-cast_sign_loss = "allow"
+[lints]
+workspace = true
 
 [profile.release]
 lto = "thin"
@@ -72,6 +102,7 @@ theme's menu style, and a clock. Needs a Wayland compositor with layer-shell
 (KWin, labwc and other wlroots compositors)."""
 assets = [
     ["target/release/retrobox-overlay", "usr/bin/", "755"],
+    ["target/release/retrobox-inputd", "usr/bin/", "755"],
     ["README.md", "usr/share/doc/retrobox-overlay/", "644"],
     ["data/overlay.ini", "usr/share/doc/retrobox-overlay/overlay.ini.example", "644"],
 ]
@@ -80,6 +111,7 @@ assets = [
 license = "GPL-2.0-only"
 assets = [
     { source = "target/release/retrobox-overlay", dest = "/usr/bin/retrobox-overlay", mode = "755" },
+    { source = "target/release/retrobox-inputd", dest = "/usr/bin/retrobox-inputd", mode = "755" },
     { source = "README.md", dest = "/usr/share/doc/retrobox-overlay/README.md", mode = "644", doc = true },
     { source = "data/overlay.ini", dest = "/usr/share/doc/retrobox-overlay/overlay.ini.example", mode = "644", doc = true },
     { source = "LICENSE", dest = "/usr/share/licenses/retrobox-overlay/LICENSE", mode = "644", doc = true },

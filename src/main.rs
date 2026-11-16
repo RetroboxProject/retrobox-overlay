@@ -1,8 +1,9 @@
 //! retrobox-overlay: Retrobox's in-game menu.
 //!
-//! `--daemon` runs for the whole Retrobox session and opens it when the
-//! dedicated hotkey (Home/Guide) is held, or on Ctrl+Shift+O or Shift+F7 (see `daemon.rs`); `--show`
-//! is the overlay itself: a side menu styled like EmulationStation's over
+//! `retrobox-inputd` (the input daemon, its own binary) runs for the whole
+//! Retrobox session and opens it when the dedicated hotkey (Home/Guide) is
+//! held, on Hotkey+B, or on Ctrl+Shift+O or Shift+F7; `--show` is the
+//! overlay itself: a side menu styled like EmulationStation's over
 //! the dimmed game, with a clock. Without a mode, it asks the daemon to open
 //! or close the overlay, or shows it itself when no daemon runs; started
 //! again while open, it closes the open one. Without a running game (in
@@ -11,16 +12,10 @@
 
 mod app;
 mod config;
-mod daemon;
 mod emulator;
-mod es_input;
-mod es_settings;
 mod i18n;
 mod input;
-mod instance;
 mod manual;
-mod paths;
-mod probe;
 mod savestates;
 mod session;
 mod system;
@@ -28,7 +23,6 @@ mod task;
 mod theme;
 mod ui;
 
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -40,7 +34,6 @@ use crate::config::Config;
 use crate::emulator::{EmuAction, Emulator};
 use crate::i18n::Translator;
 use crate::input::Pad;
-use crate::instance::Instance;
 use crate::manual::Manual;
 use crate::savestates::{SaveStates, StateMode};
 use crate::session::{GameInfo, Session};
@@ -48,11 +41,13 @@ use crate::theme::MenuTheme;
 use crate::ui::panel::{MenuAction, MenuItem};
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
+use retrobox_input::instance::{self, Instance};
+use retrobox_input::{held, logging, paths};
 
 const HELP: &str = "\
 retrobox-overlay: Retrobox's in-game menu
 
-Usage: retrobox-overlay [--daemon | --show [--pad DEVICE]... | --osk | --demo]
+Usage: retrobox-overlay [--show [--pad DEVICE]... | --osk | --demo]
                         [--version] [--help]
        retrobox-overlay --task --label NAME --log FILE [--check FILE]
                         [--background PNG] [--pad DEVICE]... [--lang CODE]
@@ -63,10 +58,8 @@ Without a mode, asks the daemon to open or close the overlay, or shows the
 overlay over the running game itself (see session.json in Retrobox's runtime
 directory) when no daemon runs; started again while open, it closes it.
 
-  --daemon       open the overlay when a controller's Home/Guide
-                 button is held, or on Ctrl+Shift+O or Shift+F7,
-                 until stopped
-                 (Retrobox runs it)
+  --daemon       run retrobox-inputd, the input daemon that opens the
+                 overlay (for launchers that still start it this way)
   --show         show the overlay (the daemon runs this)
   --pad DEVICE   a controller (evdev device) the overlay reads, besides the
                  game's own; repeatable
@@ -104,7 +97,7 @@ fn main() -> ExitCode {
     // come after its own and are none of the overlay's
     match args.first().map(String::as_str) {
         Some("--held") => {
-            return if input::reinstall_held() {
+            return if held::reinstall_held() {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
@@ -113,12 +106,10 @@ fn main() -> ExitCode {
         Some("--task") => return run_task(&args),
         _ => {}
     }
-    let daemon = args.iter().any(|arg| arg == "--daemon");
-    let log = init_log(if daemon {
-        "overlay-daemon.log"
-    } else {
-        "overlay.log"
-    });
+    if args.iter().any(|arg| arg == "--daemon") {
+        return run_daemon();
+    }
+    let log = logging::init("overlay.log");
 
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("{HELP}");
@@ -141,10 +132,7 @@ fn main() -> ExitCode {
         .collect();
     let runtime_dir = paths::runtime_dir();
 
-    let result = if daemon {
-        let config = Config::load(&paths::config_dirs());
-        daemon::run(&runtime_dir, config.hold)
-    } else if !demo
+    let result = if !demo
         && !osk
         && !args.iter().any(|arg| arg == "--show")
         && let Some(pid) = instance::daemon_pid(&runtime_dir)
@@ -164,6 +152,16 @@ fn main() -> ExitCode {
     }
 }
 
+/// `--daemon`: become `retrobox-inputd`, the daemon that used to be this
+/// mode (the launchers of before the split start it this way).
+fn run_daemon() -> ExitCode {
+    use std::os::unix::process::CommandExt as _;
+    let daemon = paths::sibling_command("retrobox-inputd");
+    let err = std::process::Command::new(&daemon).exec();
+    eprintln!("retrobox-overlay: cannot run {}: {err}", daemon.display());
+    ExitCode::FAILURE
+}
+
 /// `--task`: the task screen, in a process of its own (see `task`).
 fn run_task(args: &[String]) -> ExitCode {
     let options = match task::Options::parse(args) {
@@ -173,7 +171,7 @@ fn run_task(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let log = init_log("overlay-task.log");
+    let log = logging::init("overlay-task.log");
     block_usr1();
     ExitCode::from(match task_screen(options, log.as_ref()) {
         Ok(status) => status,
@@ -556,48 +554,6 @@ fn open_pads(
         .chain(extra.iter().cloned())
         .collect();
     input::open_pads(&paths, false, swap_confirm, keyboard)
-}
-
-/// Log to stderr from a terminal, else to the log file `name` (the
-/// overlay's is emptied once this run is the overlay, see `run`); the file,
-/// if it is the log.
-fn init_log(name: &str) -> Option<std::fs::File> {
-    let mut builder =
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
-    // every line says how long after the start it was written
-    let start = std::time::Instant::now();
-    builder.format(move |buf, record| {
-        use std::io::Write;
-        writeln!(
-            buf,
-            "[{:>5} ms {:5} {}] {}",
-            start.elapsed().as_millis(),
-            record.level(),
-            record.target(),
-            record.args()
-        )
-    });
-    if !std::io::stderr().is_terminal() {
-        let path = paths::log_file(name);
-        let file = path
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| {
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-            });
-        if let Ok(file) = file
-            && let Ok(target) = file.try_clone()
-        {
-            builder.target(env_logger::Target::Pipe(Box::new(target)));
-            builder.init();
-            return Some(file);
-        }
-    }
-    builder.init();
-    None
 }
 
 /// The running game's emulator and, when its states go by slot, the pages.

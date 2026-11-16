@@ -67,11 +67,9 @@ use x11rb::protocol::xproto::{self, NotifyDetail, NotifyMode};
 
 use crate::config::{self, Config, OskView, Side, TakeKeyboard, VerticalPosition};
 use crate::emulator::{EmuAction, Emulator, Request, Typist};
-use crate::es_settings;
 use crate::i18n::Translator;
 use crate::input::{self, Input, Nav, Pad};
 use crate::manual::Manual;
-use crate::paths;
 use crate::savestates::StateMode;
 use crate::system::audio::devices::{Action, Snapshot};
 use crate::system::audio::hub::Hub;
@@ -87,6 +85,7 @@ use crate::ui::osk::{Action as OskAction, Direction, Labels, Osk};
 use crate::ui::panel::{MenuAction, MenuItem, Panel, StatusBar, Target};
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
+use retrobox_input::{es_settings, paths};
 
 mod display;
 mod manual_view;

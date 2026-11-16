@@ -1,0 +1,22 @@
+[package]
+name = "retrobox-input"
+description = "What Retrobox's input daemon and overlay share: devices, EmulationStation's settings, paths"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+env_logger.workspace = true
+evdev.workspace = true
+log.workspace = true
+nix.workspace = true
+roxmltree.workspace = true
+rust-ini.workspace = true
+
+[lints]
+workspace = true

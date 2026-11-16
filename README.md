@@ -12,8 +12,9 @@ only while it is shown.
 
 ## How it fits in Retrobox
 
-* **Opening and closing.** Retrobox starts `retrobox-overlay --daemon` with EmulationStation.
-  It reads every controller and keyboard (evdev, without grabbing them: EmulationStation and
+* **Opening and closing.** Retrobox starts `retrobox-inputd`, the input daemon (a binary of
+  its own, with no screen), with EmulationStation; `retrobox-overlay --daemon`, what older
+  launchers run, starts it too. It reads every controller and keyboard (evdev, without grabbing them: EmulationStation and
   the games get every input as before) and opens the overlay (`retrobox-overlay --show`, a
   process of its own) when a controller's dedicated hotkey (Home/Guide) is held alone for
   `hold_ms` (750 ms), or on Ctrl+Shift+O (Shift+F7 too, for keyboards whose function keys need
@@ -281,8 +282,13 @@ Catalan, Galician, Basque, Portuguese, French, Italian, German, Dutch, Polish an
 
 ## Building
 
+A Cargo workspace: the overlay (this package, `src/`), the input daemon
+(`crates/retrobox-inputd`) and what both share (`crates/retrobox-input`: the device probe,
+`es_input.cfg` and `es_settings.cfg`, the paths, the locks, the logs). Every command below
+covers the three.
+
 ```bash
-cargo build --release          # target/release/retrobox-overlay
+cargo build --release          # target/release/retrobox-overlay and retrobox-inputd
 cargo test && cargo clippy     # what CI checks (clippy pedantic, warnings are errors)
 cargo deb --no-build           # .deb  (cargo install cargo-deb)
 cargo generate-rpm             # .rpm  (cargo install cargo-generate-rpm)
@@ -293,8 +299,8 @@ It needs `libxkbcommon` (development files to build). GitHub Actions build the `
 other Retrobox components.
 
 Run it by hand with `RUST_LOG=debug retrobox-overlay --demo` from a Wayland or X11 session, and
-the daemon with `RUST_LOG=debug retrobox-overlay --daemon` (its log, when not run from a
-terminal: `~/.local/state/retrobox/logs/overlay-daemon.log`). The daemon needs read access to
+the daemon with `RUST_LOG=debug retrobox-inputd` (its log, when not run from a terminal:
+`~/.local/state/retrobox/logs/inputd.log`). The daemon needs read access to
 `/dev/input/event*` (the `input` group), like gamepadly.
 
 ## License

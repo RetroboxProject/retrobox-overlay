@@ -2,7 +2,7 @@
 //! running one instead.
 //!
 //! The locks are `overlay.lock` (the overlay on screen) and
-//! `overlay-daemon.lock` (the daemon, see `daemon.rs`) in Retrobox's runtime
+//! `inputd.lock` (the input daemon, `retrobox-inputd`) in Retrobox's runtime
 //! directory, each held with `flock` for the whole life of its process
 //! (released by the kernel even if it crashes) and holding its pid. A second
 //! start sends SIGUSR1 to that pid: the overlay closes, the daemon opens or
@@ -19,7 +19,7 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
 pub const LOCK_FILE: &str = "overlay.lock";
-pub const DAEMON_LOCK_FILE: &str = "overlay-daemon.lock";
+pub const DAEMON_LOCK_FILE: &str = "inputd.lock";
 
 /// How long a second start waits for the first one to write its pid (it
 /// takes the lock, then writes it).

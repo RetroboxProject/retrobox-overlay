@@ -6,7 +6,8 @@
 //! side = right            ; right | left
 //! dim = 0.75              ; opacity of the black layer over the game
 //! animation_ms = 150
-//! hold_ms = 750           ; how long the hotkey is held to open it
+//! hold_ms = 750           ; how long the hotkey is held to open it (read by
+//!                         ; retrobox-inputd)
 //! take_keyboard = auto    ; auto (not when opened from a controller) | yes | no
 //!
 //! [clock]
@@ -38,7 +39,6 @@
 //! ```
 
 use std::path::Path;
-use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 
@@ -50,9 +50,6 @@ pub const FILE_NAME: &str = "overlay.ini";
 
 /// How long the hotkey is held to open the overlay, by default and at most:
 /// shorter would catch the hotkey's own combinations, longer feels broken.
-const DEFAULT_HOLD_MS: u64 = 750;
-const MIN_HOLD_MS: u64 = 300;
-const MAX_HOLD_MS: u64 = 3000;
 /// The rows' height, in lines of text (more for fingers).
 const MIN_ROW_SCALE: f32 = 1.0;
 const MAX_ROW_SCALE: f32 = 2.0;
@@ -94,8 +91,6 @@ pub struct Config {
     pub take_keyboard: TakeKeyboard,
     pub icons: bool,
     pub animation_ms: u64,
-    /// How long the dedicated hotkey (Home/Guide) is held to open the overlay.
-    pub hold: Duration,
     pub clock: ClockConfig,
     /// Whether the compositor scales and crops the manual's page
     /// (`wp_viewporter`); off, the overlay does, for compositors that show
@@ -219,7 +214,6 @@ impl Default for Config {
             take_keyboard: TakeKeyboard::Auto,
             icons: true,
             animation_ms: 150,
-            hold: Duration::from_millis(DEFAULT_HOLD_MS),
             clock: ClockConfig {
                 enabled: true,
                 big: true,
@@ -294,12 +288,6 @@ impl Config {
                 .and_then(|v| v.trim().parse().ok())
             {
                 self.animation_ms = ms;
-            }
-            if let Some(ms) = section
-                .get("hold_ms")
-                .and_then(|v| v.trim().parse::<u64>().ok())
-            {
-                self.hold = Duration::from_millis(ms.clamp(MIN_HOLD_MS, MAX_HOLD_MS));
             }
         }
         if let Some(section) = ini.section(Some("clock")) {
@@ -516,7 +504,7 @@ mod tests {
         let config = Config::load(&[&dir]);
         assert_eq!(config.osk.view, VIEW);
         let written = std::fs::metadata(&file).unwrap().modified().unwrap();
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20));
         save_osk_view(&dir, VIEW).unwrap();
         assert_eq!(
             std::fs::metadata(&file).unwrap().modified().unwrap(),
@@ -543,7 +531,6 @@ mod tests {
         assert_eq!(config.side, Side::Left);
         assert!((config.dim - 1.0).abs() < f32::EPSILON);
         assert_eq!(config.clock.position, VerticalPosition::Top);
-        assert_eq!(config.hold, Duration::from_millis(MIN_HOLD_MS));
         assert!(!config.clock.big && !config.system.battery_percent && config.system.standby);
         assert!((config.row_scale - 1.66).abs() < f32::EPSILON);
         std::fs::remove_dir_all(dir).unwrap();

@@ -873,6 +873,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "retrobox-input"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "env_logger",
+ "evdev",
+ "log",
+ "nix 0.31.3",
+ "roxmltree 0.21.2",
+ "rust-ini",
+]
+
+[[package]]
+name = "retrobox-inputd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "calloop",
+ "evdev",
+ "log",
+ "nix 0.31.3",
+ "retrobox-input",
+]
+
+[[package]]
 name = "retrobox-overlay"
 version = "0.1.0"
 dependencies = [
@@ -886,6 +911,7 @@ dependencies = [
  "log",
  "nix 0.31.3",
  "resvg",
+ "retrobox-input",
  "roxmltree 0.21.2",
  "rust-ini",
  "serde",

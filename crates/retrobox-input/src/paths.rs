@@ -1,6 +1,6 @@
 //! Where Retrobox keeps things, resolved the same way as `retrobox.paths`.
 //!
-//! The overlay is started from a game launch (gamepadly runs it), so the
+//! The overlay and its daemon are started by Retrobox, so the
 //! `RETROBOX_*` variables the launcher exports are normally there; the XDG
 //! fallbacks only matter when it is started by hand.
 
@@ -49,8 +49,18 @@ pub fn state_dir() -> PathBuf {
     })
 }
 
-/// A log of the overlay when it is not run from a terminal (no one reads
-/// its output): `<state dir>/logs/<name>` (`overlay.log`, `overlay-daemon.log`).
+/// One of Retrobox's own programs (`retrobox-overlay`, `retrobox-inputd`):
+/// the one installed next to this one, else whichever the `PATH` finds.
+pub fn sibling_command(name: &str) -> PathBuf {
+    env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// A log of a process when it is not run from a terminal (no one reads
+/// its output): `<state dir>/logs/<name>` (`overlay.log`, `inputd.log`).
 pub fn log_file(name: &str) -> PathBuf {
     state_dir().join("logs").join(name)
 }

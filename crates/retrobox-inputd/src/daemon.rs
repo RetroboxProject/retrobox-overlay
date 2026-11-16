@@ -1,9 +1,9 @@
-//! `retrobox-overlay --daemon`: what opens the overlay, anywhere in Retrobox.
+//! What opens the overlay, anywhere in Retrobox.
 //!
 //! Retrobox starts it with EmulationStation and it lives as long as the
 //! session. It reads every controller and keyboard (evdev, without grabbing
 //! them: EmulationStation and the games keep getting every input) and opens
-//! the overlay, as a process of its own (`--show`), when
+//! the overlay (`retrobox-overlay --show`, a process of its own), when
 //!
 //! * B (Nintendo's B, the south button) is pressed while the hotkey is held,
 //!   on any controller: Hotkey+B opens it at once;
@@ -39,12 +39,13 @@ use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use evdev::{AbsoluteAxisCode, Device, EventSummary, KeyCode};
 
-use crate::probe::{self, Found, Kind};
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
 
-use crate::instance::{self, Instance};
+use retrobox_input::instance::{self, Instance};
+use retrobox_input::paths;
+use retrobox_input::probe::{self, Found, Kind};
 
 /// Where the input devices appear.
 const INPUT_DIR: &str = "/dev/input";
@@ -566,8 +567,7 @@ impl State {
                 .map(|input| input.path.as_path())
                 .filter(|path| Some(*path) != from),
         );
-        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("retrobox-overlay"));
-        let mut command = Command::new(exe);
+        let mut command = Command::new(paths::sibling_command("retrobox-overlay"));
         command.arg("--show");
         if from.is_some() {
             // the controller opened it: the game may keep the keyboard
