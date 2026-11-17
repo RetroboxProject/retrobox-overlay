@@ -9,6 +9,7 @@
 mod daemon;
 mod mapper;
 mod parent;
+mod shield;
 
 use std::process::ExitCode;
 

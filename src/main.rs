@@ -38,7 +38,7 @@ use nix::sys::signal::{SigSet, Signal};
 
 use crate::app::{Content, Outcome};
 use crate::config::Config;
-use crate::emulator::{EmuAction, Emulator};
+use crate::emulator::{EmuAction, Emulator, Request};
 use crate::game_pages::GamePages;
 use crate::i18n::Translator;
 use crate::input::Pad;
@@ -311,7 +311,10 @@ fn run(
     let info = game_info(session.as_ref().filter(|_| !osk));
     let subtitle = subtitle_of(&info);
 
-    let (emulator, states) = emulator_for(session.as_ref(), demo, &translator);
+    let (emulator, saves) = emulator_for(session.as_ref(), demo);
+    let states = saves
+        .clone()
+        .map(|saves| StatesMenu::new(saves, &translator));
     let pages = session
         .as_ref()
         .filter(|_| !osk)
@@ -379,21 +382,43 @@ fn run(
     // open from now on: what is left only talks to the emulator.
     block_usr1();
     drop(lock);
-    match outcome {
-        Outcome::Quit if !demo => quit_game(),
-        Outcome::Quit | Outcome::Back | Outcome::Task(_) => {}
-        Outcome::Overlay => open_overlay(),
-        Outcome::Request(request) => emulator.back_to_game(request),
-        Outcome::Power(action) => {
-            // the last slider change first
-            drop(setters);
-            power::perform(action);
-            return Ok(());
-        }
+    if let Outcome::Power(action) = outcome {
+        // the last slider change first
+        drop(setters);
+        power::perform(action);
+        return Ok(());
     }
+    after(outcome, &emulator, saves.as_ref().filter(|_| !demo), demo);
     // the last slider change is applied before leaving
     drop(setters);
     Ok(())
+}
+
+/// What the menu asked for, once the overlay is gone (the demo quits
+/// nothing).
+fn after(outcome: Outcome, emulator: &Emulator, saves: Option<&SaveStates>, demo: bool) {
+    match outcome {
+        Outcome::Quit | Outcome::SaveAndQuit if demo => {}
+        Outcome::Quit => {
+            if let Some(saves) = saves {
+                saves.forget_auto();
+            }
+            quit_game();
+        }
+        Outcome::SaveAndQuit => {
+            if let Some(saves) = saves {
+                let before = saves.auto_saved();
+                emulator.back_to_game(Request::SaveAuto);
+                if !saves.wait_for_auto_save(before) {
+                    log::warn!("the state was not saved in time: quitting anyway");
+                }
+            }
+            quit_game();
+        }
+        Outcome::Overlay => open_overlay(),
+        Outcome::Request(request) => emulator.back_to_game(request),
+        Outcome::Back | Outcome::Task(_) | Outcome::Power(_) => {}
+    }
 }
 
 /// This overlay's lock, when it is the only one and it may open: another
@@ -590,12 +615,9 @@ fn open_pads(
     input::open_pads(&paths, false, swap_confirm, keyboard)
 }
 
-/// The running game's emulator and, when its states go by slot, the pages.
-fn emulator_for(
-    session: Option<&Session>,
-    demo: bool,
-    translator: &Translator,
-) -> (Emulator, Option<StatesMenu>) {
+/// The running game's emulator and, when its states go by slot, where they
+/// are.
+fn emulator_for(session: Option<&Session>, demo: bool) -> (Emulator, Option<SaveStates>) {
     let Some(session) = session.filter(|_| !demo) else {
         return (Emulator::none(), None);
     };
@@ -610,7 +632,7 @@ fn emulator_for(
         .savestates
         .as_ref()
         .filter(|_| emulator.has_slots())
-        .map(|info| StatesMenu::new(SaveStates::new(info), translator));
+        .map(SaveStates::new);
     (emulator, states)
 }
 
@@ -644,7 +666,14 @@ fn menu_buttons(translator: &Translator, emulator: &Emulator) -> Vec<MenuItem> {
         let action = EmuAction::Screenshot;
         buttons.push(item(action.label_key(), MenuAction::Emulator(action)));
     }
-    buttons.push(item("menu-quit", MenuAction::Quit));
+    // with save states by slot: save and quit, or quit (forgetting the
+    // automatic state)
+    if emulator.has_slots() {
+        buttons.push(item("menu-save-quit", MenuAction::SaveAndQuit));
+        buttons.push(item("menu-quit-unsaved", MenuAction::Quit));
+    } else {
+        buttons.push(item("menu-quit", MenuAction::Quit));
+    }
     buttons
 }
 

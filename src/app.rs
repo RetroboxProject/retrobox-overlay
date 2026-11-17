@@ -139,7 +139,10 @@ pub enum Outcome {
     Back,
     /// An emulator action, done once the overlay is gone.
     Request(Request),
+    /// Quit without saving: the automatic state is forgotten.
     Quit,
+    /// Save in the automatic slot, then quit.
+    SaveAndQuit,
     /// Sleep, restart or turn off, once the overlay is gone.
     Power(PowerAction),
     /// The on-screen keyboard's overlay key: the overlay opens once the
@@ -1556,6 +1559,7 @@ impl State {
             }
             Some(MenuAction::Continue) => Some(Outcome::Back),
             Some(MenuAction::Quit) => Some(Outcome::Quit),
+            Some(MenuAction::SaveAndQuit) => Some(Outcome::SaveAndQuit),
             // disc changes are done with the menu open, which shows the result
             Some(MenuAction::Emulator(action)) if self.content.emulator.in_place(action) => {
                 if self.content.emulator.perform_now(action) {

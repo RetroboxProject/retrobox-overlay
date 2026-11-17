@@ -38,8 +38,9 @@ runs only while it is shown.
 * **What the emulator can do,** each with its icon: load and save state, reset, the emulator's
   own menu, the disc tray and next/previous disc. The launcher tells the overlay what the
   running emulator supports; anything it cannot do is not shown.
-* **Round buttons** pinned at the bottom: *continue*, *screenshot*, *quit* and *power* (sleep
-  mode). A button highlighted for a second explains itself in a small bubble.
+* **Round buttons** pinned at the bottom: *continue*, *screenshot*, *save and quit*, *quit
+  without saving* (just *quit* where states are not saved by slot) and *power* (sleep mode). A
+  button highlighted for a second explains itself in a small bubble.
 * **Sliders** for the volume and, on a built-in screen, the brightness, as tall as the
   buttons' row.
 * **Sounds** for moving, choosing and going back, like EmulationStation's (`[sounds]` in
@@ -61,8 +62,11 @@ console games have a pause of their own, and the emulator's menu pauses the rest
 
 ![The load state page over Castlevania: Symphony of the Night](docs/screenshots/save-states.webp)
 
-*Load state* and *Save state* open a page of ten slots, each with the picture and the date
-RetroArch saved with it. They are RetroArch's own files, the same ones EmulationStation lists.
+*Load state* and *Save state* open a page of ten slots (0 to 9), each with the picture and the
+date RetroArch saved with it. They are RetroArch's own files, the same ones EmulationStation
+lists. *Save and quit* saves in RetroArch's automatic slot (`.state.auto`), which
+EmulationStation lists as the auto save and RetroArch loads on start when the game's auto save
+is on; *quit without saving* forgets it. RetroArch never saves it by itself.
 
 ### Discs
 
@@ -173,6 +177,11 @@ cancel buttons* swaps the south and east buttons, as in ES. On a controller with
 game: there holding it opens nothing, and Hotkey+B does. Pressing anything else while the
 hotkey is held cancels the hold, so its other combinations never open the menu.
 
+The buttons of a shortcut stay out of the game: RetroArch and EmulationStation block their
+input while the hotkey is held, and with a standalone emulator the input daemon takes the
+controller while Home/Guide is held alone (until it goes up, or the menu opens). Emulators that
+read some controllers' raw HID device instead of evdev (SDL does for a few) still see them.
+
 ## How it fits in Retrobox
 
 ```mermaid
@@ -188,7 +197,8 @@ flowchart LR
 The package has two programs:
 
 * **`retrobox-inputd`**, the input daemon. Retrobox starts it with EmulationStation and stops
-  it when it ends. It reads every controller and keyboard without grabbing them, opens the
+  it when it ends. It reads every controller and keyboard without grabbing them (but a
+  controller's for as long as its Home/Guide is held, with a standalone emulator), opens the
   overlay when asked and, during a game, does the pad-to-keyboard mappings. It has no screen.
 * **`retrobox-overlay`**, everything with a screen, each a short-lived process: the menu
   (`--show`, started by the daemon), the on-screen keyboard (`--osk`) and the install screen

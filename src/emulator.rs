@@ -13,6 +13,7 @@
 //! channel says it may press keys (`focus`), the overlay asks after it is
 //! gone and the focus is back with the game.
 
+use crate::savestates::AUTO_SLOT;
 use crate::ui::layout::Step;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -129,6 +130,8 @@ pub enum Request {
     Action(EmuAction),
     SaveState(u32),
     LoadState(u32),
+    /// Save in the automatic slot ("Save and quit").
+    SaveAuto,
 }
 
 impl Request {
@@ -137,6 +140,7 @@ impl Request {
             Self::Action(action) => format!("do {}", action.name()),
             Self::SaveState(slot) => format!("save_slot {slot}"),
             Self::LoadState(slot) => format!("load_slot {slot}"),
+            Self::SaveAuto => format!("save_slot {AUTO_SLOT}"),
         }
     }
 }
@@ -152,6 +156,8 @@ fn is_playlist(rom: &str) -> bool {
 pub struct Emulator {
     control: Option<ControlInfo>,
     actions: Vec<EmuAction>,
+    /// Save states go by slot, and where they are is known.
+    slots: bool,
 }
 
 impl Emulator {
@@ -160,6 +166,7 @@ impl Emulator {
         Self {
             control: None,
             actions: Vec::new(),
+            slots: false,
         }
     }
 
@@ -169,18 +176,20 @@ impl Emulator {
             return Self::none();
         };
         let playlist = is_playlist(&session.rom);
+        let slots = control.slots && session.savestates.is_some();
         let actions = EmuAction::ALL
             .into_iter()
             .filter(|action| control.actions.iter().any(|name| name == action.name()))
             .filter(|action| playlist || !action.is_disc())
             // by slot, in their own pages, when the emulator allows it
             .filter(|action| {
-                !(control.slots && matches!(action, EmuAction::SaveState | EmuAction::LoadState))
+                !(slots && matches!(action, EmuAction::SaveState | EmuAction::LoadState))
             })
             .collect();
         Self {
             control: Some(control),
             actions,
+            slots,
         }
     }
 
@@ -189,9 +198,10 @@ impl Emulator {
         &self.actions
     }
 
-    /// Whether save states go by slot (the save and load pages).
+    /// Whether save states go by slot (the save and load pages, "Save and
+    /// quit").
     pub fn has_slots(&self) -> bool {
-        self.control.as_ref().is_some_and(|control| control.slots)
+        self.slots
     }
 
     /// Once the overlay is gone: do what the menu asked (once the game has
@@ -402,7 +412,8 @@ mod tests {
 
     fn session(rom: &str, control: &str) -> Session {
         serde_json::from_str(&format!(
-            r#"{{"pid": 1, "rom": "{rom}", "control": {control}}}"#
+            r#"{{"pid": 1, "rom": "{rom}", "control": {control},
+                "savestates": {{"dir": "/saves/psx", "name": "game"}}}}"#
         ))
         .unwrap()
     }
@@ -456,5 +467,6 @@ mod tests {
         assert_eq!(Request::Action(EmuAction::NextDisc).line(), "do disk_next");
         assert_eq!(Request::SaveState(3).line(), "save_slot 3");
         assert_eq!(Request::LoadState(2).line(), "load_slot 2");
+        assert_eq!(Request::SaveAuto.line(), "save_slot -1");
     }
 }

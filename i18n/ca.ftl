@@ -15,6 +15,8 @@ menu-reset = Reinicia
 menu-emulator-menu = Menú de l'emulador
 menu-screenshot = Captura de pantalla
 menu-quit = Surt del joc
+menu-save-quit = Desa i surt
+menu-quit-unsaved = Surt sense desar
 # the power button and its page (sleep in games; restart and turn off
 # outside them), and the sliders
 menu-power = Energia

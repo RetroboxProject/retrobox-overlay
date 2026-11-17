@@ -15,6 +15,8 @@ menu-reset = Berrabiarazi
 menu-emulator-menu = Emuladorearen menua
 menu-screenshot = Pantaila-argazkia
 menu-quit = Irten jokotik
+menu-save-quit = Gorde eta irten
+menu-quit-unsaved = Irten gorde gabe
 # the power button and its page (sleep in games; restart and turn off
 # outside them), and the sliders
 menu-power = Energia

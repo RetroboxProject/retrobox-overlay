@@ -15,6 +15,8 @@ menu-reset = Herstarten
 menu-emulator-menu = Emulatormenu
 menu-screenshot = Schermafbeelding
 menu-quit = Spel afsluiten
+menu-save-quit = Opslaan en afsluiten
+menu-quit-unsaved = Afsluiten zonder opslaan
 # the power button and its page (sleep in games; restart and turn off
 # outside them), and the sliders
 menu-power = Aan/uit

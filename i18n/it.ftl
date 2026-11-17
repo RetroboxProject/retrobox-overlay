@@ -15,6 +15,8 @@ menu-reset = Riavvia
 menu-emulator-menu = Menu dell'emulatore
 menu-screenshot = Screenshot
 menu-quit = Esci dal gioco
+menu-save-quit = Salva ed esci
+menu-quit-unsaved = Esci senza salvare
 # the power button and its page (sleep in games; restart and turn off
 # outside them), and the sliders
 menu-power = Alimentazione

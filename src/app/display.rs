@@ -8,7 +8,10 @@
 //!
 //! * on Wayland a piece is a layer surface in the overlay layer, a sub a
 //!   subsurface; the compositor fades them (`wp_alpha_modifier`) and may
-//!   crop and scale the manual's page (`wp_viewporter`);
+//!   crop and scale the manual's page (`wp_viewporter`). A newer piece is
+//!   drawn above the older ones, as compositors stack a layer's surfaces;
+//!   sway before 1.10 stacks them the other way round, so there each new
+//!   piece moves the older ones under it (see [`Stack`]);
 //! * on X11 a piece is an override-redirect window with an ARGB visual
 //!   (translucent where a compositing manager runs, opaque otherwise), a sub
 //!   a child window; the fade is `_NET_WM_WINDOW_OPACITY`, the windows are
@@ -38,7 +41,7 @@ use smithay_client_toolkit::seat::SeatState;
 use smithay_client_toolkit::seat::pointer::ThemedPointer;
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
-    Anchor, KeyboardInteractivity, Layer, LayerShell, LayerSurface,
+    Anchor, KeyboardInteractivity, Layer, LayerShell, LayerSurface, SurfaceKind,
 };
 use smithay_client_toolkit::shm::Shm;
 use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
@@ -50,6 +53,7 @@ use wayland_client::protocol::wl_subsurface::WlSubsurface;
 use wayland_client::protocol::{wl_keyboard, wl_shm, wl_surface::WlSurface};
 use wayland_client::{Connection, QueueHandle};
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1;
+use smithay_client_toolkit::reexports::protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 use wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::WpAlphaModifierV1;
 use wayland_protocols::wp::single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1;
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
@@ -132,7 +136,63 @@ pub(super) struct Wl {
     /// Whether the surfaces that take the keyboard take all of it (the task
     /// screen, where nothing else may get the keys), not only on demand.
     pub exclusive_keyboard: bool,
+    /// The pieces, oldest first, where the compositor stacks them the
+    /// wrong way round.
+    stack: Option<Stack>,
     pub qh: QueueHandle<State>,
+}
+
+/// The layer surfaces of a compositor that draws a layer's older surfaces
+/// above its newer ones (sway before 1.10, whose layers are lists it adds
+/// new surfaces to the front of, and draws from the front). Changing a
+/// surface's layer moves it to the front of its new list: each new piece
+/// moves the older ones there, newest first, through the top layer and back,
+/// which leaves them under it in their own order.
+struct Stack(Vec<ZwlrLayerSurfaceV1>);
+
+impl Stack {
+    /// For sway before 1.10.
+    fn wanted() -> Option<Self> {
+        std::env::var_os("SWAYSOCK")?;
+        let output = std::process::Command::new("sway")
+            .arg("--version")
+            .output()
+            .ok()?;
+        let old = sway_before_scene(&String::from_utf8_lossy(&output.stdout));
+        if old {
+            log::info!("sway before 1.10: new pieces move the older ones under them");
+        }
+        old.then(|| Self(Vec::new()))
+    }
+
+    /// `layer` is the newest piece: the older ones go under it.
+    fn push(&mut self, layer: &LayerSurface) {
+        self.0.retain(wayland_client::Proxy::is_alive);
+        for older in self.0.iter().rev() {
+            if let Some(older) = LayerSurface::from_wlr_surface(older) {
+                for through in [Layer::Top, Layer::Overlay] {
+                    older.set_layer(through);
+                    older.commit();
+                }
+            }
+        }
+        // non-exhaustive: wlr's is the only kind there is
+        if let SurfaceKind::Wlr(proxy) = layer.kind() {
+            self.0.push(proxy.clone());
+        }
+    }
+}
+
+/// Whether `sway --version` tells a sway before 1.10 (the scene graph).
+fn sway_before_scene(version: &str) -> bool {
+    let Some(number) = version.split_whitespace().last() else {
+        return false;
+    };
+    let mut parts = number.split(['.', '-']).map(str::parse::<u32>);
+    matches!(
+        (parts.next(), parts.next()),
+        (Some(Ok(1)), Some(Ok(minor))) if minor < 10
+    )
 }
 
 /// What is on X11's side.
@@ -248,6 +308,9 @@ impl Display {
                 let [top, right, bottom, left] = spec.margin;
                 layer.set_margin(top, right, bottom, left);
                 layer.commit();
+                if let Some(stack) = &mut wl.stack {
+                    stack.push(&layer);
+                }
                 let fade = spec
                     .fade
                     .then_some(wl.alpha.as_ref())
@@ -1349,13 +1412,23 @@ pub(super) fn bind_wayland(
         pointer: None,
         touch: None,
         exclusive_keyboard: false,
+        stack: Stack::wanted(),
         qh,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Rows;
+    use super::{Rows, sway_before_scene};
+
+    #[test]
+    fn knows_the_sways_that_stack_the_other_way_round() {
+        assert!(sway_before_scene("sway version 1.9\n"));
+        assert!(sway_before_scene("sway version 1.8.1"));
+        assert!(!sway_before_scene("sway version 1.10.1"));
+        assert!(!sway_before_scene("sway version 1.11-dev-abc"));
+        assert!(!sway_before_scene(""));
+    }
 
     #[test]
     fn damages_only_what_changed() {

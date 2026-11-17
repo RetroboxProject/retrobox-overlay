@@ -67,9 +67,9 @@ impl Icon {
     pub const fn for_action(action: MenuAction) -> Option<Self> {
         Some(match action {
             MenuAction::Continue => Self::Play,
-            MenuAction::States(StateMode::Save) | MenuAction::Emulator(EmuAction::SaveState) => {
-                Self::Save
-            }
+            MenuAction::States(StateMode::Save)
+            | MenuAction::Emulator(EmuAction::SaveState)
+            | MenuAction::SaveAndQuit => Self::Save,
             MenuAction::States(StateMode::Load) | MenuAction::Emulator(EmuAction::LoadState) => {
                 Self::History
             }

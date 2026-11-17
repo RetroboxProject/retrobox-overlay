@@ -75,6 +75,8 @@ pub enum MenuAction {
     /// The achievements page (RetroAchievements).
     Achievements,
     Quit,
+    /// Save in the automatic slot, then quit.
+    SaveAndQuit,
     /// The power options' page (sleep; outside games, restart and turn off).
     Power,
     /// A slider: Left/Right (or the mouse) change it.

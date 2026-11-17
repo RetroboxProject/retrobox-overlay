@@ -2,7 +2,8 @@
 //!
 //! Retrobox starts it with EmulationStation and it lives as long as the
 //! session. It reads every controller and keyboard (evdev, without grabbing
-//! them: EmulationStation and the games keep getting every input) and opens
+//! them: EmulationStation and the games keep getting every input, but for
+//! the hotkey's shield, see `shield`) and opens
 //! the overlay (`retrobox-overlay --show`, a process of its own), when
 //!
 //! * B (Nintendo's B, the south button) is pressed while the hotkey is held,
@@ -29,7 +30,9 @@
 //!
 //! While a game runs, the same events go to the mapper too (`mapper`: the
 //! game's pad-to-keyboard profile), which follows `session.json` in the
-//! runtime directory (inotify as well).
+//! runtime directory (inotify as well); with a standalone emulator, the
+//! hotkey held alone takes its controller for a moment, so a shortcut's
+//! buttons do not reach the game (`shield`).
 
 use std::collections::{HashMap, HashSet};
 use std::os::fd::AsFd;
@@ -55,6 +58,7 @@ use retrobox_input::probe::{self, Found, Kind};
 
 use crate::mapper::{self, Mapper};
 use crate::parent;
+use crate::shield::{self, Shield};
 
 /// Where the input devices appear.
 const INPUT_DIR: &str = "/dev/input";
@@ -63,6 +67,9 @@ const INPUT_DIR: &str = "/dev/input";
 const DEBOUNCE: Duration = Duration::from_millis(500);
 /// Fraction of an axis' half range past which a stick counts as pushed.
 const STICK_THRESHOLD: f32 = 0.5;
+/// Fraction of its range past which an axis is not at rest (the shield
+/// only goes up with every axis at rest).
+const REST_THRESHOLD: f32 = 0.25;
 /// What the launcher writes about the game being played.
 const SESSION_FILE: &str = "session.json";
 
@@ -99,6 +106,7 @@ struct Hold {
     blocked: bool,
     /// Axis -> (centre, half range)
     axes: HashMap<AbsoluteAxisCode, (i32, i32)>,
+    shield: Shield,
 }
 
 impl Hold {
@@ -126,6 +134,7 @@ impl Hold {
             armed: None,
             blocked: false,
             axes,
+            shield: Shield::default(),
         };
         hold.resync(device);
         hold
@@ -144,19 +153,43 @@ impl Hold {
     /// Whether an axis value is far from its centre (a stick or the d-pad's hat).
     fn pushed(&self, axis: AbsoluteAxisCode, value: i32) -> bool {
         // the analog triggers rest at one end: they never cancel a hold
-        if matches!(
-            axis,
-            AbsoluteAxisCode::ABS_Z
-                | AbsoluteAxisCode::ABS_RZ
-                | AbsoluteAxisCode::ABS_GAS
-                | AbsoluteAxisCode::ABS_BRAKE
-        ) {
+        if is_trigger(axis) {
             return false;
         }
         self.axes.get(&axis).is_some_and(|(centre, half)| {
             ((value - centre) as f32 / *half as f32).abs() >= STICK_THRESHOLD
         })
     }
+
+    /// Whether every axis is at rest: sticks and hat centred, triggers up.
+    fn at_rest(&self, device: &Device) -> bool {
+        let Ok(state) = device.get_abs_state() else {
+            return true;
+        };
+        self.axes.iter().all(|(axis, &(centre, half))| {
+            let value = state
+                .get(usize::from(axis.0))
+                .map_or(centre, |info| info.value);
+            let away = if is_trigger(*axis) {
+                // from its end, over its whole range
+                (value - (centre - half)) as f32 / (2 * half) as f32
+            } else {
+                ((value - centre) as f32 / half as f32).abs()
+            };
+            away < REST_THRESHOLD
+        })
+    }
+}
+
+/// The analog triggers, which rest at one end of their range.
+fn is_trigger(axis: AbsoluteAxisCode) -> bool {
+    matches!(
+        axis,
+        AbsoluteAxisCode::ABS_Z
+            | AbsoluteAxisCode::ABS_RZ
+            | AbsoluteAxisCode::ABS_GAS
+            | AbsoluteAxisCode::ABS_BRAKE
+    )
 }
 
 /// Gamepad buttons: `BTN_JOYSTICK` to `BTN_THUMBR`, and the d-pad buttons.
@@ -238,6 +271,8 @@ struct State {
     mapper: Mapper,
     /// The mapper's tick is scheduled.
     ticking: bool,
+    /// The running game's emulator needs the hotkey's shield.
+    shielding: bool,
 }
 
 /// Run until stopped (SIGTERM, SIGINT), or until `parent` (Retrobox's
@@ -313,6 +348,7 @@ pub fn run(runtime_dir: &Path, hold: Duration, parent: Option<i32>) -> Result<()
         events: Vec::new(),
         mapper: Mapper::default(),
         ticking: false,
+        shielding: false,
     };
     state.scan();
     state.load_session();
@@ -459,8 +495,10 @@ impl State {
         );
     }
 
-    /// The game started or ended: map its controllers, or stop.
+    /// The game started or ended: map its controllers, or stop; shield its
+    /// hotkey, or not.
     fn load_session(&mut self) {
+        self.shielding = shield::wanted(&self.runtime_dir);
         let pads = self
             .inputs
             .values()
@@ -536,6 +574,11 @@ impl State {
             let Some(input) = self.inputs.get_mut(path) else {
                 return;
             };
+            if let Watched::Pad(hold) = &mut input.watched
+                && hold.shield.skips(event, hold.hotkey)
+            {
+                continue;
+            }
             match &input.watched {
                 Watched::Pad(_) => self.mapper.pad_event(path, event),
                 Watched::Keyboard(_) => self.mapper.key_event(event),
@@ -571,7 +614,9 @@ impl State {
 
     /// A gamepad button going down or up.
     fn pad_button(&mut self, path: &Path, code: KeyCode, pressed: bool) {
+        let shielding = self.shielding && self.overlay.is_none();
         let Some(Input {
+            device,
             watched: Watched::Pad(hold),
             ..
         }) = self.inputs.get_mut(path)
@@ -582,6 +627,16 @@ impl State {
             hold.held.insert(code);
         } else {
             hold.held.remove(&code);
+        }
+        if code == hold.hotkey && !pressed {
+            hold.shield.lower(device, hold.hotkey, true);
+        } else if code == hold.hotkey
+            && shielding
+            && hold.dedicated
+            && hold.held.len() == 1
+            && hold.at_rest(device)
+        {
+            hold.shield.raise(device);
         }
         if hold.held.is_empty() {
             hold.blocked = false;
@@ -677,8 +732,13 @@ impl State {
             return;
         }
         // it takes the controllers: what the mapper holds is let go now (their
-        // releases will not come here)
+        // releases will not come here), and the shields give them back
         self.mapper.release_all();
+        for input in self.inputs.values_mut() {
+            if let Watched::Pad(hold) = &mut input.watched {
+                hold.shield.lower(&mut input.device, hold.hotkey, false);
+            }
+        }
         // the controller that asked first, then every other one: outside a
         // game, the overlay grabs them all
         let mut pads: Vec<&Path> = from.into_iter().collect();
