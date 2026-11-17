@@ -74,9 +74,11 @@ pub enum MenuAction {
     Controls,
     /// The achievements page (RetroAchievements).
     Achievements,
-    Quit,
-    /// Save in the automatic slot, then quit.
-    SaveAndQuit,
+    /// Quit the game; with `saves`, held down long enough it saves in the
+    /// automatic slot first (see `SAVE_HOLD`).
+    Quit {
+        saves: bool,
+    },
     /// The power options' page (sleep; outside games, restart and turn off).
     Power,
     /// A slider: Left/Right (or the mouse) change it.
@@ -333,6 +335,9 @@ pub struct Panel {
     button_memory: usize,
     /// The button whose function shows next to it.
     tooltip: Option<usize>,
+    /// How far the selected button has been held down (0 to 1), for the
+    /// ones that do something else when held: its ring fills.
+    hold: Option<f32>,
     /// The status line above the header.
     status_bar: StatusBar,
     /// How much taller than a line of text the main entries are.
@@ -389,6 +394,7 @@ impl Panel {
             item_memory: 0,
             button_memory: 0,
             tooltip: None,
+            hold: None,
             status_bar: StatusBar::default(),
             row_scale: 1.0,
             icons: true,
@@ -402,10 +408,24 @@ impl Panel {
         panel
     }
 
-    /// The round buttons at the bottom.
+    /// The round buttons at the bottom; the first one is selected, as the
+    /// menu opens there.
     pub fn set_buttons(&mut self, buttons: Vec<MenuItem>) {
         self.buttons = buttons;
-        self.fix_selection();
+        if self.buttons.is_empty() || self.page.is_some() {
+            self.fix_selection();
+        } else {
+            self.set_selected(Target::Button(0));
+        }
+    }
+
+    /// How far the selected button has been held down (None: it is not);
+    /// true when it changed.
+    pub fn set_hold(&mut self, hold: Option<f32>) -> bool {
+        let hold = hold.map(|progress| progress.clamp(0.0, 1.0));
+        let changed = hold != self.hold;
+        self.hold = hold;
+        changed
     }
 
     /// The line under the header (None: none).
@@ -1600,10 +1620,18 @@ impl Panel {
             fill_circle(pixmap, (cx, cy), size / 2.0, disc);
             if selected {
                 // a ring in the text's colour around it: it stands out whatever
-                // the theme's selector
+                // the theme's selector; held down, it fills clockwise from the
+                // top over a faint one
                 let width = (size * RING_WIDTH).max(2.0).round();
                 let radius = size / 2.0 + (size * RING_GAP).max(2.0).round() + width / 2.0;
-                stroke_circle(pixmap, (cx, cy), radius, width, style.color);
+                match self.hold {
+                    Some(progress) => {
+                        let faint = style.color.with_alpha(BUTTON_ALPHA);
+                        stroke_circle(pixmap, (cx, cy), radius, width, faint);
+                        stroke_arc(pixmap, (cx, cy), radius, width, progress, style.color);
+                    }
+                    None => stroke_circle(pixmap, (cx, cy), radius, width, style.color),
+                }
             }
             if !selected && self.hovered == Some(target) {
                 fill_circle(
@@ -1845,6 +1873,59 @@ fn stroke_circle(pixmap: &mut Pixmap, centre: (f32, f32), radius: f32, width: f3
         paint.anti_alias = true;
         let stroke = tiny_skia::Stroke {
             width,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+    }
+}
+
+/// An arc of a circle, clockwise from the top over `fraction` of the turn.
+fn stroke_arc(
+    pixmap: &mut Pixmap,
+    centre: (f32, f32),
+    radius: f32,
+    width: f32,
+    fraction: f32,
+    color: Rgba,
+) {
+    if fraction <= 0.0 {
+        return;
+    }
+    // cubic Béziers of at most a quarter turn each
+    let sweep = fraction.min(1.0) * std::f32::consts::TAU;
+    let segments = (sweep / std::f32::consts::FRAC_PI_2).ceil();
+    let step = sweep / segments;
+    let handle = radius * 4.0 / 3.0 * (step / 4.0).tan();
+    let at = |angle: f32| {
+        let (sin, cos) = angle.sin_cos();
+        (centre.0 + radius * sin, centre.1 - radius * cos)
+    };
+    let mut builder = PathBuilder::new();
+    let (x, y) = at(0.0);
+    builder.move_to(x, y);
+    for index in 0..segments as u32 {
+        let start = index as f32 * step;
+        let end = start + step;
+        let ((x0, y0), (x1, y1)) = (at(start), at(end));
+        // the tangents, clockwise in screen coordinates
+        let (sin0, cos0) = start.sin_cos();
+        let (sin1, cos1) = end.sin_cos();
+        builder.cubic_to(
+            x0 + handle * cos0,
+            y0 + handle * sin0,
+            x1 - handle * cos1,
+            y1 - handle * sin1,
+            x1,
+            y1,
+        );
+    }
+    if let Some(path) = builder.finish() {
+        let mut paint = Paint::default();
+        paint.set_color(color.to_color());
+        paint.anti_alias = true;
+        let stroke = tiny_skia::Stroke {
+            width,
+            line_cap: tiny_skia::LineCap::Round,
             ..tiny_skia::Stroke::default()
         };
         pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);

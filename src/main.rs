@@ -2,7 +2,7 @@
 //!
 //! `retrobox-inputd` (the input daemon, its own binary) runs for the whole
 //! Retrobox session and opens it when the dedicated hotkey (Home/Guide) is
-//! held, on Hotkey+B, or on Ctrl+Shift+O or Shift+F7; `--show` is the
+//! pressed alone, on Hotkey+B, or on Ctrl+Shift+O or Shift+F7; `--show` is the
 //! overlay itself: a side menu styled like EmulationStation's over
 //! the dimmed game, with a clock. Without a mode, it asks the daemon to open
 //! or close the overlay, or shows it itself when no daemon runs; started
@@ -658,7 +658,8 @@ fn menu_items(translator: &Translator, emulator: &Emulator, pages: &GamePages) -
 }
 
 /// The round buttons under a game's entries: continue, a screenshot (when
-/// the emulator takes them), quit (the power button comes last).
+/// the emulator takes them), quit (held, it saves first, with save states
+/// by slot; the power button comes last).
 fn menu_buttons(translator: &Translator, emulator: &Emulator) -> Vec<MenuItem> {
     let item = |key: &str, action| MenuItem::new(translator.text(key), action);
     let mut buttons = vec![item("menu-continue", MenuAction::Continue)];
@@ -666,14 +667,8 @@ fn menu_buttons(translator: &Translator, emulator: &Emulator) -> Vec<MenuItem> {
         let action = EmuAction::Screenshot;
         buttons.push(item(action.label_key(), MenuAction::Emulator(action)));
     }
-    // with save states by slot: save and quit, or quit (forgetting the
-    // automatic state)
-    if emulator.has_slots() {
-        buttons.push(item("menu-save-quit", MenuAction::SaveAndQuit));
-        buttons.push(item("menu-quit-unsaved", MenuAction::Quit));
-    } else {
-        buttons.push(item("menu-quit", MenuAction::Quit));
-    }
+    let saves = emulator.has_slots();
+    buttons.push(item("menu-quit", MenuAction::Quit { saves }));
     buttons
 }
 

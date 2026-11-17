@@ -15,8 +15,6 @@ menu-reset = Berrabiarazi
 menu-emulator-menu = Emuladorearen menua
 menu-screenshot = Pantaila-argazkia
 menu-quit = Irten jokotik
-menu-save-quit = Gorde eta irten
-menu-quit-unsaved = Irten gorde gabe
 # the power button and its page (sleep in games; restart and turn off
 # outside them), and the sliders
 menu-power = Energia
@@ -43,6 +41,7 @@ disc-tray-open = erretilua irekita
 # help prompts (EmulationStation's words)
 help-choose = AUKERATU
 help-select = HAUTATU
+help-hold-save = EUTSI: GORDE ETA IRTEN
 help-back = ATZERA
 help-close = ITXI
 help-adjust = DOITU

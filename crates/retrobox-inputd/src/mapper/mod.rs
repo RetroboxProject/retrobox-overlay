@@ -4,7 +4,8 @@
 //! (`pad_profile`: evmapy's format with gamepadly's additions, see
 //! `retrobox_input::pad_profile`) along with the game's controllers (`controllers`: each
 //! player's device). Each of those controllers gets its player's mappings,
-//! bound to its inputs by `es_input.cfg` (`bind`), and every keyboard the
+//! bound to its inputs by its `es_input.cfg` layout (`bind`; the daemon
+//! reads it when it opens the controller), and every keyboard the
 //! profile's `actions_keyboard`. Their actions go to a virtual keyboard and
 //! mouse (`output`). Without a game, or without `pad_profile`, nothing is
 //! mapped.
@@ -27,6 +28,7 @@ use serde_json::{Map, Value};
 use self::bind::Ranges;
 use self::engine::{Code, Engine};
 use self::output::Output;
+use retrobox_input::es_input::Layout;
 use retrobox_input::pad_profile::{self as profile, Profile, Section};
 
 /// How often the sticks move the pointer, and held combinations are looked
@@ -97,12 +99,12 @@ pub struct Mapper {
 }
 
 impl Mapper {
-    /// Read `session.json` again: map the controllers among `devices` as it
+    /// Read `session.json` again: map the controllers among `pads` as it
     /// says, or stop mapping when no game (with a profile) runs.
     pub fn load<'a>(
         &mut self,
         runtime_dir: &Path,
-        devices: impl IntoIterator<Item = (&'a Path, &'a Device)>,
+        pads: impl IntoIterator<Item = (&'a Path, &'a Device, Option<&'a Layout>)>,
     ) {
         let session = Session::load(runtime_dir);
         if session == self.session {
@@ -139,13 +141,13 @@ impl Mapper {
                 ""
             }
         );
-        for (path, device) in devices {
-            self.attach(path, device);
+        for (path, device, layout) in pads {
+            self.attach(path, device, layout);
         }
     }
 
     /// A controller to map, if it is one of the game's.
-    pub fn attach(&mut self, path: &Path, device: &Device) {
+    pub fn attach(&mut self, path: &Path, device: &Device, layout: Option<&Layout>) {
         let Some(session) = &self.session else {
             return;
         };
@@ -156,13 +158,14 @@ impl Mapper {
         if profile.is_empty() {
             return;
         }
-        let Some(mappings) = bind::pad(&profile, device) else {
+        let Some(layout) = layout else {
             log::warn!(
                 "{} (player {player}): not in es_input.cfg, not mapped",
                 path.display()
             );
             return;
         };
+        let mappings = bind::pad(&profile, layout, device);
         if mappings.is_empty() {
             return;
         }

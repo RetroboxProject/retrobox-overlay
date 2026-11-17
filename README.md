@@ -5,7 +5,7 @@ input daemon that opens it and maps controllers to keys.
 
 ![The overlay over Super Mario World](docs/screenshots/menu.webp)
 
-Hold the controller's **Home/Guide** button, press **Hotkey+B** or **Ctrl+Shift+O** while
+Press the controller's **Home/Guide** button, **Hotkey+B** or **Ctrl+Shift+O** while
 playing: a side menu slides in over the dimmed game, drawn in the menu style of the active
 EmulationStation theme, with a clock on the other side. From there you load and save states,
 read the game's manual, reset, take a screenshot, change the volume or the brightness, or
@@ -38,9 +38,9 @@ runs only while it is shown.
 * **What the emulator can do,** each with its icon: load and save state, reset, the emulator's
   own menu, the disc tray and next/previous disc. The launcher tells the overlay what the
   running emulator supports; anything it cannot do is not shown.
-* **Round buttons** pinned at the bottom: *continue*, *screenshot*, *save and quit*, *quit
-  without saving* (just *quit* where states are not saved by slot) and *power* (sleep mode). A
-  button highlighted for a second explains itself in a small bubble.
+* **Round buttons** pinned at the bottom, where the menu opens: *continue*, *screenshot*, *quit*
+  (held, it saves first: its ring fills) and *power* (sleep mode). A button highlighted for a
+  second explains itself in a small bubble.
 * **Sliders** for the volume and, on a built-in screen, the brightness, as tall as the
   buttons' row.
 * **Sounds** for moving, choosing and going back, like EmulationStation's (`[sounds]` in
@@ -64,9 +64,9 @@ console games have a pause of their own, and the emulator's menu pauses the rest
 
 *Load state* and *Save state* open a page of ten slots (0 to 9), each with the picture and the
 date RetroArch saved with it. They are RetroArch's own files, the same ones EmulationStation
-lists. *Save and quit* saves in RetroArch's automatic slot (`.state.auto`), which
-EmulationStation lists as the auto save and RetroArch loads on start when the game's auto save
-is on; *quit without saving* forgets it. RetroArch never saves it by itself.
+lists. *Quit* held down saves in RetroArch's automatic slot (`.state.auto`) before quitting,
+which EmulationStation lists as the auto save and RetroArch loads on start when the game's auto
+save is on; *quit* pressed (let go at once) forgets it. RetroArch never saves it by itself.
 
 ### Discs
 
@@ -150,7 +150,7 @@ with gamepadly's additions, read exactly as gamepadly read them: this replaces g
   `deadzone`, `acceleration`).
 * Triggers can be combinations (`mode: all`), any of several inputs (`any`) or a `sequence`,
   with `hold`, `condition` (inputs held as well), `cooldown`, `tap` (fires on release, alone
-  and quick) and `_disabled`. The longest combination a press completes wins.
+  and quick; not on the hotkey, whose tap opens the overlay) and `_disabled`. The longest combination a press completes wins.
 * Keys and mouse buttons go to a virtual keyboard and mouse (`/dev/uinput`, the `input`
   group); commands run in the background. Nothing is grabbed, so the game gets every input
   too; when the overlay opens (it grabs the controllers) what the mappings held is let go.
@@ -163,9 +163,10 @@ with gamepadly's additions, read exactly as gamepadly read them: this replaces g
 
 | | Controller | Keyboard | Mouse and touch |
 |---|---|---|---|
-| Open | Hold Home/Guide, or Hotkey+B | Ctrl+Shift+O (or Shift+F7) | |
+| Open | Home/Guide, or Hotkey+B | Ctrl+Shift+O (or Shift+F7) | |
 | Move | D-pad, left stick | Arrows | Hover, wheel, drag |
 | Choose | South button | Enter | Click, tap |
+| Save and quit | South button held on *quit* | Enter held | Held click |
 | Back, close | East button, Home | Esc | Right click, click outside |
 | Entries ↔ buttons | R1 / L1 | Page Down / Page Up | |
 | Sliders | Left / Right (held repeats) | Left / Right | Tap or drag the track |
@@ -173,9 +174,11 @@ with gamepadly's additions, read exactly as gamepadly read them: this replaces g
 | Audio page | X on the volume slider | F2 | |
 
 Buttons follow each controller's `es_input.cfg` entry; EmulationStation's *Switch confirm &
-cancel buttons* swaps the south and east buttons, as in ES. On a controller without Home/Guide the hotkey is Select, which belongs to the
-game: there holding it opens nothing, and Hotkey+B does. Pressing anything else while the
-hotkey is held cancels the hold, so its other combinations never open the menu.
+cancel buttons* swaps the south and east buttons, as in ES. Home/Guide opens the menu when it
+is pressed and let go alone: where its `es_input.cfg` entry gives the hotkey an input of its
+own. On a controller without one the hotkey is Select, which belongs to the game: there it
+opens nothing, and Hotkey+B does. Pressing anything else (or pushing a stick) while the hotkey
+is down makes that press no tap, so its other combinations never open the menu.
 
 The buttons of a shortcut stay out of the game: RetroArch and EmulationStation block their
 input while the hotkey is held, and with a standalone emulator the input daemon takes the
@@ -310,7 +313,7 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
 
 | Section | What |
 |---|---|
-| `[overlay]` | side of the menu, dim, animation length, `hold_ms`, `take_keyboard`, icons |
+| `[overlay]` | side of the menu, dim, animation length, `take_keyboard`, icons |
 | `[clock]` | on/off, big or small, position, colour, `strftime` formats |
 | `[status]` | the battery's percentage |
 | `[system]` | whether *Sleep mode* is offered (the power button) |

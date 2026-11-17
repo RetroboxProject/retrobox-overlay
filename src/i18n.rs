@@ -171,6 +171,7 @@ mod tests {
                 "audio-no-outputs",
                 "audio-loading",
                 "help-audio",
+                "help-hold-save",
             ] {
                 assert!(english.has_message(id), "{id}");
                 assert!(translated.has_message(id), "{code}: {id}");

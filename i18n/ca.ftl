@@ -15,8 +15,6 @@ menu-reset = Reinicia
 menu-emulator-menu = Menú de l'emulador
 menu-screenshot = Captura de pantalla
 menu-quit = Surt del joc
-menu-save-quit = Desa i surt
-menu-quit-unsaved = Surt sense desar
 # the power button and its page (sleep in games; restart and turn off
 # outside them), and the sliders
 menu-power = Energia
@@ -43,6 +41,7 @@ disc-tray-open = safata oberta
 # help prompts (EmulationStation's words)
 help-choose = TRIAR
 help-select = SELECCIONAR
+help-hold-save = MANTENIR: DESA I SURT
 help-back = ENRERE
 help-close = TANCAR
 help-adjust = AJUSTAR

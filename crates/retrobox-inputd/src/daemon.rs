@@ -8,17 +8,24 @@
 //!
 //! * B (Nintendo's B, the south button) is pressed while the hotkey is held,
 //!   on any controller: Hotkey+B opens it at once;
-//! * the hotkey is held alone for `hold_ms` (750 ms by default), on
-//!   controllers with a dedicated one (Home/Guide, `BTN_MODE`). Where the
-//!   hotkey is a button the game uses (Select, as in EmulationStation),
-//!   holding it opens nothing;
+//! * the hotkey is pressed and let go alone, on controllers where it is a
+//!   button of its own (Home/Guide): `es_input.cfg` gives it an input no
+//!   other name has. Where the hotkey is a button the game uses too (Select,
+//!   on controllers without one), pressing it opens nothing;
 //! * Ctrl+Shift+O (or Shift+F7, where the function keys need Fn) is pressed on
 //!   a keyboard.
 //!
-//! Any other button, the d-pad or a stick pushed while those are held cancels
-//! the hold until everything is released again, so the hotkey's own
-//! combinations (Hotkey+Start...) and the hotkey held to move the mouse with
-//! a stick never open the overlay by surprise.
+//! Any other button, the d-pad, a stick or a trigger pushed while the hotkey
+//! is down makes that press no tap, and blocks Hotkey+B until everything is
+//! released again, so the hotkey's own combinations (Hotkey+Start...) and the
+//! hotkey held to move the mouse with a stick never open the overlay by
+//! surprise.
+//!
+//! What the hotkey and B are comes from each controller's layout in
+//! `es_input.cfg` (`retrobox_input::es_input`), read once when it appears
+//! and again when EmulationStation saves the file; the mapper binds the
+//! profiles with that same layout. The overlay, a process of its own, reads
+//! the layouts of the controllers it is handed.
 //!
 //! The same triggers close it, while the overlay itself takes care of the
 //! controllers (it grabs them while open, so this process sees nothing). Only
@@ -51,6 +58,7 @@ use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify, InotifyEvent};
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
 
+use retrobox_input::es_input::{self, Layout};
 use retrobox_input::instance::{self, Instance};
 use retrobox_input::launch;
 use retrobox_input::paths;
@@ -73,36 +81,26 @@ const REST_THRESHOLD: f32 = 0.25;
 /// What the launcher writes about the game being played.
 const SESSION_FILE: &str = "session.json";
 
-/// Which held buttons open the overlay.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Chord {
-    /// The dedicated hotkey alone, held for a moment.
-    Hotkey,
-    /// The hotkey and B (Nintendo's B: the south button, Xbox's A), on any
-    /// controller: opens it at once, when B goes down with the hotkey already held.
-    HotkeyB,
-}
-
-/// What `held` makes of a controller's buttons.
-fn chord_of(held: &HashSet<KeyCode>, hotkey: KeyCode, dedicated: bool) -> Option<Chord> {
-    if held.len() == 2 && held.contains(&hotkey) && held.contains(&KeyCode::BTN_SOUTH) {
-        return Some(Chord::HotkeyB);
-    }
-    // a hotkey that is also a game button (Select) is never held to open it
-    (dedicated && held.len() == 1 && held.contains(&hotkey)).then_some(Chord::Hotkey)
-}
-
-/// The hold of one controller.
+/// The hotkey of one controller, and what it opens.
 #[derive(Debug)]
 struct Hold {
+    /// What EmulationStation says the controller's inputs are, read once
+    /// for everything here (the mapper binds the profiles with it), and
+    /// again when `es_input.cfg` changes.
+    layout: Option<Layout>,
+    /// Its code, as the controller sends it.
     hotkey: KeyCode,
+    /// It is a button of its own (Home/Guide), not one the game uses too.
     dedicated: bool,
-    /// The buttons down (gamepad buttons only).
+    /// B's code (Nintendo's B, the south button), as the controller sends it.
+    south: KeyCode,
+    /// The buttons down (gamepad buttons and the hotkey).
     held: HashSet<KeyCode>,
-    /// The chord being held, its timer and since when.
-    armed: Option<(Chord, RegistrationToken)>,
-    /// Something else was pressed (or the overlay just closed): no chord
-    /// counts until every button is up.
+    /// The dedicated hotkey went down alone, and nothing else since: let go
+    /// now, it is a tap.
+    tapping: bool,
+    /// Something was pressed with the hotkey (one of its shortcuts), or the
+    /// overlay just closed: Hotkey+B does not count until every button is up.
     blocked: bool,
     /// Axis -> (centre, half range)
     axes: HashMap<AbsoluteAxisCode, (i32, i32)>,
@@ -110,10 +108,7 @@ struct Hold {
 }
 
 impl Hold {
-    fn new(device: &Device) -> Self {
-        let dedicated = device
-            .supported_keys()
-            .is_some_and(|keys| keys.contains(KeyCode::BTN_MODE));
+    fn new(device: &mut Device) -> Self {
         let mut axes = HashMap::new();
         if let Ok(infos) = device.get_absinfo() {
             for (axis, info) in infos {
@@ -123,21 +118,52 @@ impl Hold {
                 }
             }
         }
-        let mut hold = Self {
-            hotkey: if dedicated {
+        let mut hold = Self::with(KeyCode::BTN_MODE, true, axes);
+        hold.relayout(device);
+        hold
+    }
+
+    /// Read the controller's layout, and take the hotkey and B from it
+    /// (EmulationStation's word); without one, Home/Guide where there is
+    /// one (else Select) and the south button.
+    fn relayout(&mut self, device: &mut Device) {
+        self.shield.lower(device, self.hotkey, false);
+        self.layout = Layout::of(device);
+        let layout = self.layout.as_ref();
+        (self.hotkey, self.dedicated) = layout.and_then(Layout::hotkey).unwrap_or_else(|| {
+            let guide = device
+                .supported_keys()
+                .is_some_and(|keys| keys.contains(KeyCode::BTN_MODE));
+            let hotkey = if guide {
                 KeyCode::BTN_MODE
             } else {
                 KeyCode::BTN_SELECT
-            },
+            };
+            (hotkey, guide)
+        });
+        self.south = layout
+            .and_then(|layout| layout.button("b"))
+            .unwrap_or(KeyCode::BTN_SOUTH);
+        self.resync(device);
+    }
+
+    fn with(hotkey: KeyCode, dedicated: bool, axes: HashMap<AbsoluteAxisCode, (i32, i32)>) -> Self {
+        Self {
+            layout: None,
+            hotkey,
             dedicated,
+            south: KeyCode::BTN_SOUTH,
             held: HashSet::new(),
-            armed: None,
+            tapping: false,
             blocked: false,
             axes,
             shield: Shield::default(),
-        };
-        hold.resync(device);
-        hold
+        }
+    }
+
+    /// Whether `code` is one of the buttons followed here.
+    fn follows(&self, code: KeyCode) -> bool {
+        code == self.hotkey || code == self.south || is_pad_button(code)
     }
 
     /// Read the buttons down from the kernel (after the overlay had the
@@ -145,19 +171,55 @@ impl Hold {
     fn resync(&mut self, device: &Device) {
         self.held = device
             .get_key_state()
-            .map(|keys| keys.iter().filter(|key| is_pad_button(*key)).collect())
+            .map(|keys| keys.iter().filter(|key| self.follows(*key)).collect())
             .unwrap_or_default();
         self.blocked = !self.held.is_empty();
+        self.tapping = false;
     }
 
-    /// Whether an axis value is far from its centre (a stick or the d-pad's hat).
-    fn pushed(&self, axis: AbsoluteAxisCode, value: i32) -> bool {
-        // the analog triggers rest at one end: they never cancel a hold
-        if is_trigger(axis) {
+    /// A button went down or up: whether that opens (or closes) the
+    /// overlay.
+    fn button(&mut self, code: KeyCode, pressed: bool) -> bool {
+        if !pressed {
+            self.held.remove(&code);
+            let tapped = code == self.hotkey && std::mem::take(&mut self.tapping);
+            if self.held.is_empty() {
+                self.blocked = false;
+            }
+            return tapped;
+        }
+        self.held.insert(code);
+        let alone = self.held.len() == 1;
+        self.tapping = self.dedicated && alone && code == self.hotkey && !self.blocked;
+        if alone || !self.held.contains(&self.hotkey) {
             return false;
         }
-        self.axes.get(&axis).is_some_and(|(centre, half)| {
-            ((value - centre) as f32 / *half as f32).abs() >= STICK_THRESHOLD
+        // with the hotkey down: Hotkey+B (B pressed last), or a shortcut of
+        // its own; either way nothing more until all is up
+        let opens = !self.blocked && self.held.len() == 2 && code == self.south;
+        self.blocked = true;
+        opens
+    }
+
+    /// A stick, the d-pad's hat or a trigger moved: pushed far enough while
+    /// the hotkey is down alone, that press is no tap.
+    fn moved(&mut self, axis: AbsoluteAxisCode, value: i32) {
+        if self.tapping && self.pushed(axis, value) {
+            self.tapping = false;
+            self.blocked = true;
+        }
+    }
+
+    /// Whether an axis value is far from where it rests: the centre, for a
+    /// stick or the d-pad's hat; the end, for a trigger.
+    fn pushed(&self, axis: AbsoluteAxisCode, value: i32) -> bool {
+        self.axes.get(&axis).is_some_and(|&(centre, half)| {
+            let away = if is_trigger(axis) {
+                (value - (centre - half)) as f32 / (2 * half) as f32
+            } else {
+                ((value - centre) as f32 / half as f32).abs()
+            };
+            away >= STICK_THRESHOLD
         })
     }
 
@@ -260,7 +322,6 @@ struct Input {
 struct State {
     handle: LoopHandle<'static, State>,
     runtime_dir: PathBuf,
-    hold: Duration,
     inputs: HashMap<PathBuf, Input>,
     /// The overlay, while it is shown.
     overlay: Option<Child>,
@@ -277,7 +338,7 @@ struct State {
 
 /// Run until stopped (SIGTERM, SIGINT), or until `parent` (Retrobox's
 /// process) ends: open the overlay on its triggers.
-pub fn run(runtime_dir: &Path, hold: Duration, parent: Option<i32>) -> Result<()> {
+pub fn run(runtime_dir: &Path, parent: Option<i32>) -> Result<()> {
     let _lock = match instance::acquire_named(runtime_dir, instance::DAEMON_LOCK_FILE)? {
         Instance::First(lock) => lock,
         Instance::Running(pid) => {
@@ -326,6 +387,7 @@ pub fn run(runtime_dir: &Path, hold: Duration, parent: Option<i32>) -> Result<()
         .map_err(|err| anyhow!("cannot watch /dev/input: {}", err.error))?;
 
     watch_session(&handle, runtime_dir)?;
+    watch_es_input(&handle);
     if let Some(pid) = parent {
         if let Err(err) = parent::watch(&handle, pid, |state: &mut State| {
             log::info!("Retrobox has ended: stopping");
@@ -340,7 +402,6 @@ pub fn run(runtime_dir: &Path, hold: Duration, parent: Option<i32>) -> Result<()
     let mut state = State {
         handle,
         runtime_dir: runtime_dir.to_owned(),
-        hold,
         inputs: HashMap::new(),
         overlay: None,
         last_trigger: None,
@@ -353,10 +414,9 @@ pub fn run(runtime_dir: &Path, hold: Duration, parent: Option<i32>) -> Result<()
     state.scan();
     state.load_session();
     log::info!(
-        "overlay daemon: {} controller(s), {} keyboard(s), hold {} ms",
+        "overlay daemon: {} controller(s), {} keyboard(s)",
         state.pads().count(),
         state.inputs.len() - state.pads().count(),
-        hold.as_millis()
     );
 
     while !state.stop {
@@ -399,6 +459,50 @@ fn watch_session(handle: &LoopHandle<'static, State>, runtime_dir: &Path) -> Res
         )
         .map_err(|err| anyhow!("cannot watch the runtime directory: {}", err.error))?;
     Ok(())
+}
+
+/// Follow the user's `es_input.cfg`, where EmulationStation saves a
+/// controller configured: the layouts are read again. Without its
+/// directory (EmulationStation never ran), the layouts are read as the
+/// controllers appear.
+fn watch_es_input(handle: &LoopHandle<'static, State>) {
+    let Some(file) = es_input::user_config_file() else {
+        return;
+    };
+    let (Some(dir), Some(name)) = (file.parent(), file.file_name()) else {
+        return;
+    };
+    let name = name.to_owned();
+    let watched =
+        Inotify::init(InitFlags::IN_NONBLOCK | InitFlags::IN_CLOEXEC).and_then(|inotify| {
+            inotify.add_watch(
+                dir,
+                AddWatchFlags::IN_CLOSE_WRITE | AddWatchFlags::IN_MOVED_TO,
+            )?;
+            Ok(inotify)
+        });
+    let inotify = match watched {
+        Ok(inotify) => inotify,
+        Err(err) => {
+            log::info!("not following {}: {err}", file.display());
+            return;
+        }
+    };
+    let source = Generic::new(inotify, Interest::READ, Mode::Level);
+    let inserted = handle.insert_source(source, move |_, inotify, state| {
+        let changed = inotify.read_events().unwrap_or_default();
+        if changed
+            .iter()
+            .any(|event| event.name.as_deref() == Some(name.as_os_str()))
+        {
+            log::info!("es_input.cfg changed: reading the controllers' layouts again");
+            state.relayout();
+        }
+        Ok(PostAction::Continue)
+    });
+    if let Err(err) = inserted {
+        log::warn!("cannot follow es_input.cfg: {}", err.error);
+    }
 }
 
 fn is_session(event: &InotifyEvent) -> bool {
@@ -447,11 +551,11 @@ impl State {
         let path = found.path;
         // not readable yet (udev sets the permissions just after): IN_ATTRIB
         // brings it back
-        let Ok(device) = Device::open(&path) else {
+        let Ok(mut device) = Device::open(&path) else {
             return;
         };
         let watched = match found.kind {
-            Kind::Pad => Watched::Pad(Hold::new(&device)),
+            Kind::Pad => Watched::Pad(Hold::new(&mut device)),
             Kind::Keyboard => Watched::Keyboard(Modifiers::default()),
         };
         if device.set_nonblocking(true).is_err() {
@@ -476,13 +580,13 @@ impl State {
             path.display(),
             device.name().unwrap_or("?"),
             match &watched {
-                Watched::Pad(hold) if hold.dedicated => "controller, hold Home/Guide",
-                Watched::Pad(_) => "controller, hotkey is a game button: no hold",
+                Watched::Pad(hold) if hold.dedicated => "controller, its hotkey opens",
+                Watched::Pad(_) => "controller, hotkey is a game button: Hotkey+B opens",
                 Watched::Keyboard(_) => "keyboard",
             }
         );
-        if matches!(watched, Watched::Pad(_)) {
-            self.mapper.attach(&path, &device);
+        if let Watched::Pad(hold) = &watched {
+            self.mapper.attach(&path, &device, hold.layout.as_ref());
         }
         self.inputs.insert(
             path.clone(),
@@ -502,9 +606,27 @@ impl State {
         let pads = self
             .inputs
             .values()
-            .filter(|input| matches!(input.watched, Watched::Pad(_)))
-            .map(|input| (input.path.as_path(), &input.device));
+            .filter_map(|input| match &input.watched {
+                Watched::Pad(hold) => {
+                    Some((input.path.as_path(), &input.device, hold.layout.as_ref()))
+                }
+                Watched::Keyboard(_) => None,
+            });
         self.mapper.load(&self.runtime_dir, pads);
+    }
+
+    /// `es_input.cfg` changed (a controller configured in EmulationStation):
+    /// read every controller's layout again, and bind the mapper's profiles
+    /// to it.
+    fn relayout(&mut self) {
+        for input in self.inputs.values_mut() {
+            if let Watched::Pad(hold) = &mut input.watched {
+                hold.relayout(&mut input.device);
+                self.mapper.detach(&input.path);
+                self.mapper
+                    .attach(&input.path, &input.device, hold.layout.as_ref());
+            }
+        }
     }
 
     /// Have the mapper ticked while it has something to do (a combination
@@ -534,13 +656,6 @@ impl State {
                 Watched::Keyboard(_) => self.mapper.keyboard_gone(),
             }
             self.handle.remove(input.token);
-            if let Watched::Pad(Hold {
-                armed: Some((_, timer)),
-                ..
-            }) = input.watched
-            {
-                self.handle.remove(timer);
-            }
         }
     }
 
@@ -594,16 +709,13 @@ impl State {
                         self.toggle(None);
                     }
                 }
-                (Watched::Pad(_), EventSummary::Key(_, code, value @ (0 | 1)))
-                    if is_pad_button(code) =>
+                (Watched::Pad(hold), EventSummary::Key(_, code, value @ (0 | 1)))
+                    if hold.follows(code) =>
                 {
                     self.pad_button(path, code, value == 1);
                 }
-                // a stick only matters while a chord is held
-                (Watched::Pad(hold), EventSummary::AbsoluteAxis(_, axis, value))
-                    if hold.armed.is_some() && hold.pushed(axis, value) =>
-                {
-                    self.cancel(path);
+                (Watched::Pad(hold), EventSummary::AbsoluteAxis(_, axis, value)) => {
+                    hold.moved(axis, value);
                 }
                 _ => {}
             }
@@ -623,11 +735,7 @@ impl State {
         else {
             return;
         };
-        if pressed {
-            hold.held.insert(code);
-        } else {
-            hold.held.remove(&code);
-        }
+        let opens = hold.button(code, pressed);
         if code == hold.hotkey && !pressed {
             hold.shield.lower(device, hold.hotkey, true);
         } else if code == hold.hotkey
@@ -638,76 +746,14 @@ impl State {
         {
             hold.shield.raise(device);
         }
-        if hold.held.is_empty() {
-            hold.blocked = false;
-        }
-        let chord = (!hold.blocked)
-            .then(|| chord_of(&hold.held, hold.hotkey, hold.dedicated))
-            .flatten()
-            // B pressed first, then the hotkey, is not Hotkey+B
-            .filter(|chord| *chord != Chord::HotkeyB || (pressed && code == KeyCode::BTN_SOUTH));
-        let armed = hold.armed.map(|(chord, _)| chord);
-        if chord == armed {
-            return;
-        }
-        // something other than a chord, or another chord: start again
-        if let Some((_, timer)) = hold.armed.take() {
-            self.handle.remove(timer);
-        }
-        let Some(chord) = chord else {
-            // a press that is not part of a chord blocks until all is up
-            if pressed && armed.is_some() {
-                hold.blocked = true;
-            }
-            return;
-        };
-        if chord == Chord::HotkeyB {
-            hold.blocked = true;
-            log::info!("{chord:?} on {}", path.display());
+        if opens {
+            log::info!(
+                "{} on {}",
+                if pressed { "Hotkey+B" } else { "hotkey" },
+                path.display()
+            );
             self.toggle(Some(path));
-            return;
         }
-        let target = path.to_owned();
-        let timer =
-            self.handle
-                .insert_source(Timer::from_duration(self.hold), move |_, &mut (), state| {
-                    state.held_long_enough(&target);
-                    TimeoutAction::Drop
-                });
-        if let Ok(timer) = timer {
-            hold.armed = Some((chord, timer));
-        }
-    }
-
-    /// A stick pushed while a chord was held: not a chord any more.
-    fn cancel(&mut self, path: &Path) {
-        if let Some(Input {
-            watched: Watched::Pad(hold),
-            ..
-        }) = self.inputs.get_mut(path)
-            && let Some((_, timer)) = hold.armed.take()
-        {
-            self.handle.remove(timer);
-            hold.blocked = true;
-        }
-    }
-
-    /// The chord's timer ran out: it has been held all along (any change
-    /// removes the timer).
-    fn held_long_enough(&mut self, path: &Path) {
-        let Some(Input {
-            watched: Watched::Pad(hold),
-            ..
-        }) = self.inputs.get_mut(path)
-        else {
-            return;
-        };
-        let Some((chord, _)) = hold.armed.take() else {
-            return;
-        };
-        hold.blocked = true;
-        log::info!("{chord:?} held on {}", path.display());
-        self.toggle(Some(path));
     }
 
     /// Open the overlay, or close it when it is open.
@@ -785,9 +831,6 @@ impl State {
         log::info!("overlay closed");
         for input in self.inputs.values_mut() {
             if let Watched::Pad(hold) = &mut input.watched {
-                if let Some((_, timer)) = hold.armed.take() {
-                    self.handle.remove(timer);
-                }
                 hold.resync(&input.device);
             }
         }
@@ -797,10 +840,6 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn held(codes: &[KeyCode]) -> HashSet<KeyCode> {
-        codes.iter().copied().collect()
-    }
 
     fn pressed(codes: &[KeyCode]) -> Modifiers {
         let mut modifiers = Modifiers::default();
@@ -831,26 +870,56 @@ mod tests {
         assert!(!modifiers.shift());
     }
 
+    /// A hold with `hotkey`, and the left stick's X axis (0 to 255).
+    fn hold(hotkey: KeyCode, dedicated: bool) -> Hold {
+        let axes = [(AbsoluteAxisCode::ABS_X, (128, 127))].into();
+        Hold::with(hotkey, dedicated, axes)
+    }
+
     #[test]
-    fn chords() {
-        let mode = KeyCode::BTN_MODE;
-        assert_eq!(chord_of(&held(&[mode]), mode, true), Some(Chord::Hotkey));
-        assert_eq!(
-            chord_of(&held(&[mode, KeyCode::BTN_SOUTH]), mode, true),
-            Some(Chord::HotkeyB)
-        );
-        assert_eq!(
-            chord_of(&held(&[mode, KeyCode::BTN_START]), mode, true),
-            None
-        );
-        // Select is the game's: holding it alone opens nothing, Select+A does
-        let select = KeyCode::BTN_SELECT;
-        assert_eq!(chord_of(&held(&[select]), select, false), None);
-        assert_eq!(
-            chord_of(&held(&[select, KeyCode::BTN_SOUTH]), select, false),
-            Some(Chord::HotkeyB)
-        );
-        assert_eq!(chord_of(&held(&[KeyCode::BTN_SOUTH]), select, false), None);
+    fn a_tap_on_the_dedicated_hotkey_opens() {
+        let (mode, south) = (KeyCode::BTN_MODE, KeyCode::BTN_SOUTH);
+        let mut pad = hold(mode, true);
+        assert!(!pad.button(mode, true));
+        assert!(pad.button(mode, false));
+        // a shortcut of its own: no tap, and no Hotkey+B until all is up
+        assert!(!pad.button(mode, true));
+        assert!(!pad.button(KeyCode::BTN_START, true));
+        assert!(!pad.button(KeyCode::BTN_START, false));
+        assert!(!pad.button(south, true));
+        assert!(!pad.button(south, false));
+        assert!(!pad.button(mode, false));
+        // the stick pushed while it is down: no tap
+        assert!(!pad.button(mode, true));
+        pad.moved(AbsoluteAxisCode::ABS_X, 140);
+        pad.moved(AbsoluteAxisCode::ABS_X, 250);
+        assert!(!pad.button(mode, false));
+        // down while something else is held: no tap
+        assert!(!pad.button(south, true));
+        assert!(!pad.button(mode, true));
+        assert!(!pad.button(south, false));
+        assert!(!pad.button(mode, false));
+    }
+
+    #[test]
+    fn hotkey_b_opens_on_any_controller() {
+        let (select, south) = (KeyCode::BTN_SELECT, KeyCode::BTN_SOUTH);
+        let mut pad = hold(select, false);
+        assert!(!pad.button(select, true));
+        assert!(pad.button(south, true));
+        assert!(!pad.button(south, false));
+        // a hotkey the game uses too never taps
+        assert!(!pad.button(select, false));
+        assert!(!pad.button(select, true));
+        assert!(!pad.button(select, false));
+        // B first, then the hotkey, is not Hotkey+B
+        assert!(!pad.button(south, true));
+        assert!(!pad.button(select, true));
+        let mut pad = hold(KeyCode::BTN_MODE, true);
+        assert!(!pad.button(KeyCode::BTN_MODE, true));
+        assert!(pad.button(south, true));
+        assert!(!pad.button(south, false));
+        assert!(!pad.button(KeyCode::BTN_MODE, false), "not a tap as well");
     }
 
     #[test]

@@ -14,7 +14,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use evdev::{AbsoluteAxisCode, Device, KeyCode};
-use retrobox_input::es_input::{self, EsInput, EsKind};
+use retrobox_input::es_input::{EsInput, EsKind, Layout};
 
 use super::engine::{Axis, Code, Combo, Mappings, Sequence, Stick};
 use retrobox_input::pad_profile::{self as profile, Profile};
@@ -187,14 +187,14 @@ impl Ranges {
 }
 
 /// A controller's mappings: the player's profile bound to its inputs, as
-/// `es_input.cfg` names them. None when EmulationStation does not know it.
-pub fn pad(profile: &Profile, device: &Device) -> Option<Mappings> {
-    let inputs = es_input::inputs(device)?;
-    let names = pad_names(&inputs, &es_input::sdl_buttons(device), &sdl_axes(device));
-    Some(bind_pad(profile, &names))
+/// its `es_input.cfg` layout names them.
+pub fn pad(profile: &Profile, layout: &Layout, device: &Device) -> Mappings {
+    let names = pad_names(layout.inputs(), layout.buttons(), &sdl_axes(device));
+    bind_pad(profile, &names, |name| layout.has_two_names(name))
 }
 
-fn bind_pad(profile: &Profile, names: &Names) -> Mappings {
+/// `two_names`: whether a name's input has another name too.
+fn bind_pad(profile: &Profile, names: &Names, two_names: impl Fn(&str) -> bool) -> Mappings {
     let code = |name: &String| names.get(name).map(|input| input.code());
     let mut mappings = bind(profile, |trigger| {
         let codes: Option<Vec<Code>> = trigger.iter().map(code).collect();
@@ -203,19 +203,19 @@ fn bind_pad(profile: &Profile, names: &Names) -> Mappings {
         }
         codes
     });
-    // a button that is two names at once (hotkey and select, without a
-    // dedicated hotkey) cannot tap: that would take the game's button
-    let mut seen = BTreeSet::new();
-    let shared: BTreeSet<Code> = names
-        .values()
-        .map(|input| input.code())
-        .filter(|code| !seen.insert(*code))
+    // the hotkey cannot tap: a tap on one of its own opens the overlay, and
+    // one on a game's button (Select, the same input under two names) would
+    // take the game's button; nor can that button
+    let untappable: BTreeSet<Code> = names
+        .iter()
+        .filter(|(name, _)| *name == "hotkey" || two_names(name))
+        .map(|(_, input)| input.code())
         .collect();
     mappings.combos.retain(|combo| {
-        let keep = !combo.tap || combo.codes.is_disjoint(&shared);
+        let keep = !combo.tap || combo.codes.is_disjoint(&untappable);
         if !keep {
             log::info!(
-                "tap on {:x?} ignored: that button has two names",
+                "tap on {:x?} ignored: the game's or the overlay's",
                 combo.codes
             );
         }
@@ -414,7 +414,7 @@ mod tests {
         )
         .unwrap();
         let profile = read(value.as_object().unwrap(), Section::Player(1));
-        let mappings = bind_pad(&profile, &names());
+        let mappings = bind_pad(&profile, &names(), |_| false);
         // r3 is not in this controller's es_input.cfg
         assert_eq!(mappings.combos.len(), 2);
         assert_eq!(
@@ -444,15 +444,29 @@ mod tests {
     }
 
     #[test]
+    fn the_hotkey_cannot_tap() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{"mappings": [
+                {"trigger": "hotkey", "type": "exec", "target": "x", "tap": true},
+                {"trigger": "select", "type": "exec", "target": "y", "tap": true}
+            ]}"#,
+        )
+        .unwrap();
+        let profile = read(value.as_object().unwrap(), Section::Player(1));
+        assert_eq!(bind_pad(&profile, &names(), |_| false).combos.len(), 1);
+    }
+
+    #[test]
     fn a_shared_button_cannot_tap() {
         let mut names = names();
         names.insert("hotkey".into(), names["select"]);
+        let two_names = |name: &str| matches!(name, "hotkey" | "select");
         let value: serde_json::Value = serde_json::from_str(
             r#"{"mappings": [{"trigger": "hotkey", "type": "exec", "target": "x", "tap": true}]}"#,
         )
         .unwrap();
         let profile = read(value.as_object().unwrap(), Section::Player(1));
-        assert_eq!(bind_pad(&profile, &names).combos.len(), 0);
+        assert_eq!(bind_pad(&profile, &names, two_names).combos.len(), 0);
     }
 
     #[test]

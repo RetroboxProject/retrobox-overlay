@@ -42,7 +42,7 @@ fn shoulders_held() -> bool {
         let Ok(keys) = device.get_key_state() else {
             return false;
         };
-        let translation = es_input::translation(&device);
+        let translation = es_input::Layout::of(&device).and_then(|layout| layout.translation());
         let standard: Vec<KeyCode> = keys
             .iter()
             .map(|key| {

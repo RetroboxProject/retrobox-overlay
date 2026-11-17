@@ -6,8 +6,6 @@
 //! side = right            ; right | left
 //! dim = 0.75              ; opacity of the black layer over the game
 //! animation_ms = 150
-//! hold_ms = 750           ; how long the hotkey is held to open it (read by
-//!                         ; retrobox-inputd)
 //! take_keyboard = auto    ; auto (not when opened from a controller) | yes | no
 //!
 //! [clock]
@@ -545,7 +543,7 @@ mod tests {
         std::fs::write(system.join(FILE_NAME), "[overlay]\nside=left\ndim=0.3\n").unwrap();
         std::fs::write(
             user.join(FILE_NAME),
-            "[overlay]\ndim=2\nhold_ms=50\n[clock]\nposition=top\nsize=small\n\
+            "[overlay]\ndim=2\n[clock]\nposition=top\nsize=small\n\
              [status]\nbattery_percent=no\n[touch]\nrow_scale=1.66\n\
              [sounds]\nvolume=150\n",
         )

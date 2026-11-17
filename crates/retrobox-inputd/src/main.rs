@@ -13,7 +13,7 @@ mod shield;
 
 use std::process::ExitCode;
 
-use retrobox_input::{hold, logging, paths};
+use retrobox_input::{logging, paths};
 
 const HELP: &str = "\
 retrobox-inputd: Retrobox's input daemon
@@ -34,8 +34,6 @@ keyboards to keys, mouse and commands, as gamepadly did.
 Under systemd, Retrobox starts the user unit retrobox-inputd.service, which
 reads $XDG_RUNTIME_DIR/retrobox/inputd.env (the display and the parent).
 
-Settings: hold_ms in the [overlay] section of overlay.ini, in /etc/retrobox
-and ~/.config/retrobox.
 Log: stderr from a terminal or systemd's journal, else
 ~/.local/state/retrobox/logs/inputd.log;
 RUST_LOG=debug for details.";
@@ -67,11 +65,7 @@ fn main() -> ExitCode {
         }
     };
     let _log = logging::init("inputd.log");
-    match daemon::run(
-        &paths::runtime_dir(),
-        hold::hold_time(&paths::config_dirs()),
-        parent,
-    ) {
+    match daemon::run(&paths::runtime_dir(), parent) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             log::error!("{err:#}");

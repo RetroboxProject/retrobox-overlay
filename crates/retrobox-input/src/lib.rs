@@ -11,7 +11,6 @@
 pub mod es_input;
 pub mod es_settings;
 pub mod held;
-pub mod hold;
 pub mod instance;
 pub mod launch;
 pub mod logging;

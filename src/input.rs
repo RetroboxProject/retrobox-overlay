@@ -170,7 +170,7 @@ impl Pad {
             translation: None,
             triggers: HashMap::new(),
         };
-        pad.translation = es_input::translation(&pad.device);
+        pad.translation = es_input::Layout::of(&pad.device).and_then(|layout| layout.translation());
         if pad.translation.is_some() {
             // the codes are the standard ones now, whatever the driver says
             pad.faces = Faces::Standard;

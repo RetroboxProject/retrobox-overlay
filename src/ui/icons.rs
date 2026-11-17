@@ -79,9 +79,9 @@ impl Icon {
     pub const fn for_action(action: MenuAction) -> Option<Self> {
         Some(match action {
             MenuAction::Continue => Self::Play,
-            MenuAction::States(StateMode::Save)
-            | MenuAction::Emulator(EmuAction::SaveState)
-            | MenuAction::SaveAndQuit => Self::Save,
+            MenuAction::States(StateMode::Save) | MenuAction::Emulator(EmuAction::SaveState) => {
+                Self::Save
+            }
             MenuAction::States(StateMode::Load) | MenuAction::Emulator(EmuAction::LoadState) => {
                 Self::History
             }
@@ -95,7 +95,7 @@ impl Icon {
             MenuAction::Info => Self::Info,
             MenuAction::Controls => Self::Keyboard,
             MenuAction::Achievements => Self::Trophy,
-            MenuAction::Quit => Self::LogOut,
+            MenuAction::Quit { .. } => Self::LogOut,
             MenuAction::Power => Self::Power,
             MenuAction::Slider(SliderKind::Brightness) => Self::Sun,
             MenuAction::Slider(SliderKind::Volume) => Self::Volume2,

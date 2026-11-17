@@ -7,9 +7,11 @@
 //! evdev joystick driver, whose numbering is the order of the device's button
 //! codes: from `BTN_JOYSTICK` up, then the ones below it.
 //!
-//! The rest of the overlay thinks in the standard evdev layout (`BTN_SOUTH`
-//! is `b`...), so this module only translates the codes a pad really emits
-//! into it.
+//! A controller's `Layout` is read once, when the device is opened, and
+//! everything else asks it: the input daemon's triggers (the hotkey, B) and
+//! its mapper (the profiles' names), and the overlay, which thinks in the
+//! standard evdev layout (`BTN_SOUTH` is `b`...) and only needs the codes a
+//! pad really emits translated into it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -59,13 +61,18 @@ fn sdl_order(codes: &[u16]) -> Vec<u16> {
     high.into_iter().chain(low).collect()
 }
 
+/// The user's `es_input.cfg`, the one EmulationStation writes when a
+/// controller is configured.
+pub fn user_config_file() -> Option<PathBuf> {
+    paths::config_dirs()
+        .pop()
+        .map(|dir| dir.join("frontend/.emulationstation/es_input.cfg"))
+}
+
 /// The `es_input.cfg` files, the user's first.
 fn config_files() -> Vec<PathBuf> {
-    let user = paths::config_dirs()
-        .pop()
-        .map(|dir| dir.join("frontend/.emulationstation/es_input.cfg"));
     let packaged = paths::root_dir().map(|dir| dir.join("frontend/es_input.cfg"));
-    user.into_iter().chain(packaged).collect()
+    user_config_file().into_iter().chain(packaged).collect()
 }
 
 /// The part of SDL's GUID that tells the models apart: vendor, product and
@@ -147,7 +154,7 @@ fn parse_inputs(text: &str, device: &Device) -> Option<Vec<EsInput>> {
 
 /// The button codes of `device` in SDL's numbering (what `es_input.cfg`'s
 /// button ids count).
-pub fn sdl_buttons(device: &Device) -> Vec<KeyCode> {
+fn sdl_buttons(device: &Device) -> Vec<KeyCode> {
     let codes: Vec<u16> = device
         .supported_keys()
         .map(|keys| {
@@ -160,36 +167,90 @@ pub fn sdl_buttons(device: &Device) -> Vec<KeyCode> {
     sdl_order(&codes).into_iter().map(KeyCode::new).collect()
 }
 
-/// The translation of a controller's buttons from its inputs.
-fn translation_of(inputs: &[EsInput], buttons: &[KeyCode]) -> Option<Translation> {
-    let translation: Translation = inputs
-        .iter()
-        .filter(|input| input.kind == EsKind::Button)
-        .filter_map(|input| {
-            let standard = standard_code(&input.name)?;
-            Some((*buttons.get(usize::from(input.id))?, standard))
+/// What EmulationStation says one controller's inputs are: its
+/// `inputConfig`, with the device's buttons in SDL's numbering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layout {
+    inputs: Vec<EsInput>,
+    buttons: Vec<KeyCode>,
+}
+
+impl Layout {
+    /// The layout of `device`, if EmulationStation knows it.
+    pub fn of(device: &Device) -> Option<Self> {
+        config_files().iter().find_map(|file| {
+            let text = std::fs::read_to_string(file).ok()?;
+            let inputs = parse_inputs(&text, device)?;
+            log::info!(
+                "inputs of {} from {}",
+                device.name().unwrap_or("?"),
+                file.display()
+            );
+            Some(Self {
+                inputs,
+                buttons: sdl_buttons(device),
+            })
         })
-        .collect();
-    (!translation.is_empty()).then_some(translation)
-}
+    }
 
-/// What EmulationStation says the inputs of `device` are, if it knows it.
-pub fn inputs(device: &Device) -> Option<Vec<EsInput>> {
-    config_files().iter().find_map(|file| {
-        let text = std::fs::read_to_string(file).ok()?;
-        let found = parse_inputs(&text, device)?;
-        log::info!(
-            "inputs of {} from {}",
-            device.name().unwrap_or("?"),
-            file.display()
-        );
-        Some(found)
-    })
-}
+    pub fn inputs(&self) -> &[EsInput] {
+        &self.inputs
+    }
 
-/// What EmulationStation says the buttons of `device` are, if it knows it.
-pub fn translation(device: &Device) -> Option<Translation> {
-    translation_of(&inputs(device)?, &sdl_buttons(device))
+    /// The button codes, in SDL's numbering.
+    pub fn buttons(&self) -> &[KeyCode] {
+        &self.buttons
+    }
+
+    /// The code of a button input (`b`, `hotkey`...), as the controller
+    /// sends it.
+    pub fn button(&self, name: &str) -> Option<KeyCode> {
+        let input = self.input(name)?;
+        (input.kind == EsKind::Button)
+            .then(|| self.buttons.get(usize::from(input.id)).copied())
+            .flatten()
+    }
+
+    fn input(&self, name: &str) -> Option<&EsInput> {
+        self.inputs.iter().find(|input| input.name == name)
+    }
+
+    /// Whether the input of `name` has another name as well: the hotkey on
+    /// Select, on a controller without a button of its own for it.
+    pub fn has_two_names(&self, name: &str) -> bool {
+        self.input(name).is_some_and(|input| {
+            self.inputs.iter().any(|other| {
+                other.name != input.name
+                    && other.kind == input.kind
+                    && other.id == input.id
+                    && (other.kind == EsKind::Button || other.value == input.value)
+            })
+        })
+    }
+
+    /// The hotkey's code, and whether it is a button of its own
+    /// (Home/Guide) and not one the game uses too. None when it is not a
+    /// button.
+    pub fn hotkey(&self) -> Option<(KeyCode, bool)> {
+        Some((self.button("hotkey")?, !self.has_two_names("hotkey")))
+    }
+
+    /// How the controller's buttons translate to the standard codes (None
+    /// when none does). A hotkey on a game's button stays that button.
+    pub fn translation(&self) -> Option<Translation> {
+        let shared_hotkey = self.has_two_names("hotkey");
+        let translation: Translation = self
+            .inputs
+            .iter()
+            .filter(|input| input.kind == EsKind::Button)
+            .filter(|input| !(shared_hotkey && input.name == "hotkey"))
+            .filter_map(|input| {
+                let standard = standard_code(&input.name)?;
+                Some((*self.buttons.get(usize::from(input.id))?, standard))
+            })
+            .collect();
+        (!translation.is_empty()).then_some(translation)
+    }
 }
 
 #[cfg(test)]
@@ -216,6 +277,53 @@ mod tests {
             guid_model(0x045e, 0x02ea, 0x0301),
             "5e040000ea020000".to_owned() + "01030000"
         );
+    }
+
+    fn button(name: &str, id: u16) -> EsInput {
+        EsInput {
+            name: name.to_owned(),
+            kind: EsKind::Button,
+            id,
+            value: 1,
+        }
+    }
+
+    fn layout(inputs: &[EsInput]) -> Layout {
+        Layout {
+            inputs: inputs.to_vec(),
+            buttons: vec![KeyCode::BTN_SOUTH, KeyCode::BTN_SELECT, KeyCode::BTN_MODE],
+        }
+    }
+
+    #[test]
+    fn a_hotkey_of_its_own_is_dedicated() {
+        let guide = layout(&[button("b", 0), button("select", 1), button("hotkey", 2)]);
+        assert_eq!(guide.hotkey(), Some((KeyCode::BTN_MODE, true)));
+        assert_eq!(guide.button("b"), Some(KeyCode::BTN_SOUTH));
+        let translation = guide.translation().unwrap();
+        assert_eq!(translation[&KeyCode::BTN_MODE], KeyCode::BTN_MODE);
+        assert_eq!(translation[&KeyCode::BTN_SELECT], KeyCode::BTN_SELECT);
+    }
+
+    #[test]
+    fn a_hotkey_on_select_is_shared_and_select_stays_select() {
+        // the hotkey last: it must not take Select's place
+        let select = layout(&[button("b", 0), button("select", 1), button("hotkey", 1)]);
+        assert_eq!(select.hotkey(), Some((KeyCode::BTN_SELECT, false)));
+        assert!(select.has_two_names("select"));
+        assert!(!select.has_two_names("b"));
+        let translation = select.translation().unwrap();
+        assert_eq!(translation[&KeyCode::BTN_SELECT], KeyCode::BTN_SELECT);
+    }
+
+    #[test]
+    fn a_hotkey_that_is_no_button_is_none() {
+        assert_eq!(layout(&[button("b", 0)]).hotkey(), None);
+        let on_a_hat = EsInput {
+            kind: EsKind::Hat,
+            ..button("hotkey", 0)
+        };
+        assert_eq!(layout(&[on_a_hat]).hotkey(), None);
     }
 
     #[test]

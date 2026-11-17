@@ -110,6 +110,10 @@ const FRAME: Duration = Duration::from_millis(16);
 /// it does then.
 const REPEAT_DELAY: Duration = Duration::from_millis(400);
 const REPEAT_INTERVAL: Duration = Duration::from_millis(70);
+/// How long Quit is held down to save before quitting (let go sooner, it
+/// only quits), and how often its ring fills meanwhile.
+const SAVE_HOLD: Duration = Duration::from_millis(800);
+const HOLD_FRAME: Duration = Duration::from_millis(33);
 /// How much of the screen's width the right stick adds to (or takes from)
 /// the on-screen keyboard's per step.
 const OSK_STEP: f32 = 0.02;
@@ -236,6 +240,9 @@ struct State {
     task: Option<TaskView>,
     /// The controller direction held, repeating like a held key.
     repeat: Option<(Nav, RegistrationToken)>,
+    /// Quit held down (Confirm, or the pointer on it): since when, and the
+    /// timer that fills its ring.
+    quit_hold: Option<(Instant, RegistrationToken)>,
     started: Option<Instant>,
     outcome: Option<Outcome>,
     /// What applies each slider's changes.
@@ -308,6 +315,8 @@ const DRAG_THRESHOLD: f32 = 0.3;
 enum Focus {
     Item,
     Button,
+    /// Quit, which saves first when held.
+    Quit,
     Slider,
     /// The volume's slider: A mutes it.
     Volume,
@@ -322,6 +331,11 @@ impl Focus {
         }
         match panel.selected() {
             Target::Item(_) => Self::Item,
+            Target::Button(_)
+                if panel.selected_action() == Some(MenuAction::Quit { saves: true }) =>
+            {
+                Self::Quit
+            }
             Target::Button(_) => Self::Button,
             Target::Slider(_)
                 if panel.selected_action() == Some(MenuAction::Slider(SliderKind::Volume)) =>
@@ -492,6 +506,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         manual: ManualState::default(),
         task,
         repeat: None,
+        quit_hold: None,
         started: None,
         outcome: None,
         setters: Vec::new(),
@@ -1085,7 +1100,7 @@ impl State {
             "help-close"
         };
         let mut prompts = match focus {
-            Focus::Button => vec![prompt("left/right", "help-choose")],
+            Focus::Button | Focus::Quit => vec![prompt("left/right", "help-choose")],
             Focus::Page(Shows::Text) => vec![prompt("up/down", "help-scroll")],
             Focus::Item | Focus::Slider | Focus::Volume | Focus::Page(Shows::Rows) => {
                 vec![prompt("up/down", "help-choose")]
@@ -1101,6 +1116,10 @@ impl State {
                 }
             }
             Focus::Item | Focus::Button => prompts.push(prompt(help.ok(), "help-select")),
+            Focus::Quit => {
+                prompts.push(prompt(help.ok(), "help-select"));
+                prompts.push(prompt(help.ok(), "help-hold-save"));
+            }
             Focus::Page(_) => {}
         }
         prompts.push(prompt(help.back(), back));
@@ -1560,8 +1579,15 @@ impl State {
                 return;
             }
             Some(MenuAction::Continue) => Some(Outcome::Back),
-            Some(MenuAction::Quit) => Some(Outcome::Quit),
-            Some(MenuAction::SaveAndQuit) => Some(Outcome::SaveAndQuit),
+            // held down, it saves first: it quits when let go before that
+            Some(MenuAction::Quit { saves: true }) if self.quit_hold.is_none() => {
+                self.start_quit_hold();
+                return;
+            }
+            Some(MenuAction::Quit { .. }) => {
+                self.stop_quit_hold();
+                Some(Outcome::Quit)
+            }
             // disc changes are done with the menu open, which shows the result
             Some(MenuAction::Emulator(action)) if self.content.emulator.in_place(action) => {
                 if self.content.emulator.perform_now(action) {
@@ -1578,6 +1604,60 @@ impl State {
                 Some(Outcome::Request(Request::LoadState(slot)))
             }
         };
+    }
+
+    /// Quit went down: its ring fills while it is held, and it saves and
+    /// quits once full.
+    fn start_quit_hold(&mut self) {
+        if self.quit_hold.is_some() {
+            return;
+        }
+        let timer = self
+            .handle
+            .insert_source(Timer::from_duration(HOLD_FRAME), |_, &mut (), state| {
+                state.quit_hold_tick()
+            });
+        match timer {
+            Ok(timer) => self.quit_hold = Some((Instant::now(), timer)),
+            // no ring: a press quits at once
+            Err(err) => {
+                log::debug!("no hold timer: {}", err.error);
+                self.outcome = Some(Outcome::Quit);
+            }
+        }
+    }
+
+    fn quit_hold_tick(&mut self) -> TimeoutAction {
+        let Some((since, _)) = self.quit_hold else {
+            return TimeoutAction::Drop;
+        };
+        let progress = since.elapsed().as_secs_f32() / SAVE_HOLD.as_secs_f32();
+        if progress >= 1.0 {
+            self.quit_hold = None;
+            if self.outcome.is_none() {
+                self.sounds.play(Sound::Select);
+                self.outcome = Some(Outcome::SaveAndQuit);
+            }
+            return TimeoutAction::Drop;
+        }
+        if let Some((panel, _)) = self.panel.as_mut() {
+            panel.set_hold(Some(progress));
+        }
+        self.draw_panel();
+        TimeoutAction::ToDuration(HOLD_FRAME)
+    }
+
+    /// Quit let go (or something else pressed): its ring empties.
+    fn stop_quit_hold(&mut self) {
+        let Some((_, timer)) = self.quit_hold.take() else {
+            return;
+        };
+        self.handle.remove(timer);
+        if let Some((panel, _)) = self.panel.as_mut()
+            && panel.set_hold(None)
+        {
+            self.draw_panel();
+        }
     }
 
     /// Show the save or load page, with what each slot holds now.
@@ -1666,6 +1746,16 @@ impl State {
 
     /// A press or release, from a controller or the keyboard.
     fn input(&mut self, input: Input) {
+        // Quit held: let go, it quits; anything else pressed, it does not
+        if self.quit_hold.is_some() {
+            if input.nav == Nav::Confirm && !input.pressed {
+                self.outcome = Some(Outcome::Quit);
+            }
+            if input.nav == Nav::Confirm || input.pressed {
+                self.stop_quit_hold();
+            }
+            return;
+        }
         if self.task.is_some() {
             self.task_input(input);
             return;
@@ -1704,6 +1794,7 @@ impl State {
                 if panel.move_button(sign) {
                     self.sounds.play(Sound::Scroll);
                     self.draw_panel();
+                    self.draw_menu_help();
                 } else {
                     let change = panel.adjust(sign as f32 * STEP);
                     self.slid(change);
@@ -2043,9 +2134,18 @@ impl State {
             PointerKind::Enter | PointerKind::Motion => self.hover(target),
             PointerKind::Leave => {
                 self.press = None;
+                self.stop_quit_hold();
                 self.hover(None);
             }
             PointerKind::Press(BTN_LEFT) => {
+                // Quit: held, it saves first; the release (a tap) quits
+                if let Some((panel, _)) = self.panel.as_mut()
+                    && let Some(target) = target
+                    && panel.action(target) == Some(MenuAction::Quit { saves: true })
+                {
+                    panel.select(target);
+                    self.start_quit_hold();
+                }
                 // outside: closes on release, if it was not a drag
                 self.press = Some(Press {
                     start: event.position,
