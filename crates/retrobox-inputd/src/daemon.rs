@@ -8,7 +8,8 @@
 //!
 //! * B (Nintendo's B, the south button) is pressed while the hotkey is held,
 //!   on any controller: Hotkey+B opens it at once;
-//! * the hotkey is pressed and let go alone, on controllers where it is a
+//! * the hotkey is tapped alone (let go within `TAP_MAX`, see
+//!   `retrobox_input::press`), on controllers where it is a
 //!   button of its own (Home/Guide): `es_input.cfg` gives it an input no
 //!   other name has. Where the hotkey is a button the game uses too (Select,
 //!   on controllers without one), pressing it opens nothing;
@@ -62,6 +63,7 @@ use retrobox_input::es_input::{self, Layout};
 use retrobox_input::instance::{self, Instance};
 use retrobox_input::launch;
 use retrobox_input::paths;
+use retrobox_input::press::TAP_MAX;
 use retrobox_input::probe::{self, Found, Kind};
 
 use crate::mapper::{self, Mapper};
@@ -96,9 +98,9 @@ struct Hold {
     south: KeyCode,
     /// The buttons down (gamepad buttons and the hotkey).
     held: HashSet<KeyCode>,
-    /// The dedicated hotkey went down alone, and nothing else since: let go
-    /// now, it is a tap.
-    tapping: bool,
+    /// When the dedicated hotkey went down alone, with nothing else since:
+    /// let go within `TAP_MAX`, it is a tap.
+    tapping: Option<Instant>,
     /// Something was pressed with the hotkey (one of its shortcuts), or the
     /// overlay just closed: Hotkey+B does not count until every button is up.
     blocked: bool,
@@ -154,7 +156,7 @@ impl Hold {
             dedicated,
             south: KeyCode::BTN_SOUTH,
             held: HashSet::new(),
-            tapping: false,
+            tapping: None,
             blocked: false,
             axes,
             shield: Shield::default(),
@@ -174,15 +176,19 @@ impl Hold {
             .map(|keys| keys.iter().filter(|key| self.follows(*key)).collect())
             .unwrap_or_default();
         self.blocked = !self.held.is_empty();
-        self.tapping = false;
+        self.tapping = None;
     }
 
-    /// A button went down or up: whether that opens (or closes) the
+    /// A button went down or up, `now`: whether that opens (or closes) the
     /// overlay.
-    fn button(&mut self, code: KeyCode, pressed: bool) -> bool {
+    fn button(&mut self, code: KeyCode, pressed: bool, now: Instant) -> bool {
         if !pressed {
             self.held.remove(&code);
-            let tapped = code == self.hotkey && std::mem::take(&mut self.tapping);
+            let tapped = code == self.hotkey
+                && self
+                    .tapping
+                    .take()
+                    .is_some_and(|since| now.saturating_duration_since(since) <= TAP_MAX);
             if self.held.is_empty() {
                 self.blocked = false;
             }
@@ -190,7 +196,8 @@ impl Hold {
         }
         self.held.insert(code);
         let alone = self.held.len() == 1;
-        self.tapping = self.dedicated && alone && code == self.hotkey && !self.blocked;
+        self.tapping =
+            (self.dedicated && alone && code == self.hotkey && !self.blocked).then_some(now);
         if alone || !self.held.contains(&self.hotkey) {
             return false;
         }
@@ -204,8 +211,8 @@ impl Hold {
     /// A stick, the d-pad's hat or a trigger moved: pushed far enough while
     /// the hotkey is down alone, that press is no tap.
     fn moved(&mut self, axis: AbsoluteAxisCode, value: i32) {
-        if self.tapping && self.pushed(axis, value) {
-            self.tapping = false;
+        if self.tapping.is_some() && self.pushed(axis, value) {
+            self.tapping = None;
             self.blocked = true;
         }
     }
@@ -735,7 +742,7 @@ impl State {
         else {
             return;
         };
-        let opens = hold.button(code, pressed);
+        let opens = hold.button(code, pressed, Instant::now());
         if code == hold.hotkey && !pressed {
             hold.shield.lower(device, hold.hotkey, true);
         } else if code == hold.hotkey
@@ -878,48 +885,61 @@ mod tests {
 
     #[test]
     fn a_tap_on_the_dedicated_hotkey_opens() {
-        let (mode, south) = (KeyCode::BTN_MODE, KeyCode::BTN_SOUTH);
+        let (mode, south, now) = (KeyCode::BTN_MODE, KeyCode::BTN_SOUTH, Instant::now());
         let mut pad = hold(mode, true);
-        assert!(!pad.button(mode, true));
-        assert!(pad.button(mode, false));
+        assert!(!pad.button(mode, true, now));
+        assert!(pad.button(mode, false, now));
         // a shortcut of its own: no tap, and no Hotkey+B until all is up
-        assert!(!pad.button(mode, true));
-        assert!(!pad.button(KeyCode::BTN_START, true));
-        assert!(!pad.button(KeyCode::BTN_START, false));
-        assert!(!pad.button(south, true));
-        assert!(!pad.button(south, false));
-        assert!(!pad.button(mode, false));
+        assert!(!pad.button(mode, true, now));
+        assert!(!pad.button(KeyCode::BTN_START, true, now));
+        assert!(!pad.button(KeyCode::BTN_START, false, now));
+        assert!(!pad.button(south, true, now));
+        assert!(!pad.button(south, false, now));
+        assert!(!pad.button(mode, false, now));
         // the stick pushed while it is down: no tap
-        assert!(!pad.button(mode, true));
+        assert!(!pad.button(mode, true, now));
         pad.moved(AbsoluteAxisCode::ABS_X, 140);
         pad.moved(AbsoluteAxisCode::ABS_X, 250);
-        assert!(!pad.button(mode, false));
+        assert!(!pad.button(mode, false, now));
         // down while something else is held: no tap
-        assert!(!pad.button(south, true));
-        assert!(!pad.button(mode, true));
-        assert!(!pad.button(south, false));
-        assert!(!pad.button(mode, false));
+        assert!(!pad.button(south, true, now));
+        assert!(!pad.button(mode, true, now));
+        assert!(!pad.button(south, false, now));
+        assert!(!pad.button(mode, false, now));
+    }
+
+    #[test]
+    fn a_long_press_on_the_hotkey_is_no_tap() {
+        let (mode, now) = (KeyCode::BTN_MODE, Instant::now());
+        let mut pad = hold(mode, true);
+        assert!(!pad.button(mode, true, now));
+        assert!(pad.button(mode, false, now + TAP_MAX));
+        assert!(!pad.button(mode, true, now));
+        assert!(!pad.button(mode, false, now + TAP_MAX * 2));
     }
 
     #[test]
     fn hotkey_b_opens_on_any_controller() {
-        let (select, south) = (KeyCode::BTN_SELECT, KeyCode::BTN_SOUTH);
+        let (select, south, now) = (KeyCode::BTN_SELECT, KeyCode::BTN_SOUTH, Instant::now());
         let mut pad = hold(select, false);
-        assert!(!pad.button(select, true));
-        assert!(pad.button(south, true));
-        assert!(!pad.button(south, false));
+        assert!(!pad.button(select, true, now));
+        assert!(pad.button(south, true, now));
+        assert!(!pad.button(south, false, now));
         // a hotkey the game uses too never taps
-        assert!(!pad.button(select, false));
-        assert!(!pad.button(select, true));
-        assert!(!pad.button(select, false));
+        assert!(!pad.button(select, false, now));
+        assert!(!pad.button(select, true, now));
+        assert!(!pad.button(select, false, now));
         // B first, then the hotkey, is not Hotkey+B
-        assert!(!pad.button(south, true));
-        assert!(!pad.button(select, true));
+        assert!(!pad.button(south, true, now));
+        assert!(!pad.button(select, true, now));
         let mut pad = hold(KeyCode::BTN_MODE, true);
-        assert!(!pad.button(KeyCode::BTN_MODE, true));
-        assert!(pad.button(south, true));
-        assert!(!pad.button(south, false));
-        assert!(!pad.button(KeyCode::BTN_MODE, false), "not a tap as well");
+        assert!(!pad.button(KeyCode::BTN_MODE, true, now));
+        assert!(pad.button(south, true, now));
+        assert!(!pad.button(south, false, now));
+        assert!(
+            !pad.button(KeyCode::BTN_MODE, false, now),
+            "not a tap as well"
+        );
     }
 
     #[test]

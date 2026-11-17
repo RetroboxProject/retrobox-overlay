@@ -1690,11 +1690,12 @@ impl Panel {
         let left = (cx - width / 2.0)
             .clamp(margin, (self.width as f32 - margin - width).max(margin))
             .round();
-        // over the selected button's ring
+        // over the selected button's ring, the arrow's tip clear of it
         let size = self.button_size();
-        let ring = (size * RING_GAP).max(2.0).round() + (size * RING_WIDTH).max(2.0).round();
+        let gap = (size * RING_GAP).max(2.0).round();
+        let ring = gap + (size * RING_WIDTH).max(2.0).round();
         let circle_top = row_top + (self.buttons_height() - size) / 2.0 - ring;
-        let bottom = (circle_top - arrow * 0.6).round();
+        let bottom = (circle_top - gap - arrow * 0.8).round();
         let top = bottom - height;
         let color = style.selector_color;
         if let Some(path) = rounded_rect(left, top, width, height, height * 0.3) {

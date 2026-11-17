@@ -23,9 +23,7 @@ use std::time::{Duration, Instant};
 use evdev::RelativeAxisCode;
 
 use retrobox_input::pad_profile::{Action, Motion};
-
-/// A tap held longer than this is not a tap any more.
-pub const TAP_MAX: Duration = Duration::from_millis(500);
+use retrobox_input::press::TAP_MAX;
 
 /// An input, as the engine numbers it (see `bind`).
 pub type Code = u32;

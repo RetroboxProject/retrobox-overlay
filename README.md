@@ -39,7 +39,8 @@ runs only while it is shown.
   own menu, the disc tray and next/previous disc. The launcher tells the overlay what the
   running emulator supports; anything it cannot do is not shown.
 * **Round buttons** pinned at the bottom, where the menu opens: *continue*, *screenshot*, *quit*
-  (held, it saves first: its ring fills) and *power* (sleep mode). A button highlighted for a
+  (tapped, it quits; held, its ring fills and, once full, it saves and quits) and *power*
+  (sleep mode). A button highlighted for a
   second explains itself in a small bubble.
 * **Sliders** for the volume and, on a built-in screen, the brightness, as tall as the
   buttons' row.
@@ -64,9 +65,11 @@ console games have a pause of their own, and the emulator's menu pauses the rest
 
 *Load state* and *Save state* open a page of ten slots (0 to 9), each with the picture and the
 date RetroArch saved with it. They are RetroArch's own files, the same ones EmulationStation
-lists. *Quit* held down saves in RetroArch's automatic slot (`.state.auto`) before quitting,
+lists. *Quit* held until its ring is full saves in RetroArch's automatic slot (`.state.auto`)
+and quits,
 which EmulationStation lists as the auto save and RetroArch loads on start when the game's auto
-save is on; *quit* pressed (let go at once) forgets it. RetroArch never saves it by itself.
+save is on; *quit* tapped forgets it, and let go before the ring is full does nothing.
+RetroArch never saves it by itself.
 
 ### Discs
 
@@ -150,7 +153,7 @@ with gamepadly's additions, read exactly as gamepadly read them: this replaces g
   `deadzone`, `acceleration`).
 * Triggers can be combinations (`mode: all`), any of several inputs (`any`) or a `sequence`,
   with `hold`, `condition` (inputs held as well), `cooldown`, `tap` (fires on release, alone
-  and quick; not on the hotkey, whose tap opens the overlay) and `_disabled`. The longest combination a press completes wins.
+  and within 300 ms, Retrobox's tap everywhere; not on the hotkey, whose tap opens the overlay) and `_disabled`. The longest combination a press completes wins.
 * Keys and mouse buttons go to a virtual keyboard and mouse (`/dev/uinput`, the `input`
   group); commands run in the background. Nothing is grabbed, so the game gets every input
   too; when the overlay opens (it grabs the controllers) what the mappings held is let go.
@@ -175,8 +178,8 @@ with gamepadly's additions, read exactly as gamepadly read them: this replaces g
 
 Buttons follow each controller's `es_input.cfg` entry; EmulationStation's *Switch confirm &
 cancel buttons* swaps the south and east buttons, as in ES. Home/Guide opens the menu when it
-is pressed and let go alone: where its `es_input.cfg` entry gives the hotkey an input of its
-own. On a controller without one the hotkey is Select, which belongs to the game: there it
+is tapped alone (let go within 300 ms): where its `es_input.cfg` entry gives the hotkey an input
+of its own. On a controller without one the hotkey is Select, which belongs to the game: there it
 opens nothing, and Hotkey+B does. Pressing anything else (or pushing a stick) while the hotkey
 is down makes that press no tap, so its other combinations never open the menu.
 

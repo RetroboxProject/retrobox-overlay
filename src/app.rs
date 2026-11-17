@@ -94,6 +94,7 @@ use crate::ui::panel::{
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
+use retrobox_input::press::TAP_MAX;
 use retrobox_input::{es_settings, launch, paths};
 
 mod achievements_view;
@@ -110,9 +111,10 @@ const FRAME: Duration = Duration::from_millis(16);
 /// it does then.
 const REPEAT_DELAY: Duration = Duration::from_millis(400);
 const REPEAT_INTERVAL: Duration = Duration::from_millis(70);
-/// How long Quit is held down to save before quitting (let go sooner, it
-/// only quits), and how often its ring fills meanwhile.
-const SAVE_HOLD: Duration = Duration::from_millis(800);
+/// How long Quit is held down to save and quit, and how often its ring
+/// fills meanwhile (from `TAP_MAX` on: a tap only quits, a press let go
+/// later does nothing).
+const SAVE_HOLD: Duration = Duration::from_secs(1);
 const HOLD_FRAME: Duration = Duration::from_millis(33);
 /// How much of the screen's width the right stick adds to (or takes from)
 /// the on-screen keyboard's per step.
@@ -1579,15 +1581,17 @@ impl State {
                 return;
             }
             Some(MenuAction::Continue) => Some(Outcome::Back),
-            // held down, it saves first: it quits when let go before that
-            Some(MenuAction::Quit { saves: true }) if self.quit_hold.is_none() => {
-                self.start_quit_hold();
+            // tapped, it quits; held down, it saves and quits (see `SAVE_HOLD`);
+            // a click is let go here
+            Some(MenuAction::Quit { saves: true }) => {
+                if self.quit_hold.is_some() {
+                    self.let_go_quit();
+                } else {
+                    self.start_quit_hold();
+                }
                 return;
             }
-            Some(MenuAction::Quit { .. }) => {
-                self.stop_quit_hold();
-                Some(Outcome::Quit)
-            }
+            Some(MenuAction::Quit { saves: false }) => Some(Outcome::Quit),
             // disc changes are done with the menu open, which shows the result
             Some(MenuAction::Emulator(action)) if self.content.emulator.in_place(action) => {
                 if self.content.emulator.perform_now(action) {
@@ -1606,8 +1610,8 @@ impl State {
         };
     }
 
-    /// Quit went down: its ring fills while it is held, and it saves and
-    /// quits once full.
+    /// Quit went down: held past a tap, its ring fills, and it saves and
+    /// quits once full, without waiting for it to be let go.
     fn start_quit_hold(&mut self) {
         if self.quit_hold.is_some() {
             return;
@@ -1631,8 +1635,8 @@ impl State {
         let Some((since, _)) = self.quit_hold else {
             return TimeoutAction::Drop;
         };
-        let progress = since.elapsed().as_secs_f32() / SAVE_HOLD.as_secs_f32();
-        if progress >= 1.0 {
+        let held = since.elapsed();
+        if held >= SAVE_HOLD {
             self.quit_hold = None;
             if self.outcome.is_none() {
                 self.sounds.play(Sound::Select);
@@ -1640,11 +1644,27 @@ impl State {
             }
             return TimeoutAction::Drop;
         }
-        if let Some((panel, _)) = self.panel.as_mut() {
-            panel.set_hold(Some(progress));
+        let ring = held
+            .checked_sub(TAP_MAX)
+            .map(|filling| filling.as_secs_f32() / SAVE_HOLD.saturating_sub(TAP_MAX).as_secs_f32());
+        if let Some((panel, _)) = self.panel.as_mut()
+            && panel.set_hold(ring)
+        {
+            self.draw_panel();
         }
-        self.draw_panel();
         TimeoutAction::ToDuration(HOLD_FRAME)
+    }
+
+    /// Quit let go before its ring is full: a tap quits, a longer press
+    /// does nothing.
+    fn let_go_quit(&mut self) {
+        let tapped = self
+            .quit_hold
+            .is_some_and(|(since, _)| since.elapsed() <= TAP_MAX);
+        self.stop_quit_hold();
+        if tapped {
+            self.outcome = Some(Outcome::Quit);
+        }
     }
 
     /// Quit let go (or something else pressed): its ring empties.
@@ -1746,12 +1766,12 @@ impl State {
 
     /// A press or release, from a controller or the keyboard.
     fn input(&mut self, input: Input) {
-        // Quit held: let go, it quits; anything else pressed, it does not
+        // Quit held: let go, see `let_go_quit`; anything else pressed, it
+        // does nothing
         if self.quit_hold.is_some() {
             if input.nav == Nav::Confirm && !input.pressed {
-                self.outcome = Some(Outcome::Quit);
-            }
-            if input.nav == Nav::Confirm || input.pressed {
+                self.let_go_quit();
+            } else if input.pressed {
                 self.stop_quit_hold();
             }
             return;
