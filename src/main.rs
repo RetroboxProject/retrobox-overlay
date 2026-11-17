@@ -7,8 +7,10 @@
 //! the dimmed game, with a clock. Without a mode, it asks the daemon to open
 //! or close the overlay, or shows it itself when no daemon runs; started
 //! again while open, it closes the open one. Without a running game (in
-//! EmulationStation) it shows the system's menu: sleep, the brightness and
-//! the volume, like the Switch's quick settings.
+//! EmulationStation) it shows the system's menu: the power button (sleep,
+//! restart, turn off), the brightness and the volume, like the Switch's
+//! quick settings. It neither opens nor stays open while a game is starting
+//! or ending (see `retrobox_input::launch`).
 
 mod app;
 mod config;
@@ -18,6 +20,7 @@ mod input;
 mod manual;
 mod savestates;
 mod session;
+mod sound;
 mod system;
 mod task;
 mod theme;
@@ -37,12 +40,13 @@ use crate::input::Pad;
 use crate::manual::Manual;
 use crate::savestates::{SaveStates, StateMode};
 use crate::session::{GameInfo, Session};
+use crate::system::power;
 use crate::theme::MenuTheme;
 use crate::ui::panel::{MenuAction, MenuItem};
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
 use retrobox_input::instance::{self, Instance};
-use retrobox_input::{held, logging, paths};
+use retrobox_input::{held, launch, logging, paths};
 
 const HELP: &str = "\
 retrobox-overlay: Retrobox's in-game menu
@@ -213,6 +217,7 @@ fn task_screen(options: task::Options, log: Option<&std::fs::File>) -> Result<u8
         subtitle: String::new(),
         items: Vec::new(),
         buttons: Vec::new(),
+        power: Vec::new(),
         clock_formats: (String::new(), String::new()),
         locale: translator.locale(),
         pads: Vec::new(),
@@ -268,19 +273,8 @@ fn run(
     log: Option<&std::fs::File>,
 ) -> Result<()> {
     let runtime_dir = paths::runtime_dir();
-    let lock = match instance::acquire(&runtime_dir)? {
-        Instance::First(lock) => {
-            // the log is this run's from here: a second start (which only
-            // closes this one) leaves it alone
-            if let Some(log) = log {
-                log.set_len(0).ok();
-            }
-            lock
-        }
-        Instance::Running(pid) => {
-            instance::close_running(pid);
-            return Ok(());
-        }
+    let Some(lock) = first_overlay(&runtime_dir, log, demo)? else {
+        return Ok(());
     };
 
     // what takes a program to read is read from now on, while the rest loads
@@ -316,10 +310,15 @@ fn run(
     )
     .filter(|_| !osk)
     .and_then(|path| Manual::open(&path));
+    let power = if osk {
+        Vec::new()
+    } else {
+        power::actions(in_game, config.system.standby)
+    };
     let (items, buttons) = menus(
         &translator,
-        &config,
         in_game.then_some((&emulator, manual.is_some())),
+        !power.is_empty(),
     );
 
     let (clock_formats, small_clock) = clock_formats(&config, &translator, theme.clock12h);
@@ -346,6 +345,7 @@ fn run(
         subtitle,
         items,
         buttons,
+        power,
         clock_formats,
         locale: translator.locale(),
         pads: Vec::new(),
@@ -373,16 +373,43 @@ fn run(
         Outcome::Quit | Outcome::Back | Outcome::Task(_) => {}
         Outcome::Overlay => open_overlay(),
         Outcome::Request(request) => emulator.back_to_game(request),
-        Outcome::Standby => {
+        Outcome::Power(action) => {
             // the last slider change first
             drop(setters);
-            system::standby();
+            power::perform(action);
             return Ok(());
         }
     }
     // the last slider change is applied before leaving
     drop(setters);
     Ok(())
+}
+
+/// This overlay's lock, when it is the only one and it may open: another
+/// one running is asked to close instead, and nothing opens while a game is
+/// starting or ending (but `demo`).
+fn first_overlay(
+    runtime_dir: &Path,
+    log: Option<&std::fs::File>,
+    demo: bool,
+) -> Result<Option<nix::fcntl::Flock<std::fs::File>>> {
+    let lock = match instance::acquire(runtime_dir)? {
+        Instance::First(lock) => lock,
+        Instance::Running(pid) => {
+            instance::close_running(pid);
+            return Ok(None);
+        }
+    };
+    if !demo && launch::busy() {
+        log::info!("a game is starting or ending: not now");
+        return Ok(None);
+    }
+    // the log is this run's from here: a second start (which only closes
+    // this one) leaves it alone
+    if let Some(log) = log {
+        log.set_len(0).ok();
+    }
+    Ok(Some(lock))
 }
 
 /// Start reading the sliders' values (the volume, the primary screen).
@@ -489,34 +516,30 @@ fn clock_formats(
     (big, small)
 }
 
-/// Outside games: sleep (when allowed); the sliders come as they are found.
 /// The menu's entries and round buttons: a game's (with its emulator and
-/// whether it has a manual), or the system's.
+/// whether it has a manual), or the system's (only the power button; the
+/// sliders come as they are found). `power`: whether the power button
+/// offers anything.
 fn menus(
     translator: &Translator,
-    config: &Config,
     game: Option<(&Emulator, bool)>,
+    power: bool,
 ) -> (Vec<MenuItem>, Vec<MenuItem>) {
-    if let Some((emulator, manual)) = game {
-        (
-            menu_items(translator, emulator, manual),
-            menu_buttons(translator, emulator),
-        )
+    let mut buttons = Vec::new();
+    let items = if let Some((emulator, manual)) = game {
+        buttons = menu_buttons(translator, emulator);
+        menu_items(translator, emulator, manual)
     } else {
         log::info!("no game running: the system's menu");
-        (system_items(translator, config), Vec::new())
-    }
-}
-
-fn system_items(translator: &Translator, config: &Config) -> Vec<MenuItem> {
-    let mut items = Vec::new();
-    if config.system.standby {
-        items.push(MenuItem::new(
-            translator.text("menu-standby"),
-            MenuAction::Standby,
+        Vec::new()
+    };
+    if power {
+        buttons.push(MenuItem::new(
+            translator.text("menu-power"),
+            MenuAction::Power,
         ));
     }
-    items
+    (items, buttons)
 }
 
 /// The line under the game's name: its developer and year.
@@ -618,7 +641,7 @@ fn menu_items(translator: &Translator, emulator: &Emulator, manual: bool) -> Vec
 }
 
 /// The round buttons under a game's entries: continue, a screenshot (when
-/// the emulator takes them), quit.
+/// the emulator takes them), quit (the power button comes last).
 fn menu_buttons(translator: &Translator, emulator: &Emulator) -> Vec<MenuItem> {
     let item = |key: &str, action| MenuItem::new(translator.text(key), action);
     let mut buttons = vec![item("menu-continue", MenuAction::Continue)];

@@ -28,9 +28,12 @@ runs only while it is shown.
 * **What the emulator can do,** each with its icon: load and save state, reset, the emulator's
   own menu, the disc tray and next/previous disc. The launcher tells the overlay what the
   running emulator supports; anything it cannot do is not shown.
-* **Three round buttons** pinned at the bottom: *continue*, *screenshot* and *quit*. A button
-  highlighted for a second explains itself in a small bubble.
-* **Sliders** for the volume and, on a built-in screen, the brightness.
+* **Round buttons** pinned at the bottom: *continue*, *screenshot*, *quit* and *power* (sleep
+  mode). A button highlighted for a second explains itself in a small bubble.
+* **Sliders** for the volume and, on a built-in screen, the brightness, as tall as the
+  buttons' row.
+* **Sounds** for moving, choosing and going back, like EmulationStation's (`[sounds]` in
+  `overlay.ini` sets their volume, or turns them off).
 * **The theme's look:** colours, fonts, selector and help prompts come from the theme
   EmulationStation is using, scaled to the screen. Without one it looks like ES's default
   menus.
@@ -79,7 +82,13 @@ the keyboard or the mouse.
 ### Outside games
 
 In EmulationStation the same button opens the system's menu, like the Switch's quick settings:
-*Sleep mode* and the volume and brightness sliders.
+the power button (*sleep mode*, *restart*, *turn off*) and the volume and brightness sliders.
+They go through systemd (`systemctl`) or, with another init, elogind (`loginctl`); with
+neither, there is no power button.
+
+The menu stays away while a game is starting or ending: it does not open from the moment a
+game is chosen until its emulator runs (an emulator to install still gets its install screen),
+nor from the moment the game is quit until the launcher is done, and closes if it was open.
 
 ### On-screen keyboard
 
@@ -185,6 +194,9 @@ What they read:
   their sizes, help prompts), exported by Retrobox's EmulationStation build. The last one is
   kept for when there is none yet.
 * **`/tmp/game.xml`**: the game's scraped information, exported by EmulationStation at launch.
+* **`launch.json`** (runtime directory): whether a game is starting, running or ending,
+  written by the launcher for as long as it runs. The menu does not open, and closes, while a
+  game starts or ends.
 
 <details>
 <summary>How Retrobox runs the daemon</summary>
@@ -263,7 +275,7 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
 * retrobox-core and retrobox-emulationstation (the packages depend on both).
 * Read access to `/dev/input/event*` and `/dev/uinput` (the `input` group).
 * Optional: `poppler-utils` for the manuals; `wpctl`/`pw-dump` (PipeWire) or `pactl`
-  (PulseAudio) for the volume and the audio page; `busctl` or `brightnessctl` for the
+  (PulseAudio) for the volume and the audio page, `pw-play` or `paplay` for the sounds; `busctl` or `brightnessctl` for the
   brightness when sysfs is not writable; `kscreen-doctor` on KDE Wayland with several screens.
 
 ## Settings
@@ -276,7 +288,8 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
 | `[overlay]` | side of the menu, dim, animation length, `hold_ms`, `take_keyboard`, icons |
 | `[clock]` | on/off, big or small, position, colour, `strftime` formats |
 | `[status]` | the battery's percentage |
-| `[system]` | whether *Sleep mode* is offered outside games |
+| `[system]` | whether *Sleep mode* is offered (the power button) |
+| `[sounds]` | the volume of the menu's sounds (0: none) |
 | `[touch]` | `row_scale`: taller rows for touch screens |
 | `[manual]` | who scales the manual's pages |
 | `[osk]` | keyboard layout, and the on-screen keyboard's size and edge (saved for you) |
@@ -315,4 +328,6 @@ and fonts of the [*es-theme-iconic*](https://github.com/manu-creative-411/es-the
 GPL-2.0-only, like Retrobox.
 
 The menu icons are [Lucide](https://lucide.dev)'s, under the ISC license
-([`assets/icons/LICENSE`](assets/icons/LICENSE)).
+([`assets/icons/LICENSE`](assets/icons/LICENSE)). The sounds are the
+[iconic-es-de](https://github.com/Siddy212/iconic-es-de) theme's, by Siddy212
+([`assets/sounds/LICENSE`](assets/sounds/LICENSE)).

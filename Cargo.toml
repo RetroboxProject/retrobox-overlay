@@ -95,7 +95,8 @@ priority = "optional"
 depends = "$auto, retrobox-core, retrobox-emulationstation"
 # pdftoppm and pdfinfo, for the games' manuals
 recommends = "poppler-utils"
-# the volume and the audio page (wpctl and pw-dump / pactl), a backlight without logind (brightnessctl)
+# the volume and the audio page (wpctl and pw-dump / pactl), the menu's sounds
+# (pw-play / paplay), a backlight without logind (brightnessctl)
 suggests = "wireplumber, pipewire-bin | pulseaudio-utils, brightnessctl"
 extended-description = """\
 Retrobox's in-game menu: opened by holding the controller's hotkey or Shift+F7, it

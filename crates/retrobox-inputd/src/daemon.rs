@@ -23,8 +23,9 @@
 //! controllers (it grabs them while open, so this process sees nothing). Only
 //! one overlay runs at a time; `retrobox-overlay` started on its own (a
 //! keyboard shortcut of the desktop, a script) asks this process to open or
-//! close it (SIGUSR1). New controllers and keyboards are picked up as they
-//! appear (inotify on `/dev/input`).
+//! close it (SIGUSR1). Nothing opens while a game is starting or ending
+//! (`launch.json`, see `retrobox_input::launch`). New controllers and
+//! keyboards are picked up as they appear (inotify on `/dev/input`).
 //!
 //! While a game runs, the same events go to the mapper too (`mapper`: the
 //! game's pad-to-keyboard profile), which follows `session.json` in the
@@ -48,6 +49,7 @@ use nix::sys::signal::kill;
 use nix::unistd::Pid;
 
 use retrobox_input::instance::{self, Instance};
+use retrobox_input::launch;
 use retrobox_input::paths;
 use retrobox_input::probe::{self, Found, Kind};
 
@@ -668,6 +670,10 @@ impl State {
         if let Some(child) = &self.overlay {
             log::info!("closing the overlay");
             signal(child, nix::sys::signal::Signal::SIGUSR1);
+            return;
+        }
+        if launch::busy() {
+            log::info!("a game is starting or ending: the overlay stays closed");
             return;
         }
         // it takes the controllers: what the mapper holds is let go now (their

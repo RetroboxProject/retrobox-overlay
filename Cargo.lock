@@ -883,6 +883,7 @@ dependencies = [
  "nix 0.31.3",
  "roxmltree 0.21.2",
  "rust-ini",
+ "serde_json",
 ]
 
 [[package]]

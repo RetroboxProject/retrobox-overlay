@@ -11,12 +11,13 @@
 //! Above the header, a status line like the Switch's: the time (when the
 //! clock is the small one), the network and the battery. At the bottom,
 //! pinned (they do not scroll, and hide while a save state page is open):
-//! round buttons (continue, screenshot, quit), each telling what it does
-//! when highlighted for a while, and the sliders (the brightness, the
-//! volume): their icon, the slider and its value. The entries between the
+//! round buttons (continue, screenshot, quit, power), each telling what it
+//! does when highlighted for a while, and the sliders (the brightness, the
+//! volume), as tall as the buttons' row: their icon, the slider and its
+//! value. The entries between the
 //! header and those scroll when they do not all fit (smoothly when dragged).
 //! A page can take the entries' place: the save states' slots, or a list of
-//! choices (the audio outputs and profiles).
+//! choices (the audio outputs and profiles, the power options).
 //! For touch screens, the rows can be taller than ES's (`row_scale`), the
 //! text staying as it is.
 
@@ -60,8 +61,8 @@ pub enum MenuAction {
     /// Read the game's manual.
     Manual,
     Quit,
-    /// Put the computer to sleep.
-    Standby,
+    /// The power options' page (sleep; outside games, restart and turn off).
+    Power,
     /// A slider: Left/Right (or the mouse) change it.
     Slider(SliderKind),
 }
@@ -101,7 +102,7 @@ pub struct ListRow {
 }
 
 /// A page of choices, shown instead of the main entries (the audio outputs
-/// and profiles).
+/// and profiles, the power options).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListPage {
     pub title: String,
@@ -191,11 +192,12 @@ const TRACK_END: f32 = 0.84;
 const VALUE_START: f32 = 0.87;
 /// Opacity of the part of a slider's track past its value.
 const TRACK_ALPHA: u8 = 0x50;
-/// A slider's row is this much taller than the other entries, whatever
-/// their size (`row_scale` included), for a finger.
-const SLIDER_SCALE: f32 = 1.2;
-/// A round button's diameter, relative to the entries' height.
-const BUTTON_SCALE: f32 = 1.1;
+/// A slider's track and knob, relative to the entries' height.
+const TRACK_THICKNESS: f32 = 0.12;
+const KNOB_RADIUS: f32 = 0.24;
+/// A round button's diameter, relative to the entries' height. The sliders'
+/// rows are as tall as the buttons' row: easy to hit with a finger.
+const BUTTON_SCALE: f32 = 1.21;
 /// The space between two round buttons, relative to their diameter.
 const BUTTON_GAP: f32 = 0.6;
 /// The space above and below the round buttons, relative to their diameter.
@@ -756,9 +758,10 @@ impl Panel {
         (self.text.font.line_height * self.row_scale).round()
     }
 
-    /// The height of a slider's row, without its separator.
+    /// The height of a slider's row, without its separator: the buttons'
+    /// row's.
     fn slider_height(&self) -> f32 {
-        (self.row_height() * SLIDER_SCALE).round()
+        self.button_row_height()
     }
 
     /// A round button's diameter.
@@ -771,8 +774,13 @@ impl Panel {
         if self.buttons.is_empty() {
             0.0
         } else {
-            (self.button_size() * (1.0 + 2.0 * BUTTON_MARGIN)).round()
+            self.button_row_height()
         }
+    }
+
+    /// The height of a row of round buttons.
+    fn button_row_height(&self) -> f32 {
+        (self.button_size() * (1.0 + 2.0 * BUTTON_MARGIN)).round()
     }
 
     /// Whether the buttons and sliders show: not on a save state page.
@@ -1607,8 +1615,8 @@ impl Panel {
         let (y, height) = row;
         let (start, end) = self.track();
         let middle = y + height / 2.0;
-        let thickness = (height * 0.1).max(3.0).round();
-        let knob = (height * 0.2).max(6.0);
+        let thickness = (self.row_height() * TRACK_THICKNESS).max(3.0).round();
+        let knob = (self.row_height() * KNOB_RADIUS).max(6.0);
         let filled = start + (end - start) * value.clamp(0.0, 1.0);
         fill(
             pixmap,

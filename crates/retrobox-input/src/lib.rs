@@ -1,7 +1,7 @@
 //! What Retrobox's input daemon (`retrobox-inputd`) and its overlay
 //! (`retrobox-overlay`) share: where things are, which devices are
-//! controllers and keyboards, what EmulationStation says about them, and
-//! how the two processes find each other.
+//! controllers and keyboards, what EmulationStation says about them, where
+//! a game's launch is, and how the two processes find each other.
 
 // An internal library of the two programs, not published: the lints meant
 // for a public API (must_use on every getter, an "Errors" section on every
@@ -13,6 +13,7 @@ pub mod es_settings;
 pub mod held;
 pub mod hold;
 pub mod instance;
+pub mod launch;
 pub mod logging;
 pub mod paths;
 pub mod probe;

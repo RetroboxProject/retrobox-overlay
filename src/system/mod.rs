@@ -1,7 +1,7 @@
 //! The system controls and information the overlay shows everywhere, like
 //! the Switch's quick settings: the screen's brightness and the system's
 //! volume (sliders), the network and the battery (the status line), and
-//! putting the computer to sleep (outside games).
+//! sleeping, restarting and turning the computer off (`power`).
 //!
 //! Nothing here may stall the menu: what takes a program to read (the
 //! volume, the primary screen) is read in a thread as soon as the overlay
@@ -18,6 +18,7 @@
 
 pub mod audio;
 pub mod brightness;
+pub mod power;
 pub mod status;
 
 use std::process::{Command, Stdio};
@@ -518,13 +519,5 @@ pub fn run(program: &str, args: &[&str]) -> bool {
             log::warn!("cannot run {program}: {err}");
             false
         }
-    }
-}
-
-/// Put the computer to sleep (logind lets the active session do it).
-pub fn standby() {
-    log::info!("going to sleep");
-    if !run("systemctl", &["suspend"]) {
-        run("loginctl", &["suspend"]);
     }
 }

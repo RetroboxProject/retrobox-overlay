@@ -12,8 +12,12 @@ menu-reset = Перезапуск
 menu-emulator-menu = Меню эмулятора
 menu-screenshot = Снимок экрана
 menu-quit = Выйти из игры
-# the system menu (sliders and sleep, in every context; sleep outside games)
+# the power button and its page (sleep in games; restart and turn off
+# outside them), and the sliders
+menu-power = Питание
 menu-standby = Спящий режим
+menu-reboot = Перезагрузить
+menu-poweroff = Выключить
 menu-brightness = Яркость
 menu-volume = Громкость
 # save state slots; the date is a strftime format (chrono)

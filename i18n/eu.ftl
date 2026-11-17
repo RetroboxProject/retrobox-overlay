@@ -12,8 +12,12 @@ menu-reset = Berrabiarazi
 menu-emulator-menu = Emuladorearen menua
 menu-screenshot = Pantaila-argazkia
 menu-quit = Irten jokotik
-# the system menu (sliders and sleep, in every context; sleep outside games)
+# the power button and its page (sleep in games; restart and turn off
+# outside them), and the sliders
+menu-power = Energia
 menu-standby = Lo modua
+menu-reboot = Berrabiarazi
+menu-poweroff = Itzali
 menu-brightness = Distira
 menu-volume = Bolumena
 # save state slots; the date is a strftime format (chrono)

@@ -71,9 +71,11 @@ use crate::i18n::Translator;
 use crate::input::{self, Input, Nav, Pad};
 use crate::manual::Manual;
 use crate::savestates::StateMode;
+use crate::sound::{Sound, Sounds};
 use crate::system::audio::devices::{Action, Snapshot};
 use crate::system::audio::hub::Hub;
 use crate::system::brightness::{self, Screens};
+use crate::system::power::PowerAction;
 use crate::system::status::Status;
 use crate::system::{Control, Found, Msg, STEP, Setter, SliderKind, VolumeChange};
 use crate::theme::MenuTheme;
@@ -82,10 +84,13 @@ use crate::ui::clock::Clock;
 use crate::ui::help::{Help, Prompt};
 use crate::ui::layout::Layout;
 use crate::ui::osk::{Action as OskAction, Direction, Labels, Osk};
-use crate::ui::panel::{MenuAction, MenuItem, Panel, StatusBar, Target};
+use crate::ui::panel::{
+    ListPage, ListRow, MenuAction, MenuItem, Panel, RowKind, StatusBar, Target,
+};
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
-use retrobox_input::{es_settings, paths};
+use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
+use retrobox_input::{es_settings, launch, paths};
 
 mod display;
 mod manual_view;
@@ -131,8 +136,8 @@ pub enum Outcome {
     /// An emulator action, done once the overlay is gone.
     Request(Request),
     Quit,
-    /// Put the computer to sleep, once the overlay is gone.
-    Standby,
+    /// Sleep, restart or turn off, once the overlay is gone.
+    Power(PowerAction),
     /// The on-screen keyboard's overlay key: the overlay opens once the
     /// keyboard is gone.
     Overlay,
@@ -148,8 +153,11 @@ pub struct Content {
     pub title: String,
     pub subtitle: String,
     pub items: Vec<MenuItem>,
-    /// The round buttons under the entries (continue, screenshot, quit).
+    /// The round buttons under the entries (continue, screenshot, quit,
+    /// power).
     pub buttons: Vec<MenuItem>,
+    /// What the power button's page offers.
+    pub power: Vec<PowerAction>,
     pub clock_formats: (String, String),
     pub locale: chrono::Locale,
     pub pads: Vec<Pad>,
@@ -227,6 +235,10 @@ struct State {
     devices: Option<Snapshot>,
     /// What each row of the audio page asks for (nothing for a header).
     audio_rows: Vec<Option<Action>>,
+    /// Which list page is open, if one is.
+    list: Option<ListKind>,
+    /// The menu's sounds.
+    sounds: Sounds,
     /// The button whose function is to show, and the timer that shows it.
     tooltip: Option<(usize, RegistrationToken)>,
     /// The button (or finger) held on the panel, and what it turned into.
@@ -301,6 +313,65 @@ impl Focus {
 /// How long a round button stays highlighted before its function shows.
 const TOOLTIP_DELAY: Duration = Duration::from_millis(1200);
 
+/// The list pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListKind {
+    /// The audio outputs and profiles.
+    Audio,
+    /// Sleep; outside games, restart and turn off.
+    Power,
+}
+
+/// What closes the overlay from outside: SIGUSR1 (the overlay started
+/// again: the hotkey, a keyboard shortcut), being stopped, and (the menu,
+/// when `launch`) a game starting or ending.
+fn watch_closers(handle: &LoopHandle<'static, State>, launch: bool) -> Result<()> {
+    let signals = Signals::new(&[Signal::SIGUSR1, Signal::SIGTERM, Signal::SIGINT])?;
+    handle
+        .insert_source(signals, |_, &mut (), state| {
+            state.outcome = Some(Outcome::Back);
+        })
+        .map_err(|err| anyhow!("cannot watch signals: {}", err.error))?;
+    if launch && let Err(err) = watch_launch(handle) {
+        log::warn!("{err:#}");
+    }
+    Ok(())
+}
+
+/// Close when a game starts or ends meanwhile (the launcher writes
+/// `launch.json`): there is no menu to show then.
+fn watch_launch(handle: &LoopHandle<'static, State>) -> Result<()> {
+    let dir = paths::runtime_dir();
+    let inotify = Inotify::init(InitFlags::IN_NONBLOCK | InitFlags::IN_CLOEXEC)
+        .context("cannot follow the game's launch")?;
+    inotify
+        .add_watch(
+            &dir,
+            AddWatchFlags::IN_CLOSE_WRITE | AddWatchFlags::IN_MOVED_TO,
+        )
+        .with_context(|| format!("cannot watch {}", dir.display()))?;
+    handle
+        .insert_source(
+            Generic::new(inotify, Interest::READ, Mode::Level),
+            |_, inotify, state| {
+                let events = inotify.read_events().unwrap_or_default();
+                let launch_changed = events.iter().any(|event| {
+                    event
+                        .name
+                        .as_deref()
+                        .is_some_and(|name| name == launch::LAUNCH_FILE)
+                });
+                if launch_changed && launch::busy() {
+                    log::info!("a game is starting or ending: closing");
+                    state.outcome.get_or_insert(Outcome::Back);
+                }
+                Ok(PostAction::Continue)
+            },
+        )
+        .map_err(|err| anyhow!("cannot follow the game's launch: {}", err.error))?;
+    Ok(())
+}
+
 /// A pointer event, whichever the display.
 pub(crate) struct PointerInput {
     surface: SurfaceId,
@@ -347,14 +418,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         content.take_keyboard = true;
     }
 
-    // SIGUSR1: the overlay started again (the hotkey, a keyboard shortcut) closes this
-    // one, as being stopped does
-    let signals = Signals::new(&[Signal::SIGUSR1, Signal::SIGTERM, Signal::SIGINT])?;
-    handle
-        .insert_source(signals, |_, &mut (), state| {
-            state.outcome = Some(Outcome::Back);
-        })
-        .map_err(|err| anyhow!("cannot watch signals: {}", err.error))?;
+    watch_closers(&handle, content.task.is_none())?;
 
     wait_for_pads(&handle, content.new_pads.take())?;
 
@@ -380,6 +444,10 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         grab_keyboard(&handle, window)?;
     }
     let mut state = State {
+        sounds: Sounds::new(
+            content.config.sound_volume,
+            paths::runtime_dir().join("sounds"),
+        ),
         display,
         focused: false,
         handle,
@@ -407,6 +475,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         audio: None,
         devices: None,
         audio_rows: Vec::new(),
+        list: None,
         tooltip: None,
         brightness_settled: false,
         controls: None,
@@ -1189,6 +1258,9 @@ impl State {
     /// Show the outputs and profiles on the audio page, when it is open;
     /// `select` is the row to select (the one selected by default).
     fn show_devices(&mut self, select: Option<usize>) {
+        if self.list != Some(ListKind::Audio) {
+            return;
+        }
         let (page, rows) = AudioMenu::new(&self.content.translator).page(self.devices.as_ref());
         let Some((panel, _)) = self.panel.as_mut() else {
             return;
@@ -1225,6 +1297,7 @@ impl State {
         hub.watch_devices(true);
         let (page, rows) = AudioMenu::new(&self.content.translator).page(self.devices.as_ref());
         self.audio_rows = rows;
+        self.list = Some(ListKind::Audio);
         panel.open_list(page);
         self.draw_panel();
         self.draw_menu_help();
@@ -1245,6 +1318,50 @@ impl State {
         snapshot.apply(&action);
         hub.apply(action);
         self.show_devices(Some(row));
+    }
+
+    /// Show the power button's page: sleep; outside games, restart and turn
+    /// off.
+    fn open_power(&mut self) {
+        let Some((panel, _)) = self.panel.as_mut() else {
+            return;
+        };
+        if panel.page_open() {
+            return;
+        }
+        let translator = &self.content.translator;
+        let rows = self
+            .content
+            .power
+            .iter()
+            .map(|action| ListRow {
+                label: translator.text(action.label_key()),
+                kind: RowKind::Choice {
+                    checked: false,
+                    enabled: true,
+                },
+            })
+            .collect();
+        self.list = Some(ListKind::Power);
+        panel.open_list(ListPage {
+            title: translator.text("menu-power"),
+            rows,
+        });
+        self.draw_panel();
+        self.draw_menu_help();
+    }
+
+    /// A row of the open list page was chosen.
+    fn choose_row(&mut self, row: usize) {
+        match self.list {
+            Some(ListKind::Audio) => self.choose_audio(row),
+            Some(ListKind::Power) => {
+                if let Some(&action) = self.content.power.get(row) {
+                    self.outcome = Some(Outcome::Power(action));
+                }
+            }
+            None => {}
+        }
     }
 
     /// The overlay is on an output: on a Wayland compositor without a
@@ -1341,6 +1458,9 @@ impl State {
     }
 
     fn activate(&mut self, action: Option<MenuAction>) {
+        if action.is_some_and(|action| !matches!(action, MenuAction::Slider(_))) {
+            self.sounds.play(Sound::Select);
+        }
         self.outcome = match action {
             // e.g. an empty slot to load; Left/Right or the mouse change a slider
             None | Some(MenuAction::Slider(SliderKind::Brightness)) => return,
@@ -1353,7 +1473,11 @@ impl State {
                 return;
             }
             Some(MenuAction::Choice(row)) => {
-                self.choose_audio(row);
+                self.choose_row(row);
+                return;
+            }
+            Some(MenuAction::Power) => {
+                self.open_power();
                 return;
             }
             Some(MenuAction::Manual) => {
@@ -1362,7 +1486,6 @@ impl State {
             }
             Some(MenuAction::Continue) => Some(Outcome::Back),
             Some(MenuAction::Quit) => Some(Outcome::Quit),
-            Some(MenuAction::Standby) => Some(Outcome::Standby),
             // disc changes are done with the menu open, which shows the result
             Some(MenuAction::Emulator(action)) if self.content.emulator.in_place(action) => {
                 if self.content.emulator.perform_now(action) {
@@ -1396,12 +1519,15 @@ impl State {
 
     /// Back: from a save state page to the main entries, else close.
     fn back(&mut self) {
+        self.sounds.play(Sound::Back);
         let closed_page = self
             .panel
             .as_mut()
             .is_some_and(|(panel, _)| panel.close_page());
         if closed_page {
-            if let Some(hub) = &self.audio {
+            if self.list.take() == Some(ListKind::Audio)
+                && let Some(hub) = &self.audio
+            {
                 hub.watch_devices(false);
             }
             self.devices = None;
@@ -1489,6 +1615,7 @@ impl State {
                     .as_mut()
                     .is_some_and(|(panel, _)| panel.move_selection(delta));
                 if moved {
+                    self.sounds.play(Sound::Scroll);
                     self.draw_panel();
                     self.draw_menu_help();
                 }
@@ -1499,6 +1626,7 @@ impl State {
                 };
                 let sign = if nav == Nav::Left { -1 } else { 1 };
                 if panel.move_button(sign) {
+                    self.sounds.play(Sound::Scroll);
                     self.draw_panel();
                 } else {
                     let change = panel.adjust(sign as f32 * STEP);
@@ -1540,7 +1668,10 @@ impl State {
             }
             Nav::Backspace | Nav::Space | Nav::Enter | Nav::Flip => {}
             // the shortcut that opened the overlay, again: back to the game
-            Nav::Close => self.outcome = Some(Outcome::Back),
+            Nav::Close => {
+                self.sounds.play(Sound::Back);
+                self.outcome = Some(Outcome::Back);
+            }
             // R1 (Page Down): to the buttons and sliders and back; L1
             // (Page Up): back to the entries
             Nav::ZoomIn | Nav::ZoomOut | Nav::PrevPage | Nav::NextPage => {
@@ -1550,6 +1681,7 @@ impl State {
                     _ => panel.go_to_list(),
                 });
                 if moved {
+                    self.sounds.play(Sound::Scroll);
                     self.draw_panel();
                     self.draw_menu_help();
                 }

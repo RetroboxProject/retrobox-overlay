@@ -27,7 +27,11 @@
 //!                         ; touch screens (1 to 2)
 //!
 //! [system]
-//! standby = true          ; offer to sleep, outside games
+//! standby = true          ; offer to sleep (the power button)
+//!
+//! [sounds]
+//! volume = 50             ; the menu's sounds (moving, choosing, going
+//!                         ; back), 0 to 100 (0: none)
 //!
 //! [manual]
 //! scaling = compositor    ; compositor | overlay
@@ -53,6 +57,8 @@ pub const FILE_NAME: &str = "overlay.ini";
 /// The rows' height, in lines of text (more for fingers).
 const MIN_ROW_SCALE: f32 = 1.0;
 const MAX_ROW_SCALE: f32 = 2.0;
+/// The menu's sounds' volume, in percent, by default.
+const SOUND_VOLUME: u8 = 50;
 
 /// Which edge of the screen the menu slides from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +106,8 @@ pub struct Config {
     pub osk: OskConfig,
     /// How much taller than a line of text the menu's rows are (fingers).
     pub row_scale: f32,
+    /// The volume of the menu's sounds, in percent (0: none).
+    pub sound_volume: u8,
 }
 
 /// The on-screen keyboard's width, relative to the screen's: the least, the
@@ -202,7 +210,8 @@ impl TakeKeyboard {
 pub struct SystemConfig {
     /// Whether the battery's percentage shows next to its icon.
     pub battery_percent: bool,
-    /// Whether the menu offers to put the computer to sleep (outside games).
+    /// Whether the menu offers to put the computer to sleep (on the power
+    /// button's page).
     pub standby: bool,
 }
 
@@ -230,6 +239,7 @@ impl Default for Config {
                 standby: true,
             },
             row_scale: 1.0,
+            sound_volume: SOUND_VOLUME,
         }
     }
 }
@@ -351,7 +361,20 @@ impl Config {
                 other => log::warn!("overlay.ini: unknown manual scaling {other:?}"),
             }
         }
+        self.apply_sounds(ini);
         self.apply_osk(ini);
+    }
+
+    fn apply_sounds(&mut self, ini: &Ini) {
+        if let Some(volume) = ini
+            .section(Some("sounds"))
+            .and_then(|section| section.get("volume"))
+        {
+            match volume.trim().parse::<f32>() {
+                Ok(volume) => self.sound_volume = volume.clamp(0.0, 100.0).round() as u8,
+                Err(_) => log::warn!("overlay.ini: unknown sounds volume {volume:?}"),
+            }
+        }
     }
 
     fn apply_osk(&mut self, ini: &Ini) {
@@ -523,7 +546,8 @@ mod tests {
         std::fs::write(
             user.join(FILE_NAME),
             "[overlay]\ndim=2\nhold_ms=50\n[clock]\nposition=top\nsize=small\n\
-             [status]\nbattery_percent=no\n[touch]\nrow_scale=1.66\n",
+             [status]\nbattery_percent=no\n[touch]\nrow_scale=1.66\n\
+             [sounds]\nvolume=150\n",
         )
         .unwrap();
 
@@ -533,6 +557,7 @@ mod tests {
         assert_eq!(config.clock.position, VerticalPosition::Top);
         assert!(!config.clock.big && !config.system.battery_percent && config.system.standby);
         assert!((config.row_scale - 1.66).abs() < f32::EPSILON);
+        assert_eq!(config.sound_volume, 100);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

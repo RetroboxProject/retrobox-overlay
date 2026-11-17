@@ -21,6 +21,7 @@ use xkbcommon::xkb;
 
 use super::{BTN_LEFT, BTN_RIGHT, Outcome, PointerInput, PointerKind, State};
 use crate::input::{Input, Nav};
+use crate::sound::Sound;
 use crate::task::process::{self, Process};
 use crate::task::terminal::Terminal;
 use crate::task::{Choice, Model, Options, Outcome as Finish, Phase, Problem, clipboard};
@@ -375,6 +376,7 @@ impl State {
         let Some(task) = self.task.as_mut() else {
             return;
         };
+        self.sounds.play(Sound::Select);
         match (choice, task.model.phase()) {
             (Choice::Yes, Phase::Ask) => {
                 self.task_start();
@@ -404,6 +406,7 @@ impl State {
                 .then(|| task.model.quit_status())
         });
         if let Some(code) = status {
+            self.sounds.play(Sound::Back);
             self.outcome = Some(Outcome::Task(code));
         }
     }
@@ -445,6 +448,7 @@ impl State {
                     .model
                     .move_focus(isize::from(input.nav == Nav::Right) * 2 - 1) =>
             {
+                self.sounds.play(Sound::Scroll);
                 self.draw_task();
             }
             Nav::Confirm => self.task_activate(),
