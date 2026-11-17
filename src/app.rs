@@ -159,6 +159,13 @@ pub enum Outcome {
     Task(u8),
 }
 
+impl Outcome {
+    /// Whether the game ends with it.
+    const fn ends_game(self) -> bool {
+        matches!(self, Self::Quit | Self::SaveAndQuit)
+    }
+}
+
 /// Everything the overlay shows, prepared before it connects to the display.
 pub struct Content {
     pub config: Config,
@@ -546,7 +553,8 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
     // what is still to be typed goes out before the keyboard is gone
     drop(state.typist.take());
     // Hide the overlay first, then hand the controllers back once the button
-    // that closed it is up (see input.rs).
+    // that closed it is up (see input.rs); a game that ends gets them at
+    // once, Quit still held (its release reaching the game does no harm).
     let mut pads = std::mem::take(&mut state.content.pads);
     let emulator = std::mem::replace(&mut state.content.emulator, Emulator::none());
     let State {
@@ -557,7 +565,9 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
     }
     display.flush();
     drop(display);
-    input::wait_released(&mut pads);
+    if !outcome.ends_game() {
+        input::wait_released(&mut pads);
+    }
     drop(pads);
     Ok((outcome, emulator, setters))
 }
