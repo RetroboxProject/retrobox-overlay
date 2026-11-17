@@ -85,6 +85,7 @@ use crate::theme::MenuTheme;
 use crate::ui::audio::AudioMenu;
 use crate::ui::clock::Clock;
 use crate::ui::help::{Help, Prompt};
+use crate::ui::icons::Icon;
 use crate::ui::layout::Layout;
 use crate::ui::osk::{Action as OskAction, Direction, Labels, Osk};
 use crate::ui::panel::{
@@ -1369,12 +1370,13 @@ impl State {
             .content
             .power
             .iter()
-            .map(|action| ListRow {
+            .map(|&action| ListRow {
                 label: translator.text(action.label_key()),
                 kind: RowKind::Choice {
                     checked: false,
                     enabled: true,
                 },
+                icon: Some(Icon::of_power(action)),
             })
             .collect();
         self.list = Some(ListKind::Power);

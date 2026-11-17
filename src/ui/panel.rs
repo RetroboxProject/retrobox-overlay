@@ -115,6 +115,8 @@ pub enum RowKind {
 pub struct ListRow {
     pub label: String,
     pub kind: RowKind,
+    /// Its icon (a choice's), where a checked one would have its tick.
+    pub icon: Option<Icon>,
 }
 
 /// A page of choices, shown instead of the main entries (the audio outputs
@@ -1497,9 +1499,13 @@ impl Panel {
                     let target = Target::Item(index);
                     self.draw_row_background(pixmap, target, y, row_height);
                     let color = self.row_color(target, enabled);
-                    if checked {
+                    let icon = row
+                        .icon
+                        .filter(|_| self.icons)
+                        .or(checked.then_some(Icon::Check));
+                    if let Some(icon) = icon {
                         let top = y + (row_height - icon_size) / 2.0;
-                        draw_icon(pixmap, Icon::Check, icon_size, (padding, top), color);
+                        draw_icon(pixmap, icon, icon_size, (padding, top), color);
                     }
                     let label_width = inner - (text_x - padding);
                     let (font, label) = fonts.fit(&self.text.font, &label, label_width, 0.7);

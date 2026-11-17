@@ -9,6 +9,7 @@ use super::panel::MenuAction;
 use crate::emulator::EmuAction;
 use crate::savestates::StateMode;
 use crate::system::SliderKind;
+use crate::system::power::PowerAction;
 use crate::system::status::{Battery, Network};
 use crate::theme::Rgba;
 
@@ -24,6 +25,8 @@ pub enum Icon {
     SkipForward,
     SkipBack,
     RotateCcw,
+    RotateCw,
+    Moon,
     Settings,
     Camera,
     LogOut,
@@ -63,6 +66,15 @@ pub enum Icon {
 }
 
 impl Icon {
+    /// The icon of a power option.
+    pub const fn of_power(action: PowerAction) -> Self {
+        match action {
+            PowerAction::Standby => Self::Moon,
+            PowerAction::Reboot => Self::RotateCw,
+            PowerAction::PowerOff => Self::Power,
+        }
+    }
+
     /// The icon of a menu entry (none for the save state slots).
     pub const fn for_action(action: MenuAction) -> Option<Self> {
         Some(match action {
@@ -135,6 +147,8 @@ impl Icon {
             Self::SkipForward => include_str!("../../assets/icons/skip-forward.svg"),
             Self::SkipBack => include_str!("../../assets/icons/skip-back.svg"),
             Self::RotateCcw => include_str!("../../assets/icons/rotate-ccw.svg"),
+            Self::RotateCw => include_str!("../../assets/icons/rotate-cw.svg"),
+            Self::Moon => include_str!("../../assets/icons/moon.svg"),
             Self::Settings => include_str!("../../assets/icons/settings.svg"),
             Self::Camera => include_str!("../../assets/icons/camera.svg"),
             Self::LogOut => include_str!("../../assets/icons/log-out.svg"),
@@ -210,6 +224,8 @@ mod tests {
             Icon::SkipForward,
             Icon::SkipBack,
             Icon::RotateCcw,
+            Icon::RotateCw,
+            Icon::Moon,
             Icon::Settings,
             Icon::Camera,
             Icon::LogOut,

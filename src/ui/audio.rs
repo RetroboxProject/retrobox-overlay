@@ -39,6 +39,7 @@ impl AudioMenu {
             rows.push(ListRow {
                 label: label.to_owned(),
                 kind,
+                icon: None,
             });
             actions.push(action);
         };
