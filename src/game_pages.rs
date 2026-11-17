@@ -1,11 +1,13 @@
 //! The running game's own pages in the menu: its manual, its page (what
-//! game.xml says, and the time played) and its controls (its
-//! pad-to-keyboard profile). Each shows only when it has something to show.
+//! game.xml says, and the time played), its controls (its pad-to-keyboard
+//! profile) and its achievements (RetroAchievements). Each shows only when
+//! it has something to show.
 
 use std::time::Duration;
 
 use chrono::NaiveDate;
 
+use crate::achievements::{Account, GameId};
 use crate::controls::{self, Mapping};
 use crate::i18n::Translator;
 use crate::manual::Manual;
@@ -20,6 +22,8 @@ pub struct GamePages {
     pub controls: Vec<Mapping>,
     /// The time played, shown in the status line.
     pub play: Option<PlayClock>,
+    /// The RetroAchievements account and the game, when both are known.
+    pub cheevos: Option<(Account, GameId)>,
 }
 
 impl GamePages {
@@ -34,6 +38,14 @@ impl GamePages {
                 .map(|profile| controls::read(profile, translator))
                 .unwrap_or_default(),
             play,
+            cheevos: session
+                .achievements
+                .clone()
+                .filter(|account| {
+                    !account.username.is_empty()
+                        && (!account.token.is_empty() || !account.password.is_empty())
+                })
+                .zip(Some(info.cheevos.clone()).filter(GameId::known)),
         }
     }
 
@@ -46,6 +58,11 @@ impl GamePages {
                 !self.controls.is_empty(),
                 "menu-controls",
                 MenuAction::Controls,
+            ),
+            (
+                self.cheevos.is_some(),
+                "menu-achievements",
+                MenuAction::Achievements,
             ),
         ]
         .into_iter()

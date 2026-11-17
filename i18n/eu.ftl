@@ -5,6 +5,7 @@ menu-load-state = Kargatu egoera
 menu-manual = Argibide-eskuliburua
 menu-info = Jokoaren fitxa
 menu-controls = Kontrolak
+menu-achievements = Lorpenak
 menu-disc-tray = Ireki/itxi erretilua
 menu-open-tray = Ireki erretilua
 menu-close-tray = Itxi erretilua
@@ -100,3 +101,9 @@ controls-click-right = Eskuineko klika
 controls-click-middle = Erdiko klika
 controls-command = Komandoa
 controls-hold = eutsi
+
+# the achievements page (RetroAchievements)
+achievements-loading = Lorpenak kargatzen…
+achievements-failed = Ezin da RetroAchievements-ekin konektatu
+achievements-none = Joko honek ez du lorpenik
+achievements-summary = { $earned }/{ $total } · { $points }/{ $max } puntu

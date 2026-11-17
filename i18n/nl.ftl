@@ -5,6 +5,7 @@ menu-load-state = Status laden
 menu-manual = Handleiding
 menu-info = Spelinfo
 menu-controls = Besturing
+menu-achievements = Prestaties
 menu-disc-tray = Lade openen/sluiten
 menu-open-tray = Lade openen
 menu-close-tray = Lade sluiten
@@ -100,3 +101,9 @@ controls-click-right = Rechterklik
 controls-click-middle = Middelklik
 controls-command = Opdracht
 controls-hold = ingedrukt houden
+
+# the achievements page (RetroAchievements)
+achievements-loading = Prestaties laden…
+achievements-failed = RetroAchievements is niet bereikbaar
+achievements-none = Dit spel heeft geen prestaties
+achievements-summary = { $earned } van { $total } · { $points } van { $max } punten

@@ -49,6 +49,15 @@ pub fn state_dir() -> PathBuf {
     })
 }
 
+/// Retrobox's cache: `$XDG_CACHE_HOME/retrobox`, else `~/.cache/retrobox`
+/// (what can be fetched again: the achievements' badges).
+pub fn cache_dir() -> PathBuf {
+    env_path("XDG_CACHE_HOME")
+        .or_else(|| env_path("HOME").map(|home| home.join(".cache")))
+        .unwrap_or_else(env::temp_dir)
+        .join("retrobox")
+}
+
 /// One of Retrobox's own programs (`retrobox-overlay`, `retrobox-inputd`):
 /// the one installed next to this one, else whichever the `PATH` finds.
 pub fn sibling_command(name: &str) -> PathBuf {

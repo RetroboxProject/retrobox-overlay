@@ -5,6 +5,7 @@ menu-load-state = Carrega l'estat
 menu-manual = Manual d'instruccions
 menu-info = Fitxa del joc
 menu-controls = Controls
+menu-achievements = Assoliments
 menu-disc-tray = Obre/tanca la safata
 menu-open-tray = Obre la safata
 menu-close-tray = Tanca la safata
@@ -100,3 +101,9 @@ controls-click-right = Clic dret
 controls-click-middle = Clic central
 controls-command = Ordre
 controls-hold = mantenir
+
+# the achievements page (RetroAchievements)
+achievements-loading = Carregant els assoliments…
+achievements-failed = No es pot connectar amb RetroAchievements
+achievements-none = Aquest joc no té assoliments
+achievements-summary = { $earned } de { $total } · { $points } de { $max } punts

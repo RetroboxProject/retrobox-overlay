@@ -5,6 +5,7 @@ menu-load-state = Load state
 menu-manual = Instruction manual
 menu-info = Game info
 menu-controls = Controls
+menu-achievements = Achievements
 menu-disc-tray = Open/close disc tray
 menu-open-tray = Open disc tray
 menu-close-tray = Close disc tray
@@ -100,3 +101,9 @@ controls-click-right = Right click
 controls-click-middle = Middle click
 controls-command = Command
 controls-hold = hold
+
+# the achievements page (RetroAchievements)
+achievements-loading = Loading the achievements…
+achievements-failed = Cannot reach RetroAchievements
+achievements-none = This game has no achievements
+achievements-summary = { $earned } of { $total } · { $points } of { $max } points

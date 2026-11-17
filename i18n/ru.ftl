@@ -5,6 +5,7 @@ menu-load-state = Загрузить состояние
 menu-manual = Инструкция
 menu-info = Об игре
 menu-controls = Управление
+menu-achievements = Достижения
 menu-disc-tray = Открыть/закрыть лоток
 menu-open-tray = Открыть лоток
 menu-close-tray = Закрыть лоток
@@ -100,3 +101,9 @@ controls-click-right = Правый щелчок
 controls-click-middle = Средний щелчок
 controls-command = Команда
 controls-hold = удерживать
+
+# the achievements page (RetroAchievements)
+achievements-loading = Загрузка достижений…
+achievements-failed = Нет связи с RetroAchievements
+achievements-none = У этой игры нет достижений
+achievements-summary = { $earned } из { $total } · { $points } из { $max } очков

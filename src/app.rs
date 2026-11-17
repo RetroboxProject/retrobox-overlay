@@ -65,6 +65,7 @@ use x11rb::connection::Connection as _;
 use x11rb::protocol::Event as XEvent;
 use x11rb::protocol::xproto::{self, NotifyDetail, NotifyMode};
 
+use crate::achievements::{Account, GameId};
 use crate::config::{self, Config, OskView, Side, TakeKeyboard, VerticalPosition};
 use crate::controls::Mapping;
 use crate::emulator::{EmuAction, Emulator, Request, Typist};
@@ -94,6 +95,7 @@ use crate::ui::text::Fonts;
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
 use retrobox_input::{es_settings, launch, paths};
 
+mod achievements_view;
 mod display;
 mod manual_view;
 mod task_view;
@@ -177,6 +179,8 @@ pub struct Content {
     pub mappings: Vec<Mapping>,
     /// The time played, while a game runs.
     pub play: Option<PlayClock>,
+    /// The `RetroAchievements` account and the game, when it has achievements.
+    pub cheevos: Option<(Account, GameId)>,
     /// For the texts that change while the menu is open (the disc line).
     pub translator: Translator,
     /// When the process started, to log how long the menu took to show.
@@ -247,6 +251,8 @@ struct State {
     list: Option<ListKind>,
     /// The menu's sounds.
     sounds: Sounds,
+    /// The achievements, once asked for.
+    cheevos: achievements_view::Cheevos,
     /// The button whose function is to show, and the timer that shows it.
     tooltip: Option<(usize, RegistrationToken)>,
     /// The button (or finger) held on the panel, and what it turned into.
@@ -333,6 +339,15 @@ enum ListKind {
     Audio,
     /// Sleep; outside games, restart and turn off.
     Power,
+}
+
+/// The task screen, when that is what to show: nothing else may get the
+/// keys while an installer asks for a password.
+fn start_task(content: &mut Content, display: &mut Display) -> Option<TaskView> {
+    let task = content.task.take().map(TaskView::new)?;
+    content.take_keyboard = true;
+    display.take_whole_keyboard();
+    Some(task)
 }
 
 /// What closes the overlay from outside: SIGUSR1 (the overlay started
@@ -435,12 +450,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
 
     wait_for_pads(&handle, content.new_pads.take())?;
 
-    let task = content.task.take().map(TaskView::new);
-    if task.is_some() {
-        // nothing else may get the keys while an installer asks for a password
-        content.take_keyboard = true;
-        display.take_whole_keyboard();
-    }
+    let task = start_task(&mut content, &mut display);
 
     // the dim comes first: its size is the screen's, which the rest is sized from
     // (the task screen is drawn on it: on Wayland it is what gets the keys)
@@ -489,6 +499,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         devices: None,
         audio_rows: Vec::new(),
         list: None,
+        cheevos: achievements_view::Cheevos::default(),
         tooltip: None,
         brightness_settled: false,
         controls: None,
@@ -1533,6 +1544,10 @@ impl State {
             }
             Some(MenuAction::Controls) => {
                 self.open_controls();
+                return;
+            }
+            Some(MenuAction::Achievements) => {
+                self.open_achievements();
                 return;
             }
             Some(MenuAction::Manual) => {

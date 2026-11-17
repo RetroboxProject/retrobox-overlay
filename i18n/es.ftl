@@ -5,6 +5,7 @@ menu-load-state = Cargar estado
 menu-manual = Manual de instrucciones
 menu-info = Ficha del juego
 menu-controls = Controles
+menu-achievements = Logros
 menu-disc-tray = Abrir/cerrar bandeja
 menu-open-tray = Abrir bandeja
 menu-close-tray = Cerrar bandeja
@@ -100,3 +101,9 @@ controls-click-right = Clic derecho
 controls-click-middle = Clic central
 controls-command = Comando
 controls-hold = mantener
+
+# the achievements page (RetroAchievements)
+achievements-loading = Cargando los logros…
+achievements-failed = No se puede conectar con RetroAchievements
+achievements-none = Este juego no tiene logros
+achievements-summary = { $earned } de { $total } · { $points } de { $max } puntos

@@ -12,6 +12,7 @@
 //! quick settings. It neither opens nor stays open while a game is starting
 //! or ending (see `retrobox_input::launch`).
 
+mod achievements;
 mod app;
 mod config;
 mod controls;
@@ -230,6 +231,7 @@ fn task_screen(options: task::Options, log: Option<&std::fs::File>) -> Result<u8
         manual: None,
         info: None,
         mappings: Vec::new(),
+        cheevos: None,
         play: None,
         translator,
         launched: std::time::Instant::now(),
@@ -360,6 +362,7 @@ fn run(
         manual: pages.manual,
         info: pages.info,
         mappings: pages.controls,
+        cheevos: pages.cheevos,
         play: pages.play,
         translator,
         launched,

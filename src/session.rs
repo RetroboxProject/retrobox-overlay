@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::achievements::{Account, GameId};
+
 /// A controller of the game, whose evdev device the overlay grabs while open.
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code, reason = "player and name are for the actions to come")]
@@ -83,6 +85,9 @@ pub struct Session {
     /// The game's pad-to-keyboard profile, if it has one.
     #[serde(default)]
     pub pad_profile: Option<PathBuf>,
+    /// The RetroAchievements account, when achievements are on.
+    #[serde(default)]
+    pub achievements: Option<Account>,
 }
 
 const fn enabled() -> bool {
@@ -143,6 +148,9 @@ pub struct GameInfo {
     pub play_count: u32,
     /// The time played before this game started.
     pub game_time: Duration,
+    /// The game as RetroAchievements knows it (ES finds it when its
+    /// achievements are on).
+    pub cheevos: GameId,
 }
 
 impl GameInfo {
@@ -192,6 +200,10 @@ impl GameInfo {
             manual: file("manual"),
             play_count: field("playcount").parse().unwrap_or(0),
             game_time: Duration::from_secs(field("gametime").parse().unwrap_or(0)),
+            cheevos: GameId {
+                id: field("cheevosId").parse().unwrap_or(0),
+                hash: field("cheevosHash"),
+            },
         })
     }
 

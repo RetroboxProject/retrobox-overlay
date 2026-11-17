@@ -31,6 +31,10 @@ runs only while it is shown.
 * **The controls page** (*Controls*), for a game with a pad-to-keyboard profile: each mapping
   with its buttons (EmulationStation's help icons) and what it does, its description if it
   has one; the keys it presses are lit on EmulationStation's keyboard and mouse.
+* **The achievements page** (*Achievements*), when RetroAchievements is on in EmulationStation
+  and it knows the game: every achievement with its badge, title, description and points,
+  earned ones first, and how many are earned. They come from RetroAchievements (through
+  `curl`) the first time the page opens; the badges are cached.
 * **What the emulator can do,** each with its icon: load and save state, reset, the emulator's
   own menu, the disc tray and next/previous disc. The launcher tells the overlay what the
   running emulator supports; anything it cannot do is not shown.
@@ -202,6 +206,9 @@ What they read:
 * **`/tmp/game.xml`**: the game's scraped information, exported by EmulationStation at launch,
   with the time played before (`gametime`); `session.json`'s `start_time` gives this time's.
 * **`kblayout.svg`**, among EmulationStation's resources: the keyboard of the controls page.
+* **RetroAchievements**: the account comes in `session.json` (`achievements`), the game's id
+  in `game.xml` (`cheevosId`, else `cheevosHash`, which EmulationStation finds when
+  achievements are on); the badges are kept in `~/.cache/retrobox/achievements`.
 * **`launch.json`** (runtime directory): whether a game is starting, running or ending,
   written by the launcher for as long as it runs. The menu does not open, and closes, while a
   game starts or ends.

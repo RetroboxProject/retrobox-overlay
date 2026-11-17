@@ -95,8 +95,8 @@ priority = "optional"
 # retrobox-emulationstation: its theme export and its help icons, read at
 # run time; retrobox-core: the launcher's control channel, retrobox-emukill
 depends = "$auto, retrobox-core, retrobox-emulationstation"
-# pdftoppm and pdfinfo, for the games' manuals
-recommends = "poppler-utils"
+# pdftoppm and pdfinfo, for the games' manuals; curl, for the achievements
+recommends = "poppler-utils, curl"
 # the volume and the audio page (wpctl and pw-dump / pactl), the menu's sounds
 # (pw-play / paplay), a backlight without logind (brightnessctl)
 suggests = "wireplumber, pipewire-bin | pulseaudio-utils, brightnessctl"
@@ -131,5 +131,6 @@ retrobox-emulationstation = "*"
 libxkbcommon = "*"
 
 [package.metadata.generate-rpm.recommends]
-# pdftoppm and pdfinfo, for the games' manuals
+# pdftoppm and pdfinfo, for the games' manuals; curl, for the achievements
 poppler-utils = "*"
+curl = "*"

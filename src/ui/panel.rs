@@ -18,7 +18,8 @@
 //! header and those scroll when they do not all fit (smoothly when dragged).
 //! A page can take the entries' place: the save states' slots, or a list of
 //! choices (the audio outputs and profiles, the power options), the game's
-//! page (`info`) and the controls page (`controls`).
+//! page (`info`), the controls page (`controls`) and the achievements page
+//! (`achievements`).
 //! For touch screens, the rows can be taller than ES's (`row_scale`), the
 //! text staying as it is.
 
@@ -28,6 +29,7 @@ use tiny_skia::{
     Point, Rect, Shader, SpreadMode, Transform,
 };
 
+mod achievements;
 mod controls;
 mod info;
 
@@ -70,6 +72,8 @@ pub enum MenuAction {
     Info,
     /// The controls page (the pad-to-keyboard profile).
     Controls,
+    /// The achievements page (RetroAchievements).
+    Achievements,
     Quit,
     /// The power options' page (sleep; outside games, restart and turn off).
     Power,
@@ -135,6 +139,7 @@ enum Page {
     /// Scrolls, nothing to select.
     Info(info::InfoPage),
     Controls(controls::ControlsPage),
+    Achievements(achievements::AchievementsPage),
 }
 
 impl Page {
@@ -144,6 +149,7 @@ impl Page {
             Self::List(page) => &page.title,
             Self::Info(page) => &page.title,
             Self::Controls(page) => &page.title,
+            Self::Achievements(page) => &page.title,
         }
     }
 
@@ -153,6 +159,7 @@ impl Page {
             Self::List(page) => page.rows.len(),
             Self::Info(_) => 0,
             Self::Controls(page) => page.rows.len(),
+            Self::Achievements(page) => page.list.len(),
         }
     }
 }
@@ -764,7 +771,7 @@ impl Panel {
     pub const fn page_shows(&self) -> Option<Shows> {
         match &self.page {
             Some(Page::Info(_)) => Some(Shows::Text),
-            Some(Page::Controls(_)) => Some(Shows::Rows),
+            Some(Page::Controls(_) | Page::Achievements(_)) => Some(Shows::Rows),
             _ => None,
         }
     }
@@ -851,17 +858,17 @@ impl Panel {
     /// Where the scrolling entries are: from under the header to the
     /// footer.
     fn list_area(&self) -> (f32, f32) {
-        let top = self.header_height() + self.keyboard_band();
+        let top = self.header_height() + self.keyboard_band() + self.summary_band();
         let bottom = (self.screen_height - self.footer_height()).max(top + 1.0);
         (top, bottom)
     }
 
     /// The height of a row of the current page, with its separator.
     fn pitch(&self) -> f32 {
-        if matches!(self.page, Some(Page::Slots(_))) {
-            self.slot_height()
-        } else {
-            self.row_height() + self.line()
+        match self.page {
+            Some(Page::Slots(_)) => self.slot_height(),
+            Some(Page::Achievements(_)) => self.achievement_height() + self.line(),
+            _ => self.row_height() + self.line(),
         }
     }
 
@@ -1120,6 +1127,9 @@ impl Panel {
             Some(Page::List(page)) => self.draw_list(&mut pixmap, fonts, page, padding),
             Some(Page::Info(page)) => self.draw_info(&mut pixmap, page),
             Some(Page::Controls(page)) => self.draw_controls(&mut pixmap, fonts, page, padding),
+            Some(Page::Achievements(page)) => {
+                self.draw_achievements(&mut pixmap, fonts, page, padding);
+            }
             None => self.draw_items(&mut pixmap, fonts, padding),
         }
         self.draw_scrollbar(&mut pixmap);
