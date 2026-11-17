@@ -64,6 +64,7 @@ nix.workspace = true
 resvg = { version = "0.49", default-features = false }
 roxmltree.workspace = true
 rust-ini.workspace = true
+rustix = { workspace = true, features = ["param"] }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 smithay-client-toolkit = "0.21"
@@ -73,6 +74,7 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 x11rb = { version = "0.14", default-features = false, features = ["randr"] }
 xkbcommon = "0.8"
+zune-jpeg = "0.5"
 
 [lints]
 workspace = true

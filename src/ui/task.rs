@@ -252,40 +252,6 @@ fn fill_selector(pixmap: &mut Pixmap, area: Rect, radius: f32, style: &crate::th
     }
 }
 
-/// Break a text into lines no wider than `width`, at its spaces (a word
-/// wider than that stays whole). When it takes more than `max_lines`, the
-/// last line holds all the rest.
-fn wrap(
-    fonts: &mut Fonts,
-    font: &FontRef,
-    text: &str,
-    width: f32,
-    max_lines: usize,
-) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    let mut current = String::new();
-    for word in text.split_whitespace() {
-        let candidate = if current.is_empty() {
-            word.to_owned()
-        } else {
-            format!("{current} {word}")
-        };
-        if current.is_empty() || fonts.measure(font, &candidate) <= width {
-            current = candidate;
-        } else {
-            lines.push(std::mem::replace(&mut current, word.to_owned()));
-        }
-    }
-    if !current.is_empty() || lines.is_empty() {
-        lines.push(current);
-    }
-    if lines.len() > max_lines.max(1) {
-        let rest = lines.split_off(max_lines.max(1) - 1).join(" ");
-        lines.push(rest);
-    }
-    lines
-}
-
 impl TaskUi {
     pub fn new(
         theme: &MenuTheme,
@@ -398,8 +364,7 @@ impl TaskUi {
             let wanted = fonts.measure(&self.message_font, &message) + self.padding * 2.0;
             wanted.max(least).min(screen.0 * COMPACT_WIDTH.1)
         };
-        self.message_lines = wrap(
-            fonts,
+        self.message_lines = fonts.wrap(
             &self.message_font,
             &message,
             window_width - self.padding * 2.0,

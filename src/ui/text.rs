@@ -247,6 +247,40 @@ impl Fonts {
             + self.faux_bold(font)
     }
 
+    /// Break a text into lines no wider than `width`, at its spaces (a word
+    /// wider than that stays whole). When it takes more than `max_lines`,
+    /// the last line holds all the rest.
+    pub fn wrap(
+        &mut self,
+        font: &FontRef,
+        text: &str,
+        width: f32,
+        max_lines: usize,
+    ) -> Vec<String> {
+        let mut lines: Vec<String> = Vec::new();
+        let mut current = String::new();
+        for word in text.split_whitespace() {
+            let candidate = if current.is_empty() {
+                word.to_owned()
+            } else {
+                format!("{current} {word}")
+            };
+            if current.is_empty() || self.measure(font, &candidate) <= width {
+                current = candidate;
+            } else {
+                lines.push(std::mem::replace(&mut current, word.to_owned()));
+            }
+        }
+        if !current.is_empty() || lines.is_empty() {
+            lines.push(current);
+        }
+        if lines.len() > max_lines.max(1) {
+            let rest = lines.split_off(max_lines.max(1) - 1).join(" ");
+            lines.push(rest);
+        }
+        lines
+    }
+
     /// Make a line fit a width: a smaller font (down to `min_scale` of its
     /// size), then an ellipsis.
     pub fn fit(

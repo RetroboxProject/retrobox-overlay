@@ -15,5 +15,6 @@ pub mod hold;
 pub mod instance;
 pub mod launch;
 pub mod logging;
+pub mod pad_profile;
 pub mod paths;
 pub mod probe;

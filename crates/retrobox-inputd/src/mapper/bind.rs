@@ -17,7 +17,7 @@ use evdev::{AbsoluteAxisCode, Device, KeyCode};
 use retrobox_input::es_input::{self, EsInput, EsKind};
 
 use super::engine::{Axis, Code, Combo, Mappings, Sequence, Stick};
-use super::profile::{self, Profile};
+use retrobox_input::pad_profile::{self as profile, Profile};
 
 /// Where the hat directions start in the engine's numbering.
 const HAT_BASE: Code = 0x1000;

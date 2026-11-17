@@ -33,6 +33,28 @@ impl Rgba {
         Self(u32::from_be_bytes([r, g, b, a]))
     }
 
+    /// `self` moved towards `other` by `amount` (0: self, 1: other), opacity
+    /// included.
+    pub fn mix(self, other: Self, amount: f32) -> Self {
+        let amount = amount.clamp(0.0, 1.0);
+        let (from, to) = (self.0.to_be_bytes(), other.0.to_be_bytes());
+        let channel = |index: usize| {
+            let (from, to) = (f32::from(from[index]), f32::from(to[index]));
+            (from + (to - from) * amount).round() as u8
+        };
+        Self(u32::from_be_bytes([
+            channel(0),
+            channel(1),
+            channel(2),
+            channel(3),
+        ]))
+    }
+
+    /// `#rrggbb`, for an SVG (the opacity left out).
+    pub fn hex(self) -> String {
+        format!("#{:06x}", self.0 >> 8)
+    }
+
     /// The cosmic-text colour.
     pub fn to_text_color(self) -> cosmic_text::Color {
         let [r, g, b, a] = self.0.to_be_bytes();
@@ -301,6 +323,11 @@ mod tests {
         .unwrap();
         assert_eq!(theme.text.color, Rgba(0xFF00_00FF));
         assert_eq!(theme.text.selected_color, Rgba(0xFFFF_FFFF));
+        assert_eq!(
+            Rgba(0x0000_00FF).mix(Rgba(0xFF80_40FF), 0.5),
+            Rgba(0x8040_20FF)
+        );
+        assert_eq!(Rgba(0x1234_56FF).hex(), "#123456");
         assert_eq!(theme.title.color, Rgba(0x5555_55FF));
         assert_eq!(theme.screen.height, 720);
         assert_eq!(theme.help.ok, "b");

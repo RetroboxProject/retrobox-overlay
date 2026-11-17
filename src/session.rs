@@ -3,6 +3,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -52,6 +53,9 @@ pub struct SaveStatesInfo {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Session {
     pub pid: i32,
+    /// When the emulator started, in clock ticks since boot (`/proc`'s).
+    #[serde(default)]
+    pub start_time: u64,
     #[serde(default)]
     pub system: String,
     #[serde(default)]
@@ -76,6 +80,9 @@ pub struct Session {
     /// lists the `osk` feature, and the setting is not off).
     #[serde(default)]
     pub osk: bool,
+    /// The game's pad-to-keyboard profile, if it has one.
+    #[serde(default)]
+    pub pad_profile: Option<PathBuf>,
 }
 
 const fn enabled() -> bool {
@@ -97,31 +104,58 @@ impl Session {
         }
     }
 
+    /// How long the game has been running: its emulator's age.
+    pub fn running_for(&self) -> Option<Duration> {
+        let uptime: f64 = fs::read_to_string("/proc/uptime")
+            .ok()?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()?;
+        let started = self.start_time as f64 / rustix::param::clock_ticks_per_second() as f64;
+        (self.start_time > 0).then(|| Duration::from_secs_f64((uptime - started).max(0.0)))
+    }
+
     /// The menu theme file EmulationStation wrote, if the session names one.
     pub fn menu_theme_path(&self) -> Option<PathBuf> {
         (!self.menu_theme.is_empty()).then(|| PathBuf::from(&self.menu_theme))
     }
 }
 
-/// The scraped information of the game (EmulationStation's `game.xml`).
+/// The scraped information of the game (EmulationStation's `game.xml`):
+/// the menu's title and the game's page. Empty when it is not known.
 #[derive(Debug, Clone, Default)]
 pub struct GameInfo {
     pub name: String,
     pub developer: String,
-    pub release_year: String,
-    /// The scraped manual (a PDF; ES writes the full path).
-    pub manual: String,
+    pub publisher: String,
+    pub genre: String,
+    pub players: String,
+    /// `19950811T000000`, as ES stores dates.
+    pub release_date: String,
+    /// 0 to 1.
+    pub rating: Option<f32>,
+    pub description: String,
+    /// The scraped picture: the screenshot (`image`), else the box.
+    pub image: Option<PathBuf>,
+    /// The scraped manual (a PDF).
+    pub manual: Option<PathBuf>,
+    pub play_count: u32,
+    /// The time played before this game started.
+    pub game_time: Duration,
 }
 
 impl GameInfo {
-    /// Read game.xml; falls back to the ROM's file name.
+    /// Read game.xml; falls back to the ROM's file name. Relative paths are
+    /// the ROM's folder's (ES writes full ones, a gamelist may not).
     pub fn load(path: &Path, rom: &str) -> Self {
+        let rom = Path::new(rom);
         let mut info = fs::read_to_string(path)
             .ok()
-            .and_then(|text| Self::parse(&text))
+            .and_then(|text| Self::parse(&text, rom.parent()))
             .unwrap_or_default();
         if info.name.is_empty() {
-            info.name = Path::new(rom)
+            info.name = rom
                 .file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default();
@@ -129,7 +163,7 @@ impl GameInfo {
         info
     }
 
-    fn parse(text: &str) -> Option<Self> {
+    fn parse(text: &str, rom_folder: Option<&Path>) -> Option<Self> {
         let document = roxmltree::Document::parse(text).ok()?;
         let game = document
             .descendants()
@@ -141,14 +175,43 @@ impl GameInfo {
                 .map(|text| text.trim().to_owned())
                 .unwrap_or_default()
         };
+        let file = |name: &str| resolve(&field(name), rom_folder);
         Some(Self {
             name: field("name"),
             developer: field("developer"),
-            // ES stores dates as 19950811T000000
-            release_year: field("releasedate").chars().take(4).collect(),
-            manual: field("manual"),
+            publisher: field("publisher"),
+            genre: field("genre"),
+            players: field("players"),
+            release_date: field("releasedate"),
+            rating: field("rating")
+                .parse()
+                .ok()
+                .filter(|rating: &f32| *rating > 0.0),
+            description: field("desc"),
+            image: file("image").or_else(|| file("thumbnail")),
+            manual: file("manual"),
+            play_count: field("playcount").parse().unwrap_or(0),
+            game_time: Duration::from_secs(field("gametime").parse().unwrap_or(0)),
         })
     }
+
+    /// The year it came out (empty when unknown).
+    pub fn release_year(&self) -> &str {
+        self.release_date.get(..4).unwrap_or_default()
+    }
+}
+
+/// A file named in game.xml: as it is when absolute, else in the ROM's
+/// folder (`./manuals/...`).
+fn resolve(name: &str, rom_folder: Option<&Path>) -> Option<PathBuf> {
+    if name.is_empty() {
+        return None;
+    }
+    let path = Path::new(name);
+    if path.is_absolute() {
+        return Some(path.to_owned());
+    }
+    Some(rom_folder?.join(path.strip_prefix("./").unwrap_or(path)))
 }
 
 #[cfg(test)]
@@ -175,11 +238,21 @@ mod tests {
         let info = GameInfo::parse(
             "<gameList><game><path>/r/s.md</path><name>Sonic</name>\
              <developer>Sega</developer><releasedate>19910623T000000</releasedate>\
-             <manual>/r/manuals/s.pdf</manual></game></gameList>",
+             <manual>/r/manuals/s.pdf</manual><thumbnail>./images/s-thumb.png</thumbnail>\
+             <rating>0.8</rating><gametime>3700</gametime><playcount>4</playcount>\
+             </game></gameList>",
+            Some(Path::new("/roms/md")),
         )
         .unwrap();
         assert_eq!(info.name, "Sonic");
-        assert_eq!(info.release_year, "1991");
-        assert_eq!(info.manual, "/r/manuals/s.pdf");
+        assert_eq!(info.release_year(), "1991");
+        assert_eq!(info.manual.as_deref(), Some(Path::new("/r/manuals/s.pdf")));
+        assert_eq!(
+            info.image.as_deref(),
+            Some(Path::new("/roms/md/images/s-thumb.png"))
+        );
+        assert_eq!(info.rating, Some(0.8));
+        assert_eq!(info.game_time, Duration::from_secs(3700));
+        assert_eq!(info.play_count, 4);
     }
 }

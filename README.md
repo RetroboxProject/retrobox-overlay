@@ -24,7 +24,13 @@ runs only while it is shown.
 ### The in-game menu
 
 * **The game at the top:** its name, developer and year (from EmulationStation's scraped
-  information), and a status line with the network, the battery and, if wanted, the time.
+  information), and a status line with the time played (this time, and in all), the network,
+  the battery and, if wanted, the time.
+* **The game's page** (*Game info*): its scraped picture, developer, publisher, release date,
+  genre, players, rating, times and time played, and its description.
+* **The controls page** (*Controls*), for a game with a pad-to-keyboard profile: each mapping
+  with its buttons (EmulationStation's help icons) and what it does, its description if it
+  has one; the keys it presses are lit on EmulationStation's keyboard and mouse.
 * **What the emulator can do,** each with its icon: load and save state, reset, the emulator's
   own menu, the disc tray and next/previous disc. The launcher tells the overlay what the
   running emulator supports; anything it cannot do is not shown.
@@ -193,7 +199,9 @@ What they read:
 * **`es-menu-theme.json`**: the menu theme EmulationStation resolved (colours, fonts and
   their sizes, help prompts), exported by Retrobox's EmulationStation build. The last one is
   kept for when there is none yet.
-* **`/tmp/game.xml`**: the game's scraped information, exported by EmulationStation at launch.
+* **`/tmp/game.xml`**: the game's scraped information, exported by EmulationStation at launch,
+  with the time played before (`gametime`); `session.json`'s `start_time` gives this time's.
+* **`kblayout.svg`**, among EmulationStation's resources: the keyboard of the controls page.
 * **`launch.json`** (runtime directory): whether a game is starting, running or ending,
   written by the launcher for as long as it runs. The menu does not open, and closes, while a
   game starts or ends.

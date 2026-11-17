@@ -21,8 +21,13 @@
 //! `cooldown` for combinations), `tap` (a single input that fires when let
 //! go, if nothing else was pressed and it was not held long) and
 //! `_disabled`. Every mapping that cannot be used is left out with a
-//! warning, as gamepadly does.
+//! warning, as gamepadly does. A mapping's `description` (evmapy's, and
+//! what EmulationStation shows) is kept for the overlay's controls page.
+//!
+//! `retrobox-inputd`'s mapper does what the profile says; the overlay shows
+//! it.
 
+use std::path::Path;
 use std::str::FromStr as _;
 use std::time::Duration;
 
@@ -55,6 +60,7 @@ pub struct Hotkey {
     pub cooldown: Duration,
     pub hold: Duration,
     pub tap: bool,
+    pub description: String,
 }
 
 /// Inputs pressed one after the other.
@@ -63,6 +69,7 @@ pub struct Sequence {
     pub trigger: Vec<String>,
     pub action: Action,
     pub cooldown: Duration,
+    pub description: String,
 }
 
 /// What a stick moves.
@@ -84,6 +91,7 @@ pub struct Stick {
     pub acceleration: f32,
     /// Inputs that have to be held for it to move anything.
     pub condition: Vec<String>,
+    pub description: String,
 }
 
 /// The mappings of one player, or of the keyboard.
@@ -107,6 +115,24 @@ pub enum Section {
     Player(u32),
     /// `actions_keyboard` (no fallback).
     Keyboard,
+}
+
+/// A profile file's JSON object (logged when it cannot be read).
+pub fn load(path: &Path) -> Option<Map<String, Value>> {
+    let read = std::fs::read_to_string(path)
+        .map_err(|err| err.to_string())
+        .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|err| err.to_string()));
+    match read {
+        Ok(Value::Object(data)) => Some(data),
+        Ok(_) => {
+            log::warn!("{}: not a JSON object", path.display());
+            None
+        }
+        Err(err) => {
+            log::warn!("cannot read {}: {err}", path.display());
+            None
+        }
+    }
 }
 
 /// The mappings of `section` in a profile (its JSON object). Mappings that
@@ -185,6 +211,7 @@ fn add_triggered(
         return Err("a tap cannot be held nor a sequence".into());
     }
     let action = action(entry)?;
+    let description = description(entry);
     let cooldown = |size: usize| -> Result<Duration, String> {
         let seconds = match entry.get("cooldown") {
             Some(value) => number(value).ok_or("bad cooldown")?,
@@ -203,6 +230,7 @@ fn add_triggered(
             trigger: triggers,
             action,
             cooldown,
+            description,
         };
         match profile
             .sequences
@@ -234,6 +262,7 @@ fn add_triggered(
             action: action.clone(),
             hold: seconds_duration(hold)?,
             tap,
+            description: description.clone(),
         };
         match profile
             .hotkeys
@@ -321,8 +350,19 @@ fn add_stick(
         deadzone: field("deadzone", 0.15)?,
         acceleration: field("acceleration", acceleration)?,
         condition,
+        description: description(entry),
     });
     Ok(())
+}
+
+/// A mapping's description (empty when it has none).
+fn description(entry: &Map<String, Value>) -> String {
+    entry
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// An evdev key or button by name (`KEY_F4`, `BTN_LEFT`).
@@ -394,7 +434,7 @@ mod tests {
         let read = profile(
             r#"{"cooldown": 0.3, "actions_player1": [
                 {"trigger": ["hotkey", "start"], "type": "key", "target": ["KEY_LEFTALT", "KEY_F4"]},
-                {"trigger": "a", "type": "key", "target": "KEY_X"},
+                {"trigger": "a", "type": "key", "target": "KEY_X", "description": " Jump "},
                 {"trigger": ["b"], "type": "exec", "target": "echo hi", "hold": "1.5"},
                 {"trigger": ["r3"], "type": "key", "target": "BTN_LEFT", "condition": "hotkey"}
             ]}"#,
@@ -408,6 +448,7 @@ mod tests {
             Action::Keys(vec![KeyCode::KEY_LEFTALT, KeyCode::KEY_F4])
         );
         assert_eq!(read.hotkeys[1].cooldown, Duration::ZERO);
+        assert_eq!(read.hotkeys[1].description, "Jump");
         assert_eq!(read.hotkeys[2].hold, Duration::from_millis(1500));
         assert_eq!(read.hotkeys[2].action, Action::Exec(vec!["echo hi".into()]));
         assert_eq!(read.hotkeys[3].trigger, ["r3", "hotkey"]);

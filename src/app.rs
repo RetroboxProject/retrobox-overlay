@@ -66,10 +66,12 @@ use x11rb::protocol::Event as XEvent;
 use x11rb::protocol::xproto::{self, NotifyDetail, NotifyMode};
 
 use crate::config::{self, Config, OskView, Side, TakeKeyboard, VerticalPosition};
+use crate::controls::Mapping;
 use crate::emulator::{EmuAction, Emulator, Request, Typist};
 use crate::i18n::Translator;
 use crate::input::{self, Input, Nav, Pad};
 use crate::manual::Manual;
+use crate::playtime::PlayClock;
 use crate::savestates::StateMode;
 use crate::sound::{Sound, Sounds};
 use crate::system::audio::devices::{Action, Snapshot};
@@ -85,7 +87,7 @@ use crate::ui::help::{Help, Prompt};
 use crate::ui::layout::Layout;
 use crate::ui::osk::{Action as OskAction, Direction, Labels, Osk};
 use crate::ui::panel::{
-    ListPage, ListRow, MenuAction, MenuItem, Panel, RowKind, StatusBar, Target,
+    InfoSheet, ListPage, ListRow, MenuAction, MenuItem, Panel, RowKind, Shows, StatusBar, Target,
 };
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
@@ -169,6 +171,12 @@ pub struct Content {
     pub states: Option<StatesMenu>,
     /// The game's manual, when it has one that can be shown.
     pub manual: Option<Manual>,
+    /// The game's page, when something is known about it.
+    pub info: Option<InfoSheet>,
+    /// What the game's pad-to-keyboard profile does (the controls page).
+    pub mappings: Vec<Mapping>,
+    /// The time played, while a game runs.
+    pub play: Option<PlayClock>,
     /// For the texts that change while the menu is open (the disc line).
     pub translator: Translator,
     /// When the process started, to log how long the menu took to show.
@@ -293,10 +301,15 @@ enum Focus {
     Slider,
     /// The volume's slider: A mutes it.
     Volume,
+    /// A page that only shows something.
+    Page(Shows),
 }
 
 impl Focus {
     fn of(panel: &Panel) -> Self {
+        if let Some(shows) = panel.page_shows() {
+            return Self::Page(shows);
+        }
         match panel.selected() {
             Target::Item(_) => Self::Item,
             Target::Button(_) => Self::Button,
@@ -1058,7 +1071,10 @@ impl State {
         };
         let mut prompts = match focus {
             Focus::Button => vec![prompt("left/right", "help-choose")],
-            Focus::Item | Focus::Slider | Focus::Volume => vec![prompt("up/down", "help-choose")],
+            Focus::Page(Shows::Text) => vec![prompt("up/down", "help-scroll")],
+            Focus::Item | Focus::Slider | Focus::Volume | Focus::Page(Shows::Rows) => {
+                vec![prompt("up/down", "help-choose")]
+            }
         };
         match focus {
             Focus::Slider => prompts.push(prompt("left/right", "help-adjust")),
@@ -1070,6 +1086,7 @@ impl State {
                 }
             }
             Focus::Item | Focus::Button => prompts.push(prompt(help.ok(), "help-select")),
+            Focus::Page(_) => {}
         }
         prompts.push(prompt(help.back(), back));
         let screen_width = self.dim.size.0 as f32;
@@ -1151,6 +1168,10 @@ impl State {
                     .to_string()
             });
         StatusBar {
+            play_time: self
+                .content
+                .play
+                .map(|clock| clock.text(&self.content.translator)),
             time,
             status: Status::read(),
             battery_percent: self.content.battery_percent,
@@ -1351,6 +1372,32 @@ impl State {
         self.draw_menu_help();
     }
 
+    /// Show the game's page.
+    fn open_info(&mut self) {
+        let (Some((panel, _)), Some(sheet)) = (self.panel.as_mut(), self.content.info.as_ref())
+        else {
+            return;
+        };
+        if !panel.page_open() {
+            panel.open_info(&mut self.content.fonts, sheet);
+            self.draw_panel();
+            self.draw_menu_help();
+        }
+    }
+
+    /// Show what the game's pad-to-keyboard profile does.
+    fn open_controls(&mut self) {
+        let Some((panel, _)) = self.panel.as_mut() else {
+            return;
+        };
+        if !panel.page_open() {
+            let title = self.content.translator.text("menu-controls");
+            panel.open_controls(title, self.content.mappings.clone());
+            self.draw_panel();
+            self.draw_menu_help();
+        }
+    }
+
     /// A row of the open list page was chosen.
     fn choose_row(&mut self, row: usize) {
         match self.list {
@@ -1478,6 +1525,14 @@ impl State {
             }
             Some(MenuAction::Power) => {
                 self.open_power();
+                return;
+            }
+            Some(MenuAction::Info) => {
+                self.open_info();
+                return;
+            }
+            Some(MenuAction::Controls) => {
+                self.open_controls();
                 return;
             }
             Some(MenuAction::Manual) => {

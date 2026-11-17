@@ -2,7 +2,7 @@
 //!
 //! While a game runs, the launcher names its profile in `session.json`
 //! (`pad_profile`: evmapy's format with gamepadly's additions, see
-//! `profile`) along with the game's controllers (`controllers`: each
+//! `retrobox_input::pad_profile`) along with the game's controllers (`controllers`: each
 //! player's device). Each of those controllers gets its player's mappings,
 //! bound to its inputs by `es_input.cfg` (`bind`), and every keyboard the
 //! profile's `actions_keyboard`. Their actions go to a virtual keyboard and
@@ -16,7 +16,6 @@
 mod bind;
 mod engine;
 mod output;
-mod profile;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -28,7 +27,7 @@ use serde_json::{Map, Value};
 use self::bind::Ranges;
 use self::engine::{Code, Engine};
 use self::output::Output;
-use self::profile::{Profile, Section};
+use retrobox_input::pad_profile::{self as profile, Profile, Section};
 
 /// How often the sticks move the pointer, and held combinations are looked
 /// at, while there is something to do.
@@ -51,20 +50,7 @@ impl Session {
         let text = std::fs::read_to_string(runtime_dir.join("session.json")).ok()?;
         let session: Value = serde_json::from_str(&text).ok()?;
         let profile = PathBuf::from(session.get("pad_profile")?.as_str()?);
-        let data = match std::fs::read_to_string(&profile)
-            .map_err(|err| err.to_string())
-            .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|err| err.to_string()))
-        {
-            Ok(Value::Object(data)) => data,
-            Ok(_) => {
-                log::warn!("{}: not a JSON object", profile.display());
-                return None;
-            }
-            Err(err) => {
-                log::warn!("cannot read {}: {err}", profile.display());
-                return None;
-            }
-        };
+        let data = profile::load(&profile)?;
         let players = session
             .get("controllers")
             .and_then(Value::as_array)

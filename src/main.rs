@@ -14,10 +14,13 @@
 
 mod app;
 mod config;
+mod controls;
 mod emulator;
+mod game_pages;
 mod i18n;
 mod input;
 mod manual;
+mod playtime;
 mod savestates;
 mod session;
 mod sound;
@@ -35,9 +38,9 @@ use nix::sys::signal::{SigSet, Signal};
 use crate::app::{Content, Outcome};
 use crate::config::Config;
 use crate::emulator::{EmuAction, Emulator};
+use crate::game_pages::GamePages;
 use crate::i18n::Translator;
 use crate::input::Pad;
-use crate::manual::Manual;
 use crate::savestates::{SaveStates, StateMode};
 use crate::session::{GameInfo, Session};
 use crate::system::power;
@@ -225,6 +228,9 @@ fn task_screen(options: task::Options, log: Option<&std::fs::File>) -> Result<u8
         emulator: Emulator::none(),
         states: None,
         manual: None,
+        info: None,
+        mappings: Vec::new(),
+        play: None,
         translator,
         launched: std::time::Instant::now(),
         small_clock: None,
@@ -304,12 +310,11 @@ fn run(
     let subtitle = subtitle_of(&info);
 
     let (emulator, states) = emulator_for(session.as_ref(), demo, &translator);
-    let manual = manual_path(
-        &info.manual,
-        session.as_ref().map(|session| session.rom.as_str()),
-    )
-    .filter(|_| !osk)
-    .and_then(|path| Manual::open(&path));
+    let pages = session
+        .as_ref()
+        .filter(|_| !osk)
+        .map(|session| GamePages::new(session, &info, &translator))
+        .unwrap_or_default();
     let power = if osk {
         Vec::new()
     } else {
@@ -317,7 +322,7 @@ fn run(
     };
     let (items, buttons) = menus(
         &translator,
-        in_game.then_some((&emulator, manual.is_some())),
+        in_game.then_some((&emulator, &pages)),
         !power.is_empty(),
     );
 
@@ -352,7 +357,10 @@ fn run(
         new_pads: Some(new_pads),
         emulator,
         states,
-        manual,
+        manual: pages.manual,
+        info: pages.info,
+        mappings: pages.controls,
+        play: pages.play,
         translator,
         launched,
         small_clock,
@@ -522,13 +530,13 @@ fn clock_formats(
 /// offers anything.
 fn menus(
     translator: &Translator,
-    game: Option<(&Emulator, bool)>,
+    game: Option<(&Emulator, &GamePages)>,
     power: bool,
 ) -> (Vec<MenuItem>, Vec<MenuItem>) {
     let mut buttons = Vec::new();
-    let items = if let Some((emulator, manual)) = game {
+    let items = if let Some((emulator, pages)) = game {
         buttons = menu_buttons(translator, emulator);
-        menu_items(translator, emulator, manual)
+        menu_items(translator, emulator, pages)
     } else {
         log::info!("no game running: the system's menu");
         Vec::new()
@@ -544,7 +552,7 @@ fn menus(
 
 /// The line under the game's name: its developer and year.
 fn subtitle_of(info: &GameInfo) -> String {
-    [info.developer.as_str(), info.release_year.as_str()]
+    [info.developer.as_str(), info.release_year()]
         .into_iter()
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
@@ -603,32 +611,16 @@ fn emulator_for(
     (emulator, states)
 }
 
-/// Where the game's manual is: ES writes full paths, but a gamelist may
-/// still hold one relative to the ROM's folder (`./manuals/...`).
-fn manual_path(manual: &str, rom: Option<&str>) -> Option<PathBuf> {
-    if manual.is_empty() {
-        return None;
-    }
-    let path = Path::new(manual);
-    if path.is_absolute() {
-        return Some(path.to_owned());
-    }
-    let folder = Path::new(rom?).parent()?;
-    Some(folder.join(path.strip_prefix("./").unwrap_or(path)))
-}
-
-/// Continue, the save states, the manual, what the emulator can do, and
-/// leaving the game.
-fn menu_items(translator: &Translator, emulator: &Emulator, manual: bool) -> Vec<MenuItem> {
+/// The save states, the game's pages (manual, information, controls) and
+/// what the emulator can do.
+fn menu_items(translator: &Translator, emulator: &Emulator, pages: &GamePages) -> Vec<MenuItem> {
     let item = |key: &str, action| MenuItem::new(translator.text(key), action);
     let mut items = Vec::new();
     if emulator.has_slots() {
         items.push(item("menu-load-state", MenuAction::States(StateMode::Load)));
         items.push(item("menu-save-state", MenuAction::States(StateMode::Save)));
     }
-    if manual {
-        items.push(item("menu-manual", MenuAction::Manual));
-    }
+    items.extend(pages.items(translator));
     items.extend(
         emulator
             .actions()

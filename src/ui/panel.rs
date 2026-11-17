@@ -17,7 +17,8 @@
 //! value. The entries between the
 //! header and those scroll when they do not all fit (smoothly when dragged).
 //! A page can take the entries' place: the save states' slots, or a list of
-//! choices (the audio outputs and profiles, the power options).
+//! choices (the audio outputs and profiles, the power options), the game's
+//! page (`info`) and the controls page (`controls`).
 //! For touch screens, the rows can be taller than ES's (`row_scale`), the
 //! text staying as it is.
 
@@ -26,6 +27,11 @@ use tiny_skia::{
     Color, FilterQuality, GradientStop, LinearGradient, Paint, PathBuilder, Pixmap, PixmapPaint,
     Point, Rect, Shader, SpreadMode, Transform,
 };
+
+mod controls;
+mod info;
+
+pub use self::info::InfoSheet;
 
 use super::icons::Icon;
 use super::text::{FontRef, Fonts, TextBox};
@@ -60,6 +66,10 @@ pub enum MenuAction {
     Choice(usize),
     /// Read the game's manual.
     Manual,
+    /// The game's page.
+    Info,
+    /// The controls page (the pad-to-keyboard profile).
+    Controls,
     Quit,
     /// The power options' page (sleep; outside games, restart and turn off).
     Power,
@@ -109,10 +119,22 @@ pub struct ListPage {
     pub rows: Vec<ListRow>,
 }
 
+/// What a page that only shows something shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shows {
+    /// To read, scrolling.
+    Text,
+    /// Rows to look at one by one.
+    Rows,
+}
+
 /// The page shown instead of the main entries.
 enum Page {
     Slots(SlotPage),
     List(ListPage),
+    /// Scrolls, nothing to select.
+    Info(info::InfoPage),
+    Controls(controls::ControlsPage),
 }
 
 impl Page {
@@ -120,6 +142,8 @@ impl Page {
         match self {
             Self::Slots(page) => &page.title,
             Self::List(page) => &page.title,
+            Self::Info(page) => &page.title,
+            Self::Controls(page) => &page.title,
         }
     }
 
@@ -127,6 +151,8 @@ impl Page {
         match self {
             Self::Slots(page) => page.slots.len(),
             Self::List(page) => page.rows.len(),
+            Self::Info(_) => 0,
+            Self::Controls(page) => page.rows.len(),
         }
     }
 }
@@ -172,6 +198,8 @@ impl MenuItem {
 /// The status line above the header.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StatusBar {
+    /// The time played, on the left.
+    pub play_time: Option<String>,
     /// The time, when the clock is the small one.
     pub time: Option<String>,
     pub status: Status,
@@ -181,7 +209,10 @@ pub struct StatusBar {
 
 impl StatusBar {
     fn is_empty(&self) -> bool {
-        self.time.is_none() && self.status.network.is_none() && self.status.battery.is_none()
+        self.play_time.is_none()
+            && self.time.is_none()
+            && self.status.network.is_none()
+            && self.status.battery.is_none()
     }
 }
 
@@ -562,8 +593,12 @@ impl Panel {
         stops
     }
 
-    /// Up or Down: the previous or next stop, round; true when it changed.
+    /// Up or Down: the previous or next stop, round (on the game's page, a
+    /// line up or down); true when it changed.
     pub fn move_selection(&mut self, delta: i32) -> bool {
+        if matches!(self.page, Some(Page::Info(_))) {
+            return self.scroll_by(delta as f32 * self.small.font.line_height * 2.0);
+        }
         let stops = self.stops();
         if stops.is_empty() {
             return false;
@@ -724,6 +759,16 @@ impl Panel {
         }
     }
 
+    /// The open page only shows something: the game's page is read
+    /// (scrolled), the controls page browsed (nothing to choose).
+    pub const fn page_shows(&self) -> Option<Shows> {
+        match &self.page {
+            Some(Page::Info(_)) => Some(Shows::Text),
+            Some(Page::Controls(_)) => Some(Shows::Rows),
+            _ => None,
+        }
+    }
+
     /// Whether a page is shown.
     pub const fn page_open(&self) -> bool {
         self.page.is_some()
@@ -806,7 +851,7 @@ impl Panel {
     /// Where the scrolling entries are: from under the header to the
     /// footer.
     fn list_area(&self) -> (f32, f32) {
-        let top = self.header_height();
+        let top = self.header_height() + self.keyboard_band();
         let bottom = (self.screen_height - self.footer_height()).max(top + 1.0);
         (top, bottom)
     }
@@ -820,10 +865,18 @@ impl Panel {
         }
     }
 
+    /// The height of all the current page's entries (or of the game's page).
+    fn content_height(&self) -> f32 {
+        match &self.page {
+            Some(Page::Info(page)) => page.height(),
+            _ => self.count() as f32 * self.pitch(),
+        }
+    }
+
     /// How far the current page can scroll.
     fn max_scroll(&self) -> f32 {
         let (top, bottom) = self.list_area();
-        (self.count() as f32 * self.pitch() - (bottom - top)).max(0.0)
+        (self.content_height() - (bottom - top)).max(0.0)
     }
 
     /// Scroll so that the selected entry shows whole.
@@ -1065,6 +1118,8 @@ impl Panel {
         match &self.page {
             Some(Page::Slots(page)) => self.draw_slots(&mut pixmap, fonts, page, padding),
             Some(Page::List(page)) => self.draw_list(&mut pixmap, fonts, page, padding),
+            Some(Page::Info(page)) => self.draw_info(&mut pixmap, page),
+            Some(Page::Controls(page)) => self.draw_controls(&mut pixmap, fonts, page, padding),
             None => self.draw_items(&mut pixmap, fonts, padding),
         }
         self.draw_scrollbar(&mut pixmap);
@@ -1095,7 +1150,7 @@ impl Panel {
     fn draw_scrollbar(&self, pixmap: &mut Pixmap) {
         let (top, bottom) = self.list_area();
         let track = bottom - top;
-        let content = self.count() as f32 * self.pitch();
+        let content = self.content_height();
         if content <= track + 0.5 {
             return;
         }
@@ -1114,7 +1169,8 @@ impl Panel {
     }
 
     /// The status line: the time, then the network's and the battery's
-    /// icons (and the battery's percentage), aligned to the right.
+    /// icons (and the battery's percentage), aligned to the right; the time
+    /// played on the left, in what is left.
     fn draw_status_bar(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, padding: f32, height: f32) {
         let color = self.small.style.color;
         let font = &self.status_font();
@@ -1177,6 +1233,25 @@ impl Panel {
         }
         if let Some(time) = &bar.time {
             text(pixmap, fonts, &mut right, time);
+        }
+        if let Some(played) = &bar.play_time {
+            let left = padding + icon_size + gap * 0.5;
+            let (font, played) = fonts.fit(font, played, right - gap - left, 0.7);
+            draw_icon(pixmap, Icon::Timer, icon_size, (padding, icon_top), color);
+            let width = fonts.measure(&font, &played) + 1.0;
+            fonts.draw(
+                pixmap,
+                &font,
+                &played,
+                TextBox {
+                    x: left,
+                    y: top,
+                    width,
+                    height: row,
+                    align: Align::Left,
+                },
+                color,
+            );
         }
     }
 
