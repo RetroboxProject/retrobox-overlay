@@ -173,6 +173,8 @@ mod tests {
                 "audio-loading",
                 "help-audio",
                 "help-hold-unsaved",
+                "break-title",
+                "break-text",
             ] {
                 assert!(english.has_message(id), "{id}");
                 assert!(translated.has_message(id), "{code}: {id}");

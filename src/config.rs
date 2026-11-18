@@ -31,6 +31,11 @@
 //! volume = 50             ; the menu's sounds (moving, choosing, going
 //!                         ; back), 0 to 100 (0: none)
 //!
+//! [break]                 ; read by retrobox-inputd (retrobox_input::breaks)
+//! after_min = 120         ; minutes of play before a break is suggested
+//!                         ; (0: never)
+//! every_min = 30          ; then again every so many minutes (0: once)
+//!
 //! [manual]
 //! scaling = compositor    ; compositor | overlay
 //!

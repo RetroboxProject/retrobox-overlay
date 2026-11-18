@@ -115,14 +115,7 @@ impl Session {
 
     /// How long the game has been running: its emulator's age.
     pub fn running_for(&self) -> Option<Duration> {
-        let uptime: f64 = fs::read_to_string("/proc/uptime")
-            .ok()?
-            .split_whitespace()
-            .next()?
-            .parse()
-            .ok()?;
-        let started = self.start_time as f64 / rustix::param::clock_ticks_per_second() as f64;
-        (self.start_time > 0).then(|| Duration::from_secs_f64((uptime - started).max(0.0)))
+        retrobox_input::breaks::game_age(self.start_time)
     }
 
     /// The menu theme file EmulationStation wrote, if the session names one.

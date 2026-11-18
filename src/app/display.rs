@@ -281,6 +281,23 @@ impl Display {
 
     /// A new piece; its size comes later (Wayland's configure, or the
     /// configures X11 keeps).
+    /// The screen's size before any piece is shown (a piece's size is told
+    /// when it is shown): the largest output's, in surface coordinates, on
+    /// Wayland; the monitor shown on, on X11. None when it is not known.
+    pub fn screen_size(&self) -> Option<(u32, u32)> {
+        match self {
+            Self::Wayland(wl) => wl
+                .output_state
+                .outputs()
+                .filter_map(|output| wl.output_state.info(&output)?.logical_size)
+                .filter_map(|(width, height)| {
+                    Some((u32::try_from(width).ok()?, u32::try_from(height).ok()?))
+                })
+                .max_by_key(|&(width, height)| u64::from(width) * u64::from(height)),
+            Self::X11(x11) => Some((x11.monitor.2, x11.monitor.3)),
+        }
+    }
+
     pub fn create_piece(&mut self, spec: Spec) -> Piece {
         let kind = match self {
             Self::Wayland(wl) => {

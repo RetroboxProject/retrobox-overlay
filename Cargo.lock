@@ -882,6 +882,8 @@ dependencies = [
  "log",
  "nix 0.31.3",
  "roxmltree 0.21.2",
+ "rust-ini",
+ "rustix",
  "serde_json",
 ]
 

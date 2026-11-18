@@ -34,7 +34,7 @@ mod ui;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use nix::sys::signal::{SigSet, Signal};
 
 use crate::app::{Content, Outcome};
@@ -58,6 +58,7 @@ retrobox-overlay: Retrobox's in-game menu
 
 Usage: retrobox-overlay [--show [--pad DEVICE]... | --osk | --demo]
                         [--version] [--help]
+       retrobox-overlay --toast break
        retrobox-overlay --task --label NAME --log FILE [--check FILE]
                         [--background PNG] [--pad DEVICE]... [--lang CODE]
                         [--download | --reinstall] -- COMMAND [ARGUMENT]...
@@ -77,6 +78,9 @@ directory) when no daemon runs; started again while open, it closes it.
                  again while open, it closes
   --from-pad     opened from a controller (see take_keyboard in overlay.ini)
   --demo         show it even without a running game (to try a theme)
+  --toast break  suggest a break, in a toast over the game for a few
+                 seconds (retrobox-inputd shows it after a while playing:
+                 [break] in overlay.ini)
   --version      print the version
   --help         print this help
 
@@ -113,6 +117,7 @@ fn main() -> ExitCode {
             };
         }
         Some("--task") => return run_task(&args),
+        Some("--toast") => return run_toast(args.get(1).map(String::as_str)),
         _ => {}
     }
     if args.iter().any(|arg| arg == "--daemon") {
@@ -243,6 +248,7 @@ fn task_screen(options: task::Options, log: Option<&std::fs::File>) -> Result<u8
         controls: None,
         screens: system::brightness::Screens::scan(),
         task: Some(options),
+        toast: None,
     })?;
     Ok(match outcome {
         Outcome::Task(status) => status,
@@ -262,6 +268,83 @@ fn open_task_pads_later(
         sender.send(pads).ok();
     });
     channel
+}
+
+/// `--toast KIND`: a toast over whatever runs, for a few seconds (see
+/// `app/toast_view.rs`). `break`: the break reminder (the input daemon shows
+/// it, see `retrobox_input::breaks`).
+fn run_toast(kind: Option<&str>) -> ExitCode {
+    let _log = logging::init("overlay-toast.log");
+    block_usr1();
+    match toast_screen(kind) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            log::error!("{err:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn toast_screen(kind: Option<&str>) -> Result<()> {
+    let runtime_dir = paths::runtime_dir();
+    let session = Session::load(&runtime_dir);
+    let theme_path = session
+        .as_ref()
+        .and_then(Session::menu_theme_path)
+        .unwrap_or_else(|| runtime_dir.join("es-menu-theme.json"));
+    let theme = MenuTheme::load_or_kept(&theme_path, &paths::kept_menu_theme());
+    let language = i18n::preferred_language(&theme.language);
+    let translator = Translator::new(&language);
+    let toast = match kind {
+        Some("break") => {
+            let played = session
+                .as_ref()
+                .and_then(Session::running_for)
+                .context("no game is running: no break to suggest")?;
+            ui::toast::Toast {
+                icon: ui::icons::Icon::Coffee,
+                title: translator.text("break-title"),
+                text: translator.text_strings(
+                    "break-text",
+                    &[("time", &playtime::duration_text(played, &translator))],
+                ),
+            }
+        }
+        other => anyhow::bail!("unknown toast {other:?} (break)"),
+    };
+    let fonts = theme_fonts(&theme, &language);
+    app::run(Content {
+        config: Config::load(&paths::config_dirs()),
+        theme,
+        fonts,
+        title: String::new(),
+        subtitle: String::new(),
+        items: Vec::new(),
+        buttons: Vec::new(),
+        power: Vec::new(),
+        clock_formats: (String::new(), String::new()),
+        locale: translator.locale(),
+        pads: Vec::new(),
+        new_pads: None,
+        emulator: Emulator::none(),
+        states: None,
+        manual: None,
+        info: None,
+        mappings: Vec::new(),
+        cheevos: None,
+        play: None,
+        translator,
+        launched: std::time::Instant::now(),
+        small_clock: None,
+        battery_percent: false,
+        take_keyboard: false,
+        osk: false,
+        controls: None,
+        screens: system::brightness::Screens::default(),
+        task: None,
+        toast: Some(toast),
+    })?;
+    Ok(())
 }
 
 /// Keep SIGUSR1 pending until an event loop reads it (see `main`).
@@ -379,6 +462,7 @@ fn run(
         controls: Some(controls),
         screens,
         task: None,
+        toast: None,
     })?;
     // The overlay is gone and the controllers are the game's again; the
     // keyboard focus is on its way back to the game. Another overlay may

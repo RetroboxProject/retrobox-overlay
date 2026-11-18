@@ -43,6 +43,9 @@
 //! runtime directory (inotify as well); with a standalone emulator, the
 //! hotkey held alone takes its controller for a moment, so a shortcut's
 //! buttons do not reach the game (`shield`).
+//! It also suggests a break after a while playing (`breaks`: a toast).
+
+mod breaks;
 
 use std::collections::{HashMap, HashSet};
 use std::os::fd::AsFd;
@@ -366,6 +369,8 @@ struct State {
     ticking: bool,
     /// The running game's emulator needs the hotkey's shield.
     shielding: bool,
+    /// The running game's break reminders.
+    breaks: breaks::Breaks,
 }
 
 /// Run until stopped (SIGTERM, SIGINT), or until `parent` (Retrobox's
@@ -442,6 +447,7 @@ pub fn run(runtime_dir: &Path, parent: Option<i32>) -> Result<()> {
         mapper: Mapper::default(),
         ticking: false,
         shielding: false,
+        breaks: breaks::Breaks::default(),
     };
     state.scan();
     state.load_session();
@@ -645,6 +651,7 @@ impl State {
                 Watched::Keyboard(_) => None,
             });
         self.mapper.load(&self.runtime_dir, pads);
+        self.follow_breaks();
     }
 
     /// `es_input.cfg` changed (a controller configured in EmulationStation):
@@ -809,6 +816,7 @@ impl State {
             log::info!("a game is starting or ending: the overlay stays closed");
             return;
         }
+        self.breaks.hide_toast();
         // it takes the controllers: what the mapper holds is let go now (their
         // releases will not come here), and the shields give them back
         self.mapper.release_all();
@@ -852,6 +860,7 @@ impl State {
     /// again (it had them grabbed: their releases never came here).
     fn reap(&mut self) {
         self.mapper.reap();
+        self.breaks.reap();
         let finished = self
             .overlay
             .as_mut()

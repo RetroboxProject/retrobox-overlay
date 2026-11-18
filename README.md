@@ -47,6 +47,9 @@ runs only while it is shown.
   buttons' row.
 * **Sounds** for moving, choosing and going back, like EmulationStation's (`[sounds]` in
   `overlay.ini` sets their volume, or turns them off).
+* **Break reminder:** after two hours playing, and then every half hour, a toast at the top
+  of the screen (on the menu's side, in its colours) suggests a break, with a sound, and goes
+  away on its own a few seconds later. `[break]` in `overlay.ini` sets when, or turns it off.
 * **The theme's look:** colours, fonts, selector and help prompts come from the theme
   EmulationStation is using, scaled to the screen. Without one it looks like ES's default
   menus.
@@ -325,6 +328,7 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
 | `[status]` | the battery's percentage |
 | `[system]` | whether *Sleep mode* is offered (the power button) |
 | `[sounds]` | the volume of the menu's sounds (0: none) |
+| `[break]` | when a break is suggested: `after_min` of play (120; 0: never), then `every_min` (30; 0: once) |
 | `[touch]` | `row_scale`: taller rows for touch screens |
 | `[manual]` | who scales the manual's pages |
 | `[osk]` | keyboard layout, and the on-screen keyboard's size and edge (saved for you) |

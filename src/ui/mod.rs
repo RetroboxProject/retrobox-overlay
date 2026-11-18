@@ -12,6 +12,7 @@ pub mod picture;
 pub mod states;
 pub mod task;
 pub mod text;
+pub mod toast;
 pub mod viewer;
 
 /// Copy a tiny-skia pixmap (premultiplied RGBA) into a `wl_shm` ARGB8888 buffer

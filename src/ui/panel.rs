@@ -47,8 +47,8 @@ use crate::theme::{FontSpec, MenuTheme, Rgba, TextStyle};
 const TITLE_VERT_PADDING: f32 = 0.0637;
 const TITLE_WITHSUB_VERT_PADDING: f32 = 0.05;
 const SUBTITLE_VERT_PADDING: f32 = 0.019;
-const FONT_SIZE_SMALL: f32 = 0.035;
-const FONT_SIZE_MEDIUM: f32 = 0.045;
+pub(super) const FONT_SIZE_SMALL: f32 = 0.035;
+pub(super) const FONT_SIZE_MEDIUM: f32 = 0.045;
 const FONT_SIZE_LARGE: f32 = 0.085;
 const LINE_SPACING: f32 = 1.5;
 const WIDTH_IN_LETTERS: f32 = 33.0;
@@ -267,14 +267,14 @@ pub enum Target {
 
 /// A text element of the theme at this screen's size.
 #[derive(Debug, Clone)]
-struct Element {
-    font: FontRef,
-    letter_height: f32,
-    style: TextStyle,
+pub(super) struct Element {
+    pub font: FontRef,
+    pub letter_height: f32,
+    pub style: TextStyle,
 }
 
 impl Element {
-    fn new(style: &TextStyle, scale: f32, default_size: f32) -> Self {
+    pub(super) fn new(style: &TextStyle, scale: f32, default_size: f32) -> Self {
         let FontSpec {
             path,
             size,
@@ -1934,7 +1934,7 @@ fn stroke_arc(
     }
 }
 
-fn fill_path(pixmap: &mut Pixmap, path: &tiny_skia::Path, color: Rgba) {
+pub(super) fn fill_path(pixmap: &mut Pixmap, path: &tiny_skia::Path, color: Rgba) {
     let mut paint = Paint::default();
     paint.set_color(color.to_color());
     paint.anti_alias = true;
@@ -1972,7 +1972,7 @@ pub(super) fn rounded_rect(
 }
 
 /// An icon, `size` pixels square, at `at` (its top left corner).
-fn draw_icon(pixmap: &mut Pixmap, icon: Icon, size: f32, at: (f32, f32), color: Rgba) {
+pub(super) fn draw_icon(pixmap: &mut Pixmap, icon: Icon, size: f32, at: (f32, f32), color: Rgba) {
     if let Some(image) = icon.render(size as u32, color) {
         pixmap.draw_pixmap(
             at.0.round() as i32,

@@ -93,6 +93,7 @@ use crate::ui::panel::{
 };
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
+use crate::ui::toast::{Toast, ToastCard};
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
 use retrobox_input::press::TAP_MAX;
 use retrobox_input::{es_settings, launch, paths};
@@ -101,6 +102,7 @@ mod achievements_view;
 mod display;
 mod manual_view;
 mod task_view;
+mod toast_view;
 
 use display::{Display, Piece, Spec, Sub, SurfaceId, X11};
 use manual_view::ManualState;
@@ -216,6 +218,8 @@ pub struct Content {
     pub osk: bool,
     /// Show the task screen (an installer or a download) instead of the menu.
     pub task: Option<crate::task::Options>,
+    /// A toast instead of the menu (`--toast`).
+    pub toast: Option<Toast>,
     /// What the threads that read find (the volume, the display settings'
     /// primary screen), and how more threads send it.
     pub controls: Option<Channel<Msg>>,
@@ -250,6 +254,8 @@ struct State {
     manual: ManualState,
     /// The task screen, instead of everything else.
     task: Option<TaskView>,
+    /// The toast mode's card.
+    toast: Option<ToastCard>,
     /// The controller direction held, repeating like a held key.
     repeat: Option<(Nav, RegistrationToken)>,
     /// Quit held down (Confirm, or the pointer on it): since when, and the
@@ -475,6 +481,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
     {
         content.take_keyboard = true;
     }
+    let toast = toast_view::card(&mut content, &display)?;
 
     watch_closers(&handle, content.task.is_none())?;
 
@@ -484,13 +491,12 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
 
     // the dim comes first: its size is the screen's, which the rest is sized from
     // (the task screen is drawn on it: on Wayland it is what gets the keys)
-    let dim = display.create_piece(Spec {
-        anchor: Anchor::all(),
-        size: (0, 0),
-        margin: [0; 4],
-        keyboard: task.is_some(),
-        fade: true,
-    });
+    // (the toast is drawn on it too, sized to the card)
+    let dim = display.create_piece(dim_spec(
+        toast.as_ref(),
+        content.config.side,
+        task.is_some(),
+    ));
     if let Some(window) = dim.x11_window()
         && content.take_keyboard
     {
@@ -514,6 +520,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         menu_help: None,
         manual: ManualState::default(),
         task,
+        toast,
         repeat: None,
         quit_hold: None,
         started: None,
@@ -730,6 +737,10 @@ impl State {
             self.draw_task();
             return;
         }
+        if self.toast.is_some() {
+            self.draw_toast();
+            return;
+        }
         // the keyboard leaves the game as it is: its layer only catches clicks
         let keyboard = self.content.osk;
         let alpha = if keyboard {
@@ -754,6 +765,10 @@ impl State {
         let (width, height) = self.dim.size;
         if self.task.is_some() {
             self.create_task();
+            return;
+        }
+        if self.toast.is_some() {
+            self.start_toast();
             return;
         }
         if self.content.osk {
@@ -2048,6 +2063,21 @@ const fn osk_margin(top: bool, margin: i32) -> [i32; 4] {
     } else {
         [0, 0, margin, 0]
     }
+}
+
+/// Where the dim goes: over the whole screen, taking the keyboard for the
+/// task screen; a toast's card instead, in its place.
+fn dim_spec(toast: Option<&ToastCard>, side: Side, task: bool) -> Spec {
+    toast.map_or(
+        Spec {
+            anchor: Anchor::all(),
+            size: (0, 0),
+            margin: [0; 4],
+            keyboard: task,
+            fade: true,
+        },
+        |card| toast_view::spec(card, side),
+    )
 }
 
 const fn edge_margin(side: Side, margin: i32) -> [i32; 4] {

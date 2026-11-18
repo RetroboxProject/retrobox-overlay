@@ -16,6 +16,8 @@ evdev.workspace = true
 log.workspace = true
 nix.workspace = true
 roxmltree.workspace = true
+rust-ini.workspace = true
+rustix = { workspace = true, features = ["param"] }
 serde_json.workspace = true
 
 [lints]
