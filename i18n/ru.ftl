@@ -22,6 +22,7 @@ menu-power = Питание
 menu-standby = Спящий режим
 menu-reboot = Перезагрузить
 menu-poweroff = Выключить
+menu-performance = Профиль производительности
 menu-brightness = Яркость
 menu-volume = Громкость
 # save state slots; the date is a strftime format (chrono)

@@ -78,6 +78,7 @@ use crate::sound::{Sound, Sounds};
 use crate::system::audio::devices::{Action, Snapshot};
 use crate::system::audio::hub::Hub;
 use crate::system::brightness::{self, Screens};
+use crate::system::performance::Performance;
 use crate::system::power::PowerAction;
 use crate::system::status::Status;
 use crate::system::{Control, Found, Msg, STEP, Setter, SliderKind, VolumeChange};
@@ -86,12 +87,10 @@ use crate::toast::Toast;
 use crate::ui::audio::AudioMenu;
 use crate::ui::clock::Clock;
 use crate::ui::help::{Help, Prompt};
-use crate::ui::icons::Icon;
 use crate::ui::layout::Layout;
 use crate::ui::osk::{Action as OskAction, Direction, Labels, Osk};
-use crate::ui::panel::{
-    InfoSheet, ListPage, ListRow, MenuAction, MenuItem, Panel, RowKind, Shows, StatusBar, Target,
-};
+use crate::ui::panel::{InfoSheet, MenuAction, MenuItem, Panel, Shows, StatusBar, Target};
+use crate::ui::power::{self, PowerRow};
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
@@ -184,6 +183,8 @@ pub struct Content {
     pub buttons: Vec<MenuItem>,
     /// What the power button's page offers.
     pub power: Vec<PowerAction>,
+    /// The Nintendo Switch's performance profiles, on its power page.
+    pub performance: Option<Performance>,
     pub clock_formats: (String, String),
     pub locale: chrono::Locale,
     pub pads: Vec<Pad>,
@@ -276,6 +277,8 @@ struct State {
     devices: Option<Snapshot>,
     /// What each row of the audio page asks for (nothing for a header).
     audio_rows: Vec<Option<Action>>,
+    /// What each row of the power page does (nothing for a header).
+    power_rows: Vec<Option<PowerRow>>,
     /// Which list page is open, if one is.
     list: Option<ListKind>,
     /// The menu's sounds.
@@ -533,6 +536,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         audio: None,
         devices: None,
         audio_rows: Vec::new(),
+        power_rows: Vec::new(),
         list: None,
         cheevos: achievements_view::Cheevos::default(),
         tooltip: None,
@@ -1310,6 +1314,12 @@ impl State {
                 self.draw_menu_help();
             }
             Msg::Devices(snapshot) => self.devices_changed(snapshot),
+            Msg::Performance(current) => {
+                if let Some(performance) = self.content.performance.as_mut() {
+                    performance.settled(current);
+                    self.show_power(None);
+                }
+            }
         }
     }
 
@@ -1403,7 +1413,7 @@ impl State {
     }
 
     /// Show the power button's page: sleep; outside games, restart and turn
-    /// off.
+    /// off; on a Nintendo Switch, its performance profiles.
     fn open_power(&mut self) {
         let Some((panel, _)) = self.panel.as_mut() else {
             return;
@@ -1411,27 +1421,57 @@ impl State {
         if panel.page_open() {
             return;
         }
-        let translator = &self.content.translator;
-        let rows = self
-            .content
-            .power
-            .iter()
-            .map(|&action| ListRow {
-                label: translator.text(action.label_key()),
-                kind: RowKind::Choice {
-                    checked: false,
-                    enabled: true,
-                },
-                icon: Some(Icon::of_power(action)),
-            })
-            .collect();
+        let (page, rows) = power::page(
+            &self.content.translator,
+            &self.content.power,
+            self.content.performance.as_ref(),
+        );
+        self.power_rows = rows;
         self.list = Some(ListKind::Power);
-        panel.open_list(ListPage {
-            title: translator.text("menu-power"),
-            rows,
-        });
+        panel.open_list(page);
         self.draw_panel();
         self.draw_menu_help();
+    }
+
+    /// Show the power page again, when it is open (the profile in use
+    /// changed); `select` is the row to select (else the same one).
+    fn show_power(&mut self, select: Option<usize>) {
+        if self.list != Some(ListKind::Power) {
+            return;
+        }
+        let (page, rows) = power::page(
+            &self.content.translator,
+            &self.content.power,
+            self.content.performance.as_ref(),
+        );
+        let Some((panel, _)) = self.panel.as_mut() else {
+            return;
+        };
+        let select = select.or_else(|| panel.selected_row());
+        if panel.update_list(page, select) {
+            self.power_rows = rows;
+            self.draw_panel();
+            self.draw_menu_help();
+        }
+    }
+
+    /// A row of the power page was chosen: an action closes the overlay, a
+    /// profile is changed to.
+    fn choose_power(&mut self, row: usize) {
+        match self.power_rows.get(row).copied().flatten() {
+            Some(PowerRow::Action(action)) => self.outcome = Some(Outcome::Power(action)),
+            Some(PowerRow::Mode(id)) => {
+                let changed = self
+                    .content
+                    .performance
+                    .as_mut()
+                    .is_some_and(|performance| performance.choose(id));
+                if changed {
+                    self.show_power(Some(row));
+                }
+            }
+            None => {}
+        }
     }
 
     /// Show the game's page.
@@ -1464,11 +1504,7 @@ impl State {
     fn choose_row(&mut self, row: usize) {
         match self.list {
             Some(ListKind::Audio) => self.choose_audio(row),
-            Some(ListKind::Power) => {
-                if let Some(&action) = self.content.power.get(row) {
-                    self.outcome = Some(Outcome::Power(action));
-                }
-            }
+            Some(ListKind::Power) => self.choose_power(row),
             None => {}
         }
     }

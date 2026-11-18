@@ -46,6 +46,7 @@ use crate::i18n::Translator;
 use crate::input::Pad;
 use crate::savestates::{SaveStates, StateMode};
 use crate::session::{GameInfo, Session};
+use crate::system::performance::Performance;
 use crate::system::power;
 use crate::theme::MenuTheme;
 use crate::ui::panel::{MenuAction, MenuItem};
@@ -235,6 +236,7 @@ fn task_screen(options: task::Options, log: Option<&std::fs::File>) -> Result<u8
         items: Vec::new(),
         buttons: Vec::new(),
         power: Vec::new(),
+        performance: None,
         clock_formats: (String::new(), String::new()),
         locale: translator.locale(),
         pads: Vec::new(),
@@ -335,6 +337,7 @@ fn toast_screen(request: toast::Request) -> Result<()> {
         items: Vec::new(),
         buttons: Vec::new(),
         power: Vec::new(),
+        performance: None,
         clock_formats: (String::new(), String::new()),
         locale: translator.locale(),
         pads: Vec::new(),
@@ -387,7 +390,7 @@ fn run(
     let screens = system::brightness::Screens::scan();
     // (the keyboard has no sliders: none of it)
     if !osk {
-        read_controls(&screens, sender);
+        read_controls(&screens, sender.clone());
     }
 
     let session = Session::load(&runtime_dir);
@@ -417,17 +420,13 @@ fn run(
         .filter(|_| !osk)
         .map(|session| GamePages::new(session, &info, &translator))
         .unwrap_or_default();
-    let power = if osk {
-        Vec::new()
-    } else {
-        power::actions(in_game, config.system.standby)
-    };
+    let (power, performance) = power_page(&config, in_game, osk, sender);
     let autosave = saves.as_ref().is_some_and(SaveStates::autoload);
     let (items, buttons) = menus(
         &translator,
         in_game.then_some((&emulator, &pages)),
         autosave,
-        !power.is_empty(),
+        !power.is_empty() || performance.is_some(),
     );
 
     let (clock_formats, small_clock) = clock_formats(&config, &translator, theme.clock12h);
@@ -455,6 +454,7 @@ fn run(
         items,
         buttons,
         power,
+        performance,
         clock_formats,
         locale: translator.locale(),
         pads: Vec::new(),
@@ -652,6 +652,24 @@ fn clock_formats(
             .unwrap_or_else(|| translator.text(small_key))
     });
     (big, small)
+}
+
+/// What the power button's page offers (nothing over the on-screen
+/// keyboard): the power actions, and a Nintendo Switch's performance
+/// profiles (they tell the menu through `sender` when they change).
+fn power_page(
+    config: &Config,
+    in_game: bool,
+    osk: bool,
+    sender: calloop::channel::Sender<system::Msg>,
+) -> (Vec<power::PowerAction>, Option<Performance>) {
+    if osk {
+        return (Vec::new(), None);
+    }
+    (
+        power::actions(in_game, config.system.standby),
+        Performance::find(config.system.performance, sender),
+    )
 }
 
 /// The menu's entries and round buttons: a game's (with its emulator and

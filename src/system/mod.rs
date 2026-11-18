@@ -18,6 +18,7 @@
 
 pub mod audio;
 pub mod brightness;
+pub mod performance;
 pub mod power;
 pub mod status;
 
@@ -133,6 +134,9 @@ pub enum Msg {
     /// The display settings' primary screen (None: none set, or no way
     /// to ask).
     Primary(Option<String>),
+    /// The performance profile in use once a change is done (None: not
+    /// known).
+    Performance(Option<u32>),
 }
 
 /// Read the volume in a thread (`wpctl` or `pactl`), and start following the

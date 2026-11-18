@@ -9,6 +9,7 @@ pub mod layout;
 pub mod osk;
 pub mod panel;
 pub mod picture;
+pub mod power;
 pub mod states;
 pub mod task;
 pub mod text;

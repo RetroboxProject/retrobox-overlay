@@ -22,6 +22,7 @@ menu-power = Power
 menu-standby = Sleep mode
 menu-reboot = Restart
 menu-poweroff = Turn off
+menu-performance = Performance profile
 menu-brightness = Brightness
 menu-volume = Volume
 # save state slots; the date is a strftime format (chrono)

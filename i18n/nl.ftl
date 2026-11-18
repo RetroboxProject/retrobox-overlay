@@ -22,6 +22,7 @@ menu-power = Aan/uit
 menu-standby = Slaapstand
 menu-reboot = Opnieuw opstarten
 menu-poweroff = Uitschakelen
+menu-performance = Prestatieprofiel
 menu-brightness = Helderheid
 menu-volume = Volume
 # save state slots; the date is a strftime format (chrono)

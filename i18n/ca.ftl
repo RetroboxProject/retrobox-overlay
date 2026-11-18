@@ -22,6 +22,7 @@ menu-power = Energia
 menu-standby = Mode de repòs
 menu-reboot = Reinicia
 menu-poweroff = Apaga
+menu-performance = Perfil de rendiment
 menu-brightness = Brillantor
 menu-volume = Volum
 # save state slots; the date is a strftime format (chrono)

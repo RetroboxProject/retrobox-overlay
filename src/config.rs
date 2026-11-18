@@ -26,6 +26,8 @@
 //!
 //! [system]
 //! standby = true          ; offer to sleep (the power button)
+//! performance = true      ; offer the Nintendo Switch's performance
+//!                         ; profiles there (switchroot's nvpmodel)
 //!
 //! [sounds]
 //! volume = 50             ; the menu's sounds (moving, choosing, going
@@ -216,6 +218,9 @@ pub struct SystemConfig {
     /// Whether the menu offers to put the computer to sleep (on the power
     /// button's page).
     pub standby: bool,
+    /// Whether the power button's page offers the performance profiles,
+    /// on a Nintendo Switch.
+    pub performance: bool,
 }
 
 impl Default for Config {
@@ -240,6 +245,7 @@ impl Default for Config {
             system: SystemConfig {
                 battery_percent: true,
                 standby: true,
+                performance: true,
             },
             row_scale: 1.0,
             sound_volume: SOUND_VOLUME,
@@ -353,6 +359,12 @@ impl Config {
             .and_then(|section| section.get("standby"))
         {
             self.system.standby = !is_off(standby);
+        }
+        if let Some(performance) = ini
+            .section(Some("system"))
+            .and_then(|section| section.get("performance"))
+        {
+            self.system.performance = !is_off(performance);
         }
         if let Some(scaling) = ini
             .section(Some("manual"))
@@ -550,7 +562,7 @@ mod tests {
             user.join(FILE_NAME),
             "[overlay]\ndim=2\n[clock]\nposition=top\nsize=small\n\
              [status]\nbattery_percent=no\n[touch]\nrow_scale=1.66\n\
-             [sounds]\nvolume=150\n",
+             [sounds]\nvolume=150\n[system]\nperformance=off\n",
         )
         .unwrap();
 
@@ -559,6 +571,7 @@ mod tests {
         assert!((config.dim - 1.0).abs() < f32::EPSILON);
         assert_eq!(config.clock.position, VerticalPosition::Top);
         assert!(!config.clock.big && !config.system.battery_percent && config.system.standby);
+        assert!(!config.system.performance);
         assert!((config.row_scale - 1.66).abs() < f32::EPSILON);
         assert_eq!(config.sound_volume, 100);
         std::fs::remove_dir_all(dir).unwrap();

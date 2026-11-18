@@ -109,6 +109,15 @@ the power button (*sleep mode*, *restart*, *turn off*) and the volume and bright
 They go through systemd (`systemctl`) or, with another init, elogind (`loginctl`); with
 neither, there is no power button.
 
+On a Nintendo Switch running switchroot's Linux, the power button's page also has the
+performance profiles of its NVIDIA applet (*Console*, *Handheld*, *OC CPU*, *OC GPU*,
+*OC All*, *Perf All*, *Perf OC All*, as `nvpmodel`'s configuration names them), in games too,
+the one in use ticked. The Switch is told by its device tree (a `nintendo,…` compatible board;
+an ARM board has no DMI for `dmidecode`), the profiles come from `/etc/nvpmodel.conf` (else
+the chip's `/etc/nvpmodel/nvpmodel_t210.conf` or `nvpmodel_t210b01.conf`), and a change runs
+`pkexec /usr/sbin/nvpmodel -m N`, which the applet's polkit policy lets the active session do
+without a password. The profile stays after a restart, as with the applet.
+
 The menu stays away while a game is starting or ending: it does not open from the moment a
 game is chosen until its emulator runs (an emulator to install still gets its install screen),
 nor from the moment the game is quit until the launcher is done, and closes if it was open.
@@ -350,7 +359,7 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
 | `[overlay]` | side of the menu, dim, animation length, `take_keyboard`, icons |
 | `[clock]` | on/off, big or small, position, colour, `strftime` formats |
 | `[status]` | the battery's percentage |
-| `[system]` | whether *Sleep mode* is offered (the power button) |
+| `[system]` | whether *Sleep mode* and, on a Nintendo Switch, the performance profiles are offered (the power button) |
 | `[sounds]` | the volume of the menu's sounds (0: none) |
 | `[break]` | when a break is suggested: `after_min` of play (120; 0: never), then `every_min` (30; 0: once) |
 | `[touch]` | `row_scale`: taller rows for touch screens |

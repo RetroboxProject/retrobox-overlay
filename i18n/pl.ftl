@@ -22,6 +22,7 @@ menu-power = Zasilanie
 menu-standby = Tryb uśpienia
 menu-reboot = Uruchom ponownie
 menu-poweroff = Wyłącz
+menu-performance = Profil wydajności
 menu-brightness = Jasność
 menu-volume = Głośność
 # save state slots; the date is a strftime format (chrono)

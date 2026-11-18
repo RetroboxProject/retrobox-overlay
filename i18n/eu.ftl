@@ -22,6 +22,7 @@ menu-power = Energia
 menu-standby = Lo modua
 menu-reboot = Berrabiarazi
 menu-poweroff = Itzali
+menu-performance = Errendimendu-profila
 menu-brightness = Distira
 menu-volume = Bolumena
 # save state slots; the date is a strftime format (chrono)
