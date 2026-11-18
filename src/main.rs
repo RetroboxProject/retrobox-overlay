@@ -29,6 +29,7 @@ mod sound;
 mod system;
 mod task;
 mod theme;
+mod toast;
 mod ui;
 
 use std::path::{Path, PathBuf};
@@ -58,6 +59,8 @@ retrobox-overlay: Retrobox's in-game menu
 
 Usage: retrobox-overlay [--show [--pad DEVICE]... | --osk | --demo]
                         [--version] [--help]
+       retrobox-overlay --toast --title TEXT [--text TEXT] [--icon NAME]
+                        [--sound select|back|scroll|none] [--seconds N]
        retrobox-overlay --toast break
        retrobox-overlay --task --label NAME --log FILE [--check FILE]
                         [--background PNG] [--pad DEVICE]... [--lang CODE]
@@ -78,9 +81,13 @@ directory) when no daemon runs; started again while open, it closes it.
                  again while open, it closes
   --from-pad     opened from a controller (see take_keyboard in overlay.ini)
   --demo         show it even without a running game (to try a theme)
-  --toast break  suggest a break, in a toast over the game for a few
-                 seconds (retrobox-inputd shows it after a while playing:
-                 [break] in overlay.ini)
+  --toast        a notice at the top of the screen, on the menu's side, for
+                 a few seconds (6, or --seconds), over whatever runs and
+                 without taking its input; one waits for the one before it.
+                 --icon: a Lucide name the overlay has (trophy, coffee,
+                 info...); the texts are shown as given. --toast break:
+                 the break reminder (retrobox-inputd shows it after a while
+                 playing: [break] in overlay.ini)
   --version      print the version
   --help         print this help
 
@@ -117,7 +124,7 @@ fn main() -> ExitCode {
             };
         }
         Some("--task") => return run_task(&args),
-        Some("--toast") => return run_toast(args.get(1).map(String::as_str)),
+        Some("--toast") => return run_toast(&args[1..]),
         _ => {}
     }
     if args.iter().any(|arg| arg == "--daemon") {
@@ -270,13 +277,19 @@ fn open_task_pads_later(
     channel
 }
 
-/// `--toast KIND`: a toast over whatever runs, for a few seconds (see
-/// `app/toast_view.rs`). `break`: the break reminder (the input daemon shows
-/// it, see `retrobox_input::breaks`).
-fn run_toast(kind: Option<&str>) -> ExitCode {
+/// `--toast ...`: a toast over whatever runs, for a few seconds (see
+/// `toast`), once the ones before it are gone.
+fn run_toast(args: &[String]) -> ExitCode {
+    let request = match toast::Request::parse(args) {
+        Ok(request) => request,
+        Err(err) => {
+            eprintln!("retrobox-overlay --toast: {err:#}");
+            return ExitCode::from(2);
+        }
+    };
     let _log = logging::init("overlay-toast.log");
     block_usr1();
-    match toast_screen(kind) {
+    match toast_screen(request) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             log::error!("{err:#}");
@@ -285,8 +298,9 @@ fn run_toast(kind: Option<&str>) -> ExitCode {
     }
 }
 
-fn toast_screen(kind: Option<&str>) -> Result<()> {
+fn toast_screen(request: toast::Request) -> Result<()> {
     let runtime_dir = paths::runtime_dir();
+    let _turn = toast::wait_turn(&runtime_dir)?;
     let session = Session::load(&runtime_dir);
     let theme_path = session
         .as_ref()
@@ -295,22 +309,21 @@ fn toast_screen(kind: Option<&str>) -> Result<()> {
     let theme = MenuTheme::load_or_kept(&theme_path, &paths::kept_menu_theme());
     let language = i18n::preferred_language(&theme.language);
     let translator = Translator::new(&language);
-    let toast = match kind {
-        Some("break") => {
+    let toast = match request {
+        toast::Request::Given(toast) => toast,
+        toast::Request::Break => {
             let played = session
                 .as_ref()
                 .and_then(Session::running_for)
                 .context("no game is running: no break to suggest")?;
-            ui::toast::Toast {
-                icon: ui::icons::Icon::Coffee,
-                title: translator.text("break-title"),
-                text: translator.text_strings(
+            toast::Toast::break_reminder(
+                translator.text("break-title"),
+                translator.text_strings(
                     "break-text",
                     &[("time", &playtime::duration_text(played, &translator))],
                 ),
-            }
+            )
         }
-        other => anyhow::bail!("unknown toast {other:?} (break)"),
     };
     let fonts = theme_fonts(&theme, &language);
     app::run(Content {

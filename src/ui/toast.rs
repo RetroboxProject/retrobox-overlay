@@ -1,17 +1,16 @@
-//! A toast: a small card at the top of the screen, on the menu's side,
-//! drawn once in the menu's colours and fonts (the theme's background, title
-//! and small text), with an icon, a title and a line or two. The break
-//! reminder shows one (`retrobox-overlay --toast break`).
+//! A toast's card (see `toast`): drawn once in the menu's colours and fonts
+//! (the theme's background, title and small text), with an icon, a title and
+//! a line or two.
 
 use cosmic_text::Align;
 use tiny_skia::Pixmap;
 
-use super::icons::Icon;
 use super::panel::{
     Element, FONT_SIZE_MEDIUM, FONT_SIZE_SMALL, draw_icon, fill_path, rounded_rect,
 };
 use super::text::{Fonts, TextBox};
 use crate::theme::MenuTheme;
+use crate::toast::Toast;
 
 /// The card's width, relative to the screen's smaller side, and the most
 /// of the screen's width it takes.
@@ -19,14 +18,6 @@ const WIDTH: f32 = 0.62;
 const MAX_WIDTH: f32 = 0.45;
 /// The text's lines at most (the last one takes the rest).
 const MAX_LINES: usize = 3;
-
-/// What a toast says.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Toast {
-    pub icon: Icon,
-    pub title: String,
-    pub text: String,
-}
 
 /// A toast drawn for a screen: its picture, and where it goes.
 pub struct ToastCard {
@@ -59,7 +50,11 @@ impl ToastCard {
         let card_width = (base * WIDTH).min(width * MAX_WIDTH).round();
         let text_left = pad * 2.0 + icon;
         let text_width = (card_width - text_left - pad).max(1.0);
-        let lines = fonts.wrap(&text.font, &toast.text, text_width, MAX_LINES);
+        let lines = if toast.text.trim().is_empty() {
+            Vec::new()
+        } else {
+            fonts.wrap(&text.font, &toast.text, text_width, MAX_LINES)
+        };
         let text_height = title.font.line_height + text.font.line_height * lines.len() as f32;
         let card_height = (pad * 2.0 + text_height.max(icon)).round();
 

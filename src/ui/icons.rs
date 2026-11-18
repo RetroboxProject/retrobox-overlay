@@ -67,6 +67,70 @@ pub enum Icon {
 }
 
 impl Icon {
+    /// Every icon (for `named`).
+    pub const ALL: [Self; 46] = [
+        Self::Play,
+        Self::Save,
+        Self::History,
+        Self::Eject,
+        Self::SkipForward,
+        Self::SkipBack,
+        Self::RotateCcw,
+        Self::RotateCw,
+        Self::Moon,
+        Self::Coffee,
+        Self::Settings,
+        Self::Camera,
+        Self::LogOut,
+        Self::Disc,
+        Self::BookOpen,
+        Self::Info,
+        Self::Keyboard,
+        Self::Timer,
+        Self::Trophy,
+        Self::Check,
+        Self::Sun,
+        Self::VolumeX,
+        Self::Volume1,
+        Self::Volume2,
+        Self::Power,
+        Self::Wifi,
+        Self::WifiHigh,
+        Self::WifiLow,
+        Self::WifiZero,
+        Self::WifiOff,
+        Self::EthernetPort,
+        Self::BatteryLow,
+        Self::BatteryMedium,
+        Self::BatteryFull,
+        Self::BatteryCharging,
+        Self::BatteryWarning,
+        Self::CornerDownLeft,
+        Self::ArrowBigUp,
+        Self::ArrowBigUpDash,
+        Self::Delete,
+        Self::Space,
+        Self::X,
+        Self::ArrowLeft,
+        Self::ArrowRight,
+        Self::ArrowRightToLine,
+        Self::Gamepad,
+    ];
+
+    /// The icon of Lucide's `name` (`trophy`, `coffee`, `wifi-off`...): what
+    /// other programs ask for (see `retrobox-overlay --toast`).
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|icon| icon.name() == name)
+    }
+
+    /// Lucide's name of the icon, from its SVG (`class="lucide lucide-<name>"`).
+    pub fn name(self) -> &'static str {
+        let svg = self.svg();
+        svg.split_once("lucide lucide-")
+            .and_then(|(_, rest)| rest.split(['"', ' ']).next())
+            .unwrap_or_default()
+    }
+
     /// The icon of a power option.
     pub const fn of_power(action: PowerAction) -> Self {
         match action {
@@ -217,56 +281,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn icons_go_by_lucide_s_names() {
+        assert_eq!(Icon::named("trophy"), Some(Icon::Trophy));
+        assert_eq!(
+            Icon::named("arrow-right-to-line"),
+            Some(Icon::ArrowRightToLine)
+        );
+        assert_eq!(Icon::named("nope"), None);
+        for icon in Icon::ALL {
+            assert_eq!(Icon::named(icon.name()), Some(icon), "{icon:?}");
+        }
+    }
+
+    #[test]
     fn every_icon_renders_in_its_colour() {
-        let icons = [
-            Icon::Play,
-            Icon::Save,
-            Icon::History,
-            Icon::Eject,
-            Icon::SkipForward,
-            Icon::SkipBack,
-            Icon::RotateCcw,
-            Icon::RotateCw,
-            Icon::Moon,
-            Icon::Coffee,
-            Icon::Settings,
-            Icon::Camera,
-            Icon::LogOut,
-            Icon::Disc,
-            Icon::BookOpen,
-            Icon::Info,
-            Icon::Keyboard,
-            Icon::Timer,
-            Icon::Trophy,
-            Icon::Check,
-            Icon::Sun,
-            Icon::VolumeX,
-            Icon::Volume1,
-            Icon::Volume2,
-            Icon::Power,
-            Icon::Wifi,
-            Icon::WifiHigh,
-            Icon::WifiLow,
-            Icon::WifiZero,
-            Icon::WifiOff,
-            Icon::EthernetPort,
-            Icon::BatteryLow,
-            Icon::BatteryMedium,
-            Icon::BatteryFull,
-            Icon::BatteryCharging,
-            Icon::BatteryWarning,
-            Icon::CornerDownLeft,
-            Icon::ArrowBigUp,
-            Icon::ArrowBigUpDash,
-            Icon::Delete,
-            Icon::Space,
-            Icon::X,
-            Icon::ArrowLeft,
-            Icon::ArrowRight,
-            Icon::ArrowRightToLine,
-            Icon::Gamepad,
-        ];
-        for icon in icons {
+        for icon in Icon::ALL {
             let pixmap = icon.render(48, Rgba(0xff00_00ff)).unwrap();
             let drawn: Vec<_> = pixmap.pixels().iter().filter(|p| p.alpha() > 200).collect();
             assert!(!drawn.is_empty(), "{icon:?} is empty");

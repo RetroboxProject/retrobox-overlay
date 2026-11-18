@@ -50,6 +50,7 @@ runs only while it is shown.
 * **Break reminder:** after two hours playing, and then every half hour, a toast at the top
   of the screen (on the menu's side, in its colours) suggests a break, with a sound, and goes
   away on its own a few seconds later. `[break]` in `overlay.ini` sets when, or turns it off.
+  Other programs can show toasts too (see [Toasts](#toasts)).
 * **The theme's look:** colours, fonts, selector and help prompts come from the theme
   EmulationStation is using, scaled to the screen. Without one it looks like ES's default
   menus.
@@ -126,6 +127,29 @@ accented letters included) on a virtual keyboard, so the app never loses the foc
 * The **right stick** makes it bigger or smaller (10 % to 75 % of the screen's width) and **R3**
   moves it between the bottom and the top of the screen. Both are remembered.
 * A physical keyboard works too, and a tap outside the keyboard closes it.
+
+### Toasts
+
+A toast is a short notice at the top of the screen, on the menu's side and in its colours: an
+icon, a title and a line or two, with one of the menu's sounds. It shows over whatever runs
+(a game, EmulationStation) without taking the keyboard or the controllers, and goes away on its
+own. The break reminder is one; any program can show others:
+
+```sh
+retrobox-overlay --toast --title "Controller disconnected" --icon gamepad-2 --sound back
+retrobox-overlay --toast --title TEXT [--text TEXT] [--icon NAME]
+                 [--sound select|back|scroll|none] [--seconds N]
+```
+
+`--icon` is the Lucide name of one of the overlay's icons (`trophy`, `coffee`, `info`,
+`wifi-off`...); the texts are shown as given (the caller translates them). Toasts never overlap:
+one asked for while another shows waits for it to go (a lock in the runtime directory). Opening
+the menu takes the break reminder away.
+
+Achievements are not toasts: RetroArch, PCSX2, Dolphin and Flycast announce unlocks themselves,
+as soon as they happen, with the badge. Showing them
+here would mean polling RetroAchievements (late, and rate-limited) or reading each emulator's
+log, and two notices for every unlock.
 
 ### Installing and downloading
 

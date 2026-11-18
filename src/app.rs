@@ -82,6 +82,7 @@ use crate::system::power::PowerAction;
 use crate::system::status::Status;
 use crate::system::{Control, Found, Msg, STEP, Setter, SliderKind, VolumeChange};
 use crate::theme::MenuTheme;
+use crate::toast::Toast;
 use crate::ui::audio::AudioMenu;
 use crate::ui::clock::Clock;
 use crate::ui::help::{Help, Prompt};
@@ -93,7 +94,6 @@ use crate::ui::panel::{
 };
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
-use crate::ui::toast::{Toast, ToastCard};
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
 use retrobox_input::press::TAP_MAX;
 use retrobox_input::{es_settings, launch, paths};
@@ -255,7 +255,7 @@ struct State {
     /// The task screen, instead of everything else.
     task: Option<TaskView>,
     /// The toast mode's card.
-    toast: Option<ToastCard>,
+    toast: Option<toast_view::Shown>,
     /// The controller direction held, repeating like a held key.
     repeat: Option<(Nav, RegistrationToken)>,
     /// Quit held down (Confirm, or the pointer on it): since when, and the
@@ -2067,7 +2067,7 @@ const fn osk_margin(top: bool, margin: i32) -> [i32; 4] {
 
 /// Where the dim goes: over the whole screen, taking the keyboard for the
 /// task screen; a toast's card instead, in its place.
-fn dim_spec(toast: Option<&ToastCard>, side: Side, task: bool) -> Spec {
+fn dim_spec(toast: Option<&toast_view::Shown>, side: Side, task: bool) -> Spec {
     toast.map_or(
         Spec {
             anchor: Anchor::all(),

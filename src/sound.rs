@@ -49,6 +49,17 @@ pub enum Sound {
 }
 
 impl Sound {
+    /// The sound called `name` (`scroll`, `select`, `back`): what other
+    /// programs ask for (see `retrobox-overlay --toast`).
+    pub fn named(name: &str) -> Option<Self> {
+        match name {
+            "scroll" => Some(Self::Scroll),
+            "select" => Some(Self::Select),
+            "back" => Some(Self::Back),
+            _ => None,
+        }
+    }
+
     const fn wav(self) -> &'static [u8] {
         match self {
             Self::Scroll => include_bytes!("../assets/sounds/scroll.wav"),
