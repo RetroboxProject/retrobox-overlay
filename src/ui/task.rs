@@ -3,8 +3,10 @@
 //! (in capitals), the installer's output in a box when there is any, the
 //! buttons at the bottom, and the help prompts below the window.
 //!
-//! The question alone makes a compact window; once the installer runs, the
-//! window grows to hold its output. What does not change (the background) is
+//! The question is written as the menu's entries are (the theme's text, at
+//! their size), and the rest of the window is sized from it, so a dialog
+//! looks like the menu it comes from. The question alone makes a compact
+//! window; once the installer runs, the window grows to hold its output. What does not change (the background) is
 //! drawn once; a frame copies it and draws the rest. The same geometry
 //! answers where a click lands, so drawing and hit testing cannot disagree.
 
@@ -14,7 +16,7 @@ use cosmic_text::Align;
 use tiny_skia::{FilterQuality, Paint, Pixmap, PixmapPaint, Rect as SkiaRect, Stroke, Transform};
 
 use super::help::{Help, Prompt};
-use super::panel::{HOVER_ALPHA, rounded_rect, selector_paint};
+use super::panel::{Element, FONT_SIZE_MEDIUM, HOVER_ALPHA, rounded_rect, selector_paint};
 use super::text::{FontRef, Fonts, TextBox};
 use crate::task::terminal::{Position, Row, Terminal};
 use crate::theme::{MenuTheme, Rgba};
@@ -22,26 +24,24 @@ use crate::theme::{MenuTheme, Rgba};
 /// The window with the installer's output: its left edge, top and width,
 /// relative to the screen.
 const FULL_WINDOW: (f32, f32, f32) = (0.08, 0.06, 0.84);
-/// The window of the question alone is as wide as the question needs, from
-/// the first to the second of these (relative to the screen's width); a
-/// longer question goes on more lines.
-const COMPACT_WIDTH: (f32, f32) = (0.3, 0.5);
+/// The window of the question alone is as wide as the question needs: at
+/// least the first of these (relative to the question's letters), at most
+/// the second (relative to the screen's width); a longer question goes on
+/// more lines.
+const COMPACT_WIDTH: (f32, f32) = (10.5, 0.5);
 /// The most lines the question takes.
 const MAX_MESSAGE_LINES: usize = 4;
-/// The windows' corners, relative to the screen's smaller side.
-const RADIUS: f32 = 0.012;
-/// A button's least width, and the gap between buttons, relative to the
-/// screen's width.
-const BUTTON_MIN_WIDTH: f32 = 0.085;
-const BUTTON_GAP: f32 = 0.008;
-/// The line's width (separators, the pointed button's outline), relative to
-/// the screen's smaller side.
-const LINE_WIDTH: f32 = 0.0016;
-/// The space inside the card, relative to the screen's smaller side.
-const PADDING: f32 = 0.03;
-/// Font sizes, relative to the screen's smaller side.
-const MESSAGE_SIZE: f32 = 0.05;
-const BUTTON_SIZE: f32 = 0.042;
+/// Relative to the question's letters (the menu's entries' size): the
+/// windows' corners, a button's least width and the gap between buttons,
+/// the line's width (separators, the pointed button's outline), the space
+/// inside the card and the buttons' letters.
+const RADIUS: f32 = 0.24;
+const BUTTON_MIN_WIDTH: f32 = 3.0;
+const BUTTON_GAP: f32 = 0.28;
+const LINE_WIDTH: f32 = 0.032;
+const PADDING: f32 = 0.6;
+const BUTTON_SIZE: f32 = 0.84;
+/// The output's letters, relative to the screen's smaller side.
 const TERMINAL_SIZE: f32 = 0.027;
 /// A line's height, relative to its font's size.
 const LINE_SPACING: f32 = 1.35;
@@ -144,6 +144,8 @@ pub struct TaskUi {
     message_font: FontRef,
     button_font: FontRef,
     terminal_font: FontRef,
+    /// The question's letters: what the rest is sized from.
+    unit: f32,
     padding: f32,
     button_height: f32,
     /// How far down the windows may reach (the help is below).
@@ -269,9 +271,16 @@ impl TaskUi {
                 Err(err) => log::warn!("cannot read the background {}: {err}", path.display()),
             }
         }
-        let padding = smaller * PADDING;
-        let message_font = font(&theme.text.font.path, smaller * MESSAGE_SIZE);
-        let button_font = font(&theme.text.font.path, smaller * BUTTON_SIZE);
+        // the menu's entries
+        let scale = if theme.screen.height > 0 {
+            height / theme.screen.height as f32
+        } else {
+            1.0
+        };
+        let message_font = Element::new(&theme.text, scale, smaller * FONT_SIZE_MEDIUM).font;
+        let unit = message_font.size;
+        let padding = (unit * PADDING).round();
+        let button_font = font(&message_font.path, unit * BUTTON_SIZE);
         let help = Help::new(theme, size);
         // the help goes where the theme puts it: the windows stay above it
         let room = (help.place(1).1 as f32 - padding * 0.6).min(height * 0.96);
@@ -305,6 +314,7 @@ impl TaskUi {
             size,
             base,
             help,
+            unit,
             message_font,
             button_font,
             terminal_font,
@@ -317,8 +327,8 @@ impl TaskUi {
             terminal: full.terminal,
             buttons_band: padding * 0.5 + button_height,
             cell,
-            line_width: (smaller * LINE_WIDTH).max(1.0),
-            radius: smaller * RADIUS,
+            line_width: (unit * LINE_WIDTH).max(1.0),
+            radius: unit * RADIUS,
             window_color: theme.background.center_color.with_alpha(WINDOW_OPACITY),
             text: theme.text.clone(),
             buttons: Vec::new(),
@@ -360,7 +370,7 @@ impl TaskUi {
         } else {
             let labels = capitals(buttons);
             let least = (self.buttons_width(fonts, &labels) + self.padding * 2.0)
-                .max(screen.0 * COMPACT_WIDTH.0);
+                .max(self.unit * COMPACT_WIDTH.0);
             let wanted = fonts.measure(&self.message_font, &message) + self.padding * 2.0;
             wanted.max(least).min(screen.0 * COMPACT_WIDTH.1)
         };
@@ -396,11 +406,11 @@ impl TaskUi {
         labels
             .iter()
             .map(|label| fonts.measure(&self.button_font, label) + padding * 2.0)
-            .fold(self.size.0 as f32 * BUTTON_MIN_WIDTH, f32::max)
+            .fold(self.unit * BUTTON_MIN_WIDTH, f32::max)
     }
 
     fn button_gap(&self) -> f32 {
-        self.size.0 as f32 * BUTTON_GAP
+        self.unit * BUTTON_GAP
     }
 
     /// How wide the row of buttons is.
