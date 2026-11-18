@@ -5,7 +5,8 @@ input daemon that opens it and maps controllers to keys.
 
 ![The overlay over Super Mario World](docs/screenshots/menu.webp)
 
-Press the controller's **Home/Guide** button, **Hotkey+B** or **Ctrl+Shift+O** while
+Tap the controller's **Home/Guide** button (**Hotkey+A** where the hotkey is Select) or press
+**Ctrl+Shift+O** while
 playing: a side menu slides in over the dimmed game, drawn in the menu style of the active
 EmulationStation theme, with a clock on the other side. From there you load and save states,
 read the game's manual, reset, take a screenshot, change the volume or the brightness, or
@@ -39,9 +40,9 @@ runs only while it is shown.
   own menu, the disc tray and next/previous disc. The launcher tells the overlay what the
   running emulator supports; anything it cannot do is not shown.
 * **Round buttons** pinned at the bottom, where the menu opens: *continue*, *screenshot*, *quit*
-  (tapped, it quits; held, its ring fills and, once full, it saves and quits) and *power*
-  (sleep mode). A button highlighted for a
-  second explains itself in a small bubble.
+  (*save and quit* where the game's auto save/load is on: held, its ring fills and, once full,
+  it quits without saving) and *power* (sleep mode). A button highlighted for a second explains
+  itself in a small bubble.
 * **Sliders** for the volume and, on a built-in screen, the brightness, as tall as the
   buttons' row.
 * **Sounds** for moving, choosing and going back, like EmulationStation's (`[sounds]` in
@@ -65,11 +66,12 @@ console games have a pause of their own, and the emulator's menu pauses the rest
 
 *Load state* and *Save state* open a page of ten slots (0 to 9), each with the picture and the
 date RetroArch saved with it. They are RetroArch's own files, the same ones EmulationStation
-lists. *Quit* held until its ring is full saves in RetroArch's automatic slot (`.state.auto`)
-and quits,
-which EmulationStation lists as the auto save and RetroArch loads on start when the game's auto
-save is on; *quit* tapped forgets it, and let go before the ring is full does nothing.
-RetroArch never saves it by itself.
+lists. Where the game's *auto save/load* is on (EmulationStation's option, global, per system
+or per game), RetroArch loads its automatic state (`.state.auto`, the auto save
+EmulationStation lists) on start, and *quit* becomes *save and quit*: tapped, it saves that
+state and quits; held until its ring is full, it quits without saving and forgets the state;
+let go before that, it does nothing. With the option off, *quit* only quits. RetroArch never
+saves the automatic state by itself.
 
 ### Discs
 
@@ -166,10 +168,10 @@ with gamepadly's additions, read exactly as gamepadly read them: this replaces g
 
 | | Controller | Keyboard | Mouse and touch |
 |---|---|---|---|
-| Open | Home/Guide, or Hotkey+B | Ctrl+Shift+O (or Shift+F7) | |
+| Open | Home/Guide (tapped), or Hotkey+A where the hotkey is Select | Ctrl+Shift+O (or Shift+F7) | |
 | Move | D-pad, left stick | Arrows | Hover, wheel, drag |
 | Choose | South button | Enter | Click, tap |
-| Save and quit | South button held on *quit* | Enter held | Held click |
+| Quit without saving (auto save/load on) | South button held on *save and quit* | Enter held | Held click |
 | Back, close | East button, Home | Esc | Right click, click outside |
 | Entries ↔ buttons | R1 / L1 | Page Down / Page Up | |
 | Sliders | Left / Right (held repeats) | Left / Right | Tap or drag the track |
@@ -179,9 +181,11 @@ with gamepadly's additions, read exactly as gamepadly read them: this replaces g
 Buttons follow each controller's `es_input.cfg` entry; EmulationStation's *Switch confirm &
 cancel buttons* swaps the south and east buttons, as in ES. Home/Guide opens the menu when it
 is tapped alone (let go within 300 ms): where its `es_input.cfg` entry gives the hotkey an input
-of its own. On a controller without one the hotkey is Select, which belongs to the game: there it
-opens nothing, and Hotkey+B does. Pressing anything else (or pushing a stick) while the hotkey
-is down makes that press no tap, so its other combinations never open the menu.
+of its own; nothing else opens it there. On a controller without one the hotkey is Select,
+which belongs to the game: there it never taps, and Hotkey+A opens the menu. A controller ES
+does not know gets both (Select+A, and Home/Guide's tap). Hotkey+B is RetroArch's own menu,
+on every controller. Pressing anything else (or pushing a stick) while
+the hotkey is down makes that press no tap, so its other combinations never open the menu.
 
 The buttons of a shortcut stay out of the game: RetroArch and EmulationStation block their
 input while the hotkey is held, and with a standalone emulator the input daemon takes the
@@ -306,7 +310,7 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
 * retrobox-core and retrobox-emulationstation (the packages depend on both).
 * Read access to `/dev/input/event*` and `/dev/uinput` (the `input` group).
 * Optional: `poppler-utils` for the manuals; `wpctl`/`pw-dump` (PipeWire) or `pactl`
-  (PulseAudio) for the volume and the audio page, `pw-play` or `paplay` for the sounds; `busctl` or `brightnessctl` for the
+  (PulseAudio) for the volume and the audio page, `pw-cat` or `pacat` for the sounds; `busctl` or `brightnessctl` for the
   brightness when sysfs is not writable; `kscreen-doctor` on KDE Wayland with several screens.
 
 ## Settings

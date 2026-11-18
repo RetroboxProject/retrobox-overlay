@@ -52,6 +52,12 @@ impl SaveStates {
         Self { info: info.clone() }
     }
 
+    /// Whether the automatic state is loaded when the game starts: quitting
+    /// saves it, unless Quit is held.
+    pub const fn autoload(&self) -> bool {
+        self.info.autoload
+    }
+
     /// A slot's file, as RetroArch names it.
     fn state_path(&self, number: i32) -> PathBuf {
         let suffix = match number {
@@ -147,6 +153,7 @@ mod tests {
         let states = SaveStates::new(&SaveStatesInfo {
             dir: dir.to_string_lossy().into_owned(),
             name: "Game (Disc 1)".into(),
+            autoload: false,
         });
         let slots = states.slots();
         assert_eq!(slots.len(), SLOTS.len());
@@ -168,6 +175,7 @@ mod tests {
         let states = SaveStates::new(&SaveStatesInfo {
             dir: dir.to_string_lossy().into_owned(),
             name: "Game".into(),
+            autoload: false,
         });
         let file = dir.join("Game.state.auto");
         let writer = std::thread::spawn(move || {

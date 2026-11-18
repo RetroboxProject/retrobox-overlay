@@ -2,7 +2,8 @@
 //!
 //! `retrobox-inputd` (the input daemon, its own binary) runs for the whole
 //! Retrobox session and opens it when the dedicated hotkey (Home/Guide) is
-//! pressed alone, on Hotkey+B, or on Ctrl+Shift+O or Shift+F7; `--show` is the
+//! tapped, on Hotkey+A where the hotkey is Select, or on Ctrl+Shift+O or
+//! Shift+F7; `--show` is the
 //! overlay itself: a side menu styled like EmulationStation's over
 //! the dimmed game, with a clock. Without a mode, it asks the daemon to open
 //! or close the overlay, or shows it itself when no daemon runs; started
@@ -325,9 +326,11 @@ fn run(
     } else {
         power::actions(in_game, config.system.standby)
     };
+    let autosave = saves.as_ref().is_some_and(SaveStates::autoload);
     let (items, buttons) = menus(
         &translator,
         in_game.then_some((&emulator, &pages)),
+        autosave,
         !power.is_empty(),
     );
 
@@ -398,8 +401,10 @@ fn run(
 /// nothing).
 fn after(outcome: Outcome, emulator: &Emulator, saves: Option<&SaveStates>, demo: bool) {
     match outcome {
-        Outcome::Quit | Outcome::SaveAndQuit if demo => {}
-        Outcome::Quit => {
+        Outcome::Quit | Outcome::SaveAndQuit | Outcome::QuitUnsaved if demo => {}
+        Outcome::Quit => quit_game(),
+        // the automatic state it would load next time is gone
+        Outcome::QuitUnsaved => {
             if let Some(saves) = saves {
                 saves.forget_auto();
             }
@@ -554,16 +559,17 @@ fn clock_formats(
 
 /// The menu's entries and round buttons: a game's (with its emulator and
 /// whether it has a manual), or the system's (only the power button; the
-/// sliders come as they are found). `power`: whether the power button
-/// offers anything.
+/// sliders come as they are found). `autosave`: whether quitting saves
+/// the automatic state; `power`: whether the power button offers anything.
 fn menus(
     translator: &Translator,
     game: Option<(&Emulator, &GamePages)>,
+    autosave: bool,
     power: bool,
 ) -> (Vec<MenuItem>, Vec<MenuItem>) {
     let mut buttons = Vec::new();
     let items = if let Some((emulator, pages)) = game {
-        buttons = menu_buttons(translator, emulator);
+        buttons = menu_buttons(translator, emulator, autosave);
         menu_items(translator, emulator, pages)
     } else {
         log::info!("no game running: the system's menu");
@@ -658,17 +664,23 @@ fn menu_items(translator: &Translator, emulator: &Emulator, pages: &GamePages) -
 }
 
 /// The round buttons under a game's entries: continue, a screenshot (when
-/// the emulator takes them), quit (held, it saves first, with save states
-/// by slot; the power button comes last).
-fn menu_buttons(translator: &Translator, emulator: &Emulator) -> Vec<MenuItem> {
+/// the emulator takes them), quit (the power button comes last). Where the
+/// game loads the automatic state on start (`autosave`), quitting saves it
+/// first, and Quit held quits without saving.
+fn menu_buttons(translator: &Translator, emulator: &Emulator, autosave: bool) -> Vec<MenuItem> {
     let item = |key: &str, action| MenuItem::new(translator.text(key), action);
     let mut buttons = vec![item("menu-continue", MenuAction::Continue)];
     if emulator.actions().contains(&EmuAction::Screenshot) {
         let action = EmuAction::Screenshot;
         buttons.push(item(action.label_key(), MenuAction::Emulator(action)));
     }
-    let saves = emulator.has_slots();
-    buttons.push(item("menu-quit", MenuAction::Quit { saves }));
+    let autosave = autosave && emulator.has_slots();
+    let label = if autosave {
+        "menu-save-quit"
+    } else {
+        "menu-quit"
+    };
+    buttons.push(item(label, MenuAction::Quit { autosave }));
     buttons
 }
 

@@ -74,10 +74,11 @@ pub enum MenuAction {
     Controls,
     /// The achievements page (RetroAchievements).
     Achievements,
-    /// Quit the game; with `saves`, held down long enough it saves in the
-    /// automatic slot first (see `SAVE_HOLD`).
+    /// Quit the game; with `autosave` (the game loads the automatic state on
+    /// start), tapped it saves that state first, and held down it quits
+    /// without saving (see `QUIT_HOLD`).
     Quit {
-        saves: bool,
+        autosave: bool,
     },
     /// The power options' page (sleep; outside games, restart and turn off).
     Power,

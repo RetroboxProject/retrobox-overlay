@@ -49,6 +49,10 @@ pub struct ControlInfo {
 pub struct SaveStatesInfo {
     pub dir: String,
     pub name: String,
+    /// Whether the emulator loads the automatic state when the game starts
+    /// (EmulationStation's auto save/load option): quitting saves it then.
+    #[serde(default)]
+    pub autoload: bool,
 }
 
 /// What `session.json` says (only the parts the overlay uses).
@@ -235,14 +239,16 @@ mod tests {
         let session: Session = serde_json::from_str(
             r#"{"pid": 1, "control": {"socket": "/run/x/control.sock",
                 "actions": ["reset"], "slots": true, "focus": false},
-                "savestates": {"dir": "/saves/psx", "name": "Game", "slot": 0},
+                "savestates": {"dir": "/saves/psx", "name": "Game", "slot": 0, "autoload": true},
                 "unknown": 3}"#,
         )
         .unwrap();
         let control = session.control.unwrap();
         assert!(control.slots && !control.focus);
         assert_eq!(control.actions, ["reset"]);
-        assert_eq!(session.savestates.unwrap().name, "Game");
+        let savestates = session.savestates.unwrap();
+        assert_eq!(savestates.name, "Game");
+        assert!(savestates.autoload);
     }
 
     #[test]

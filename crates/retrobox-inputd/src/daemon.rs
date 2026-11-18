@@ -6,23 +6,25 @@
 //! the hotkey's shield, see `shield`) and opens
 //! the overlay (`retrobox-overlay --show`, a process of its own), when
 //!
-//! * B (Nintendo's B, the south button) is pressed while the hotkey is held,
-//!   on any controller: Hotkey+B opens it at once;
 //! * the hotkey is tapped alone (let go within `TAP_MAX`, see
-//!   `retrobox_input::press`), on controllers where it is a
-//!   button of its own (Home/Guide): `es_input.cfg` gives it an input no
-//!   other name has. Where the hotkey is a button the game uses too (Select,
-//!   on controllers without one), pressing it opens nothing;
+//!   `retrobox_input::press`), on controllers where it is a button of its
+//!   own (Home/Guide): `es_input.cfg` gives it an input no other name has;
+//! * A (Nintendo's A, the east button) is pressed while the hotkey is held,
+//!   on controllers where the hotkey is a button the game uses too (Select,
+//!   on controllers without one of their own), which never taps: Hotkey+A
+//!   opens it at once. A controller EmulationStation does not know gets
+//!   both (Select+A, and its Home/Guide's tap, should it have one). Hotkey+B
+//!   is RetroArch's menu, on every controller;
 //! * Ctrl+Shift+O (or Shift+F7, where the function keys need Fn) is pressed on
 //!   a keyboard.
 //!
 //! Any other button, the d-pad, a stick or a trigger pushed while the hotkey
-//! is down makes that press no tap, and blocks Hotkey+B until everything is
+//! is down makes that press no tap, and blocks Hotkey+A until everything is
 //! released again, so the hotkey's own combinations (Hotkey+Start...) and the
 //! hotkey held to move the mouse with a stick never open the overlay by
 //! surprise.
 //!
-//! What the hotkey and B are comes from each controller's layout in
+//! What the hotkey and A are comes from each controller's layout in
 //! `es_input.cfg` (`retrobox_input::es_input`), read once when it appears
 //! and again when EmulationStation saves the file; the mapper binds the
 //! profiles with that same layout. The overlay, a process of its own, reads
@@ -92,17 +94,22 @@ struct Hold {
     layout: Option<Layout>,
     /// Its code, as the controller sends it.
     hotkey: KeyCode,
-    /// It is a button of its own (Home/Guide), not one the game uses too.
+    /// It is a button of its own (Home/Guide), not one the game uses too:
+    /// its tap opens the overlay, and the shield follows it.
     dedicated: bool,
-    /// B's code (Nintendo's B, the south button), as the controller sends it.
-    south: KeyCode,
+    /// A hotkey that is a game's button (Select) and the button that opens
+    /// the overlay with it held (A, Nintendo's east button), as the
+    /// controller sends them: where the hotkey is not one of its own, and
+    /// on a controller EmulationStation does not know (its Home/Guide,
+    /// if it has one, may never come).
+    chord: Option<(KeyCode, KeyCode)>,
     /// The buttons down (gamepad buttons and the hotkey).
     held: HashSet<KeyCode>,
     /// When the dedicated hotkey went down alone, with nothing else since:
     /// let go within `TAP_MAX`, it is a tap.
     tapping: Option<Instant>,
     /// Something was pressed with the hotkey (one of its shortcuts), or the
-    /// overlay just closed: Hotkey+B does not count until every button is up.
+    /// overlay just closed: Hotkey+A does not count until every button is up.
     blocked: bool,
     /// Axis -> (centre, half range)
     axes: HashMap<AbsoluteAxisCode, (i32, i32)>,
@@ -125,9 +132,9 @@ impl Hold {
         hold
     }
 
-    /// Read the controller's layout, and take the hotkey and B from it
+    /// Read the controller's layout, and take the hotkey and A from it
     /// (EmulationStation's word); without one, Home/Guide where there is
-    /// one (else Select) and the south button.
+    /// one, and Select with the east button in any case.
     fn relayout(&mut self, device: &mut Device) {
         self.shield.lower(device, self.hotkey, false);
         self.layout = Layout::of(device);
@@ -143,9 +150,11 @@ impl Hold {
             };
             (hotkey, guide)
         });
-        self.south = layout
-            .and_then(|layout| layout.button("b"))
-            .unwrap_or(KeyCode::BTN_SOUTH);
+        self.chord = match layout {
+            Some(_) if self.dedicated => None,
+            Some(layout) => Some((self.hotkey, layout.button("a").unwrap_or(KeyCode::BTN_EAST))),
+            None => Some((KeyCode::BTN_SELECT, KeyCode::BTN_EAST)),
+        };
         self.resync(device);
     }
 
@@ -154,7 +163,7 @@ impl Hold {
             layout: None,
             hotkey,
             dedicated,
-            south: KeyCode::BTN_SOUTH,
+            chord: (!dedicated).then_some((hotkey, KeyCode::BTN_EAST)),
             held: HashSet::new(),
             tapping: None,
             blocked: false,
@@ -165,7 +174,19 @@ impl Hold {
 
     /// Whether `code` is one of the buttons followed here.
     fn follows(&self, code: KeyCode) -> bool {
-        code == self.hotkey || code == self.south || is_pad_button(code)
+        code == self.hotkey
+            || self
+                .chord
+                .is_some_and(|(hotkey, button)| code == hotkey || code == button)
+            || is_pad_button(code)
+    }
+
+    /// Whether a hotkey is down (the tapping one, or the chord's).
+    fn hotkey_held(&self) -> bool {
+        self.held.contains(&self.hotkey)
+            || self
+                .chord
+                .is_some_and(|(hotkey, _)| self.held.contains(&hotkey))
     }
 
     /// Read the buttons down from the kernel (after the overlay had the
@@ -198,12 +219,16 @@ impl Hold {
         let alone = self.held.len() == 1;
         self.tapping =
             (self.dedicated && alone && code == self.hotkey && !self.blocked).then_some(now);
-        if alone || !self.held.contains(&self.hotkey) {
+        if alone || !self.hotkey_held() {
             return false;
         }
-        // with the hotkey down: Hotkey+B (B pressed last), or a shortcut of
-        // its own; either way nothing more until all is up
-        let opens = !self.blocked && self.held.len() == 2 && code == self.south;
+        // with a hotkey down: Hotkey+A (A pressed last, see `chord`), or a
+        // shortcut of its own; either way nothing more until all is up
+        let opens = !self.blocked
+            && self.held.len() == 2
+            && self
+                .chord
+                .is_some_and(|(hotkey, button)| code == button && self.held.contains(&hotkey));
         self.blocked = true;
         opens
     }
@@ -588,7 +613,7 @@ impl State {
             device.name().unwrap_or("?"),
             match &watched {
                 Watched::Pad(hold) if hold.dedicated => "controller, its hotkey opens",
-                Watched::Pad(_) => "controller, hotkey is a game button: Hotkey+B opens",
+                Watched::Pad(_) => "controller, hotkey is a game button: Hotkey+A opens",
                 Watched::Keyboard(_) => "keyboard",
             }
         );
@@ -756,7 +781,7 @@ impl State {
         if opens {
             log::info!(
                 "{} on {}",
-                if pressed { "Hotkey+B" } else { "hotkey" },
+                if pressed { "Hotkey+A" } else { "hotkey" },
                 path.display()
             );
             self.toggle(Some(path));
@@ -889,7 +914,7 @@ mod tests {
         let mut pad = hold(mode, true);
         assert!(!pad.button(mode, true, now));
         assert!(pad.button(mode, false, now));
-        // a shortcut of its own: no tap, and no Hotkey+B until all is up
+        // a shortcut of its own: no tap
         assert!(!pad.button(mode, true, now));
         assert!(!pad.button(KeyCode::BTN_START, true, now));
         assert!(!pad.button(KeyCode::BTN_START, false, now));
@@ -919,27 +944,55 @@ mod tests {
     }
 
     #[test]
-    fn hotkey_b_opens_on_any_controller() {
-        let (select, south, now) = (KeyCode::BTN_SELECT, KeyCode::BTN_SOUTH, Instant::now());
+    fn hotkey_a_opens_where_the_hotkey_is_a_game_button() {
+        let (select, east, now) = (KeyCode::BTN_SELECT, KeyCode::BTN_EAST, Instant::now());
         let mut pad = hold(select, false);
         assert!(!pad.button(select, true, now));
-        assert!(pad.button(south, true, now));
-        assert!(!pad.button(south, false, now));
+        assert!(pad.button(east, true, now));
+        assert!(!pad.button(east, false, now));
         // a hotkey the game uses too never taps
         assert!(!pad.button(select, false, now));
         assert!(!pad.button(select, true, now));
         assert!(!pad.button(select, false, now));
-        // B first, then the hotkey, is not Hotkey+B
-        assert!(!pad.button(south, true, now));
+        // Hotkey+B is RetroArch's
         assert!(!pad.button(select, true, now));
-        let mut pad = hold(KeyCode::BTN_MODE, true);
-        assert!(!pad.button(KeyCode::BTN_MODE, true, now));
-        assert!(pad.button(south, true, now));
-        assert!(!pad.button(south, false, now));
-        assert!(
-            !pad.button(KeyCode::BTN_MODE, false, now),
-            "not a tap as well"
+        assert!(!pad.button(KeyCode::BTN_SOUTH, true, now));
+        assert!(!pad.button(KeyCode::BTN_SOUTH, false, now));
+        assert!(!pad.button(select, false, now));
+        // A first, then the hotkey, is not Hotkey+A
+        assert!(!pad.button(east, true, now));
+        assert!(!pad.button(select, true, now));
+    }
+
+    #[test]
+    fn a_controller_es_does_not_know_has_both() {
+        let (mode, select, east, now) = (
+            KeyCode::BTN_MODE,
+            KeyCode::BTN_SELECT,
+            KeyCode::BTN_EAST,
+            Instant::now(),
         );
+        // Home/Guide taps, and Select+A opens too, should Home never come
+        let mut pad = hold(mode, true);
+        pad.chord = Some((select, east));
+        assert!(!pad.button(mode, true, now));
+        assert!(pad.button(mode, false, now));
+        assert!(!pad.button(select, true, now));
+        assert!(pad.button(east, true, now));
+        assert!(!pad.button(east, false, now));
+        assert!(!pad.button(select, false, now));
+    }
+
+    #[test]
+    fn a_dedicated_hotkey_only_taps() {
+        let (mode, now) = (KeyCode::BTN_MODE, Instant::now());
+        let mut pad = hold(mode, true);
+        for other in [KeyCode::BTN_EAST, KeyCode::BTN_SOUTH] {
+            assert!(!pad.button(mode, true, now));
+            assert!(!pad.button(other, true, now));
+            assert!(!pad.button(other, false, now));
+            assert!(!pad.button(mode, false, now), "no tap either");
+        }
     }
 
     #[test]

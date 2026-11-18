@@ -15,6 +15,7 @@ menu-reset = Reset
 menu-emulator-menu = Emulator menu
 menu-screenshot = Screenshot
 menu-quit = Quit game
+menu-save-quit = Save and quit
 # the power button and its page (sleep in games; restart and turn off
 # outside them), and the sliders
 menu-power = Power
@@ -41,7 +42,7 @@ disc-tray-open = tray open
 # help prompts (EmulationStation's words)
 help-choose = CHOOSE
 help-select = SELECT
-help-hold-save = HOLD: SAVE AND QUIT
+help-hold-unsaved = HOLD: QUIT WITHOUT SAVING
 help-back = BACK
 help-close = CLOSE
 help-adjust = ADJUST

@@ -2,8 +2,8 @@
 //! shortcuts from the game themselves.
 //!
 //! This process reads the controllers without taking them, so the buttons
-//! of a shortcut reach the game too: Hotkey+B, which opens the overlay,
-//! presses B in the game. RetroArch blocks the game's input while its own
+//! of a shortcut reach the game too: Hotkey+Start, which quits, presses
+//! Start in the game. RetroArch blocks the game's input while its own
 //! hotkey is held (the launcher has it block at once), and
 //! EmulationStation does the same (a patch of Retrobox's); the other
 //! emulators do not, and there the shield does it: while a standalone

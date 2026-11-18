@@ -15,6 +15,7 @@ menu-reset = Herstarten
 menu-emulator-menu = Emulatormenu
 menu-screenshot = Schermafbeelding
 menu-quit = Spel afsluiten
+menu-save-quit = Opslaan en afsluiten
 # the power button and its page (sleep in games; restart and turn off
 # outside them), and the sliders
 menu-power = Aan/uit
@@ -41,7 +42,7 @@ disc-tray-open = lade open
 # help prompts (EmulationStation's words)
 help-choose = KIES
 help-select = SELECTEER
-help-hold-save = INGEDRUKT HOUDEN: OPSLAAN EN AFSLUITEN
+help-hold-unsaved = INGEDRUKT HOUDEN: AFSLUITEN ZONDER OPSLAAN
 help-back = TERUG
 help-close = SLUITEN
 help-adjust = AANPASSEN

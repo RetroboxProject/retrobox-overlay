@@ -21,7 +21,8 @@ retrobox-inputd: Retrobox's input daemon
 Usage: retrobox-inputd [--parent PID] [--version] [--help]
 
 Opens the overlay (retrobox-overlay) when a controller's Home/Guide button is
-held, on Hotkey+B, or on Ctrl+Shift+O or Shift+F7, until stopped; started
+tapped, on Hotkey+A where the hotkey is Select, or on Ctrl+Shift+O or
+Shift+F7, until stopped; started
 again while it runs, it does nothing. Retrobox runs it with EmulationStation.
 SIGUSR1 opens or closes the overlay. While a game runs with a pad profile
 (pad_profile in session.json), it maps the game's controllers and the

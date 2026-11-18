@@ -163,6 +163,7 @@ mod tests {
             for id in [
                 "menu-continue",
                 "menu-quit",
+                "menu-save-quit",
                 "clock-date-format",
                 "clock-time-format",
                 "menu-audio",
@@ -171,7 +172,7 @@ mod tests {
                 "audio-no-outputs",
                 "audio-loading",
                 "help-audio",
-                "help-hold-save",
+                "help-hold-unsaved",
             ] {
                 assert!(english.has_message(id), "{id}");
                 assert!(translated.has_message(id), "{code}: {id}");

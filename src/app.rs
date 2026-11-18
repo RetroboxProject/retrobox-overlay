@@ -111,10 +111,10 @@ const FRAME: Duration = Duration::from_millis(16);
 /// it does then.
 const REPEAT_DELAY: Duration = Duration::from_millis(400);
 const REPEAT_INTERVAL: Duration = Duration::from_millis(70);
-/// How long Quit is held down to save and quit, and how often its ring
-/// fills meanwhile (from `TAP_MAX` on: a tap only quits, a press let go
-/// later does nothing).
-const SAVE_HOLD: Duration = Duration::from_secs(1);
+/// How long Quit is held down to quit without saving, where a tap saves
+/// first, and how often its ring fills meanwhile (from `TAP_MAX` on: a
+/// press let go before the ring is full does nothing).
+const QUIT_HOLD: Duration = Duration::from_secs(1);
 const HOLD_FRAME: Duration = Duration::from_millis(33);
 /// How much of the screen's width the right stick adds to (or takes from)
 /// the on-screen keyboard's per step.
@@ -146,10 +146,13 @@ pub enum Outcome {
     Back,
     /// An emulator action, done once the overlay is gone.
     Request(Request),
-    /// Quit without saving: the automatic state is forgotten.
+    /// Quit, leaving the automatic state as it is (the game does not load it).
     Quit,
     /// Save in the automatic slot, then quit.
     SaveAndQuit,
+    /// Quit without saving where the game loads the automatic state: it is
+    /// forgotten.
+    QuitUnsaved,
     /// Sleep, restart or turn off, once the overlay is gone.
     Power(PowerAction),
     /// The on-screen keyboard's overlay key: the overlay opens once the
@@ -162,7 +165,7 @@ pub enum Outcome {
 impl Outcome {
     /// Whether the game ends with it.
     const fn ends_game(self) -> bool {
-        matches!(self, Self::Quit | Self::SaveAndQuit)
+        matches!(self, Self::Quit | Self::SaveAndQuit | Self::QuitUnsaved)
     }
 }
 
@@ -324,7 +327,7 @@ const DRAG_THRESHOLD: f32 = 0.3;
 enum Focus {
     Item,
     Button,
-    /// Quit, which saves first when held.
+    /// Quit, which saves first unless it is held.
     Quit,
     Slider,
     /// The volume's slider: A mutes it.
@@ -341,7 +344,7 @@ impl Focus {
         match panel.selected() {
             Target::Item(_) => Self::Item,
             Target::Button(_)
-                if panel.selected_action() == Some(MenuAction::Quit { saves: true }) =>
+                if panel.selected_action() == Some(MenuAction::Quit { autosave: true }) =>
             {
                 Self::Quit
             }
@@ -494,10 +497,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         grab_keyboard(&handle, window)?;
     }
     let mut state = State {
-        sounds: Sounds::new(
-            content.config.sound_volume,
-            paths::runtime_dir().join("sounds"),
-        ),
+        sounds: Sounds::new(content.config.sound_volume),
         display,
         focused: false,
         handle,
@@ -1130,7 +1130,7 @@ impl State {
             Focus::Item | Focus::Button => prompts.push(prompt(help.ok(), "help-select")),
             Focus::Quit => {
                 prompts.push(prompt(help.ok(), "help-select"));
-                prompts.push(prompt(help.ok(), "help-hold-save"));
+                prompts.push(prompt(help.ok(), "help-hold-unsaved"));
             }
             Focus::Page(_) => {}
         }
@@ -1591,9 +1591,9 @@ impl State {
                 return;
             }
             Some(MenuAction::Continue) => Some(Outcome::Back),
-            // tapped, it quits; held down, it saves and quits (see `SAVE_HOLD`);
-            // a click is let go here
-            Some(MenuAction::Quit { saves: true }) => {
+            // tapped, it saves and quits; held down, it quits without saving
+            // (see `QUIT_HOLD`); a click is let go here
+            Some(MenuAction::Quit { autosave: true }) => {
                 if self.quit_hold.is_some() {
                     self.let_go_quit();
                 } else {
@@ -1601,7 +1601,7 @@ impl State {
                 }
                 return;
             }
-            Some(MenuAction::Quit { saves: false }) => Some(Outcome::Quit),
+            Some(MenuAction::Quit { autosave: false }) => Some(Outcome::Quit),
             // disc changes are done with the menu open, which shows the result
             Some(MenuAction::Emulator(action)) if self.content.emulator.in_place(action) => {
                 if self.content.emulator.perform_now(action) {
@@ -1620,8 +1620,8 @@ impl State {
         };
     }
 
-    /// Quit went down: held past a tap, its ring fills, and it saves and
-    /// quits once full, without waiting for it to be let go.
+    /// Quit went down: held past a tap, its ring fills, and once full it
+    /// quits without saving, without waiting for it to be let go.
     fn start_quit_hold(&mut self) {
         if self.quit_hold.is_some() {
             return;
@@ -1633,10 +1633,10 @@ impl State {
             });
         match timer {
             Ok(timer) => self.quit_hold = Some((Instant::now(), timer)),
-            // no ring: a press quits at once
+            // no ring: a press is a tap
             Err(err) => {
                 log::debug!("no hold timer: {}", err.error);
-                self.outcome = Some(Outcome::Quit);
+                self.outcome = Some(Outcome::SaveAndQuit);
             }
         }
     }
@@ -1646,17 +1646,17 @@ impl State {
             return TimeoutAction::Drop;
         };
         let held = since.elapsed();
-        if held >= SAVE_HOLD {
+        if held >= QUIT_HOLD {
             self.quit_hold = None;
             if self.outcome.is_none() {
                 self.sounds.play(Sound::Select);
-                self.outcome = Some(Outcome::SaveAndQuit);
+                self.outcome = Some(Outcome::QuitUnsaved);
             }
             return TimeoutAction::Drop;
         }
         let ring = held
             .checked_sub(TAP_MAX)
-            .map(|filling| filling.as_secs_f32() / SAVE_HOLD.saturating_sub(TAP_MAX).as_secs_f32());
+            .map(|filling| filling.as_secs_f32() / QUIT_HOLD.saturating_sub(TAP_MAX).as_secs_f32());
         if let Some((panel, _)) = self.panel.as_mut()
             && panel.set_hold(ring)
         {
@@ -1665,15 +1665,15 @@ impl State {
         TimeoutAction::ToDuration(HOLD_FRAME)
     }
 
-    /// Quit let go before its ring is full: a tap quits, a longer press
-    /// does nothing.
+    /// Quit let go before its ring is full: a tap saves and quits, a longer
+    /// press does nothing.
     fn let_go_quit(&mut self) {
         let tapped = self
             .quit_hold
             .is_some_and(|(since, _)| since.elapsed() <= TAP_MAX);
         self.stop_quit_hold();
         if tapped {
-            self.outcome = Some(Outcome::Quit);
+            self.outcome = Some(Outcome::SaveAndQuit);
         }
     }
 
@@ -2168,10 +2168,11 @@ impl State {
                 self.hover(None);
             }
             PointerKind::Press(BTN_LEFT) => {
-                // Quit: held, it saves first; the release (a tap) quits
+                // Quit: held, it quits without saving; the release (a tap)
+                // saves and quits
                 if let Some((panel, _)) = self.panel.as_mut()
                     && let Some(target) = target
-                    && panel.action(target) == Some(MenuAction::Quit { saves: true })
+                    && panel.action(target) == Some(MenuAction::Quit { autosave: true })
                 {
                     panel.select(target);
                     self.start_quit_hold();
