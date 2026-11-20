@@ -19,6 +19,10 @@ use crate::volume::Level;
 /// of the screen's width it takes.
 const WIDTH: f32 = 0.62;
 const MAX_WIDTH: f32 = 0.45;
+/// The padding above and below, relative to the one at the sides, and the
+/// icon's size, in title lines: the card stays low.
+const PAD_Y: f32 = 0.6;
+const ICON: f32 = 1.2;
 /// The text's lines at most (the last one takes the rest).
 const MAX_LINES: usize = 3;
 /// The volume's card is narrower, relative to the screen's smaller side.
@@ -52,18 +56,20 @@ impl ToastCard {
         title.font = title.font.bold();
         let text = Element::new(&theme.text_small, scale, base * FONT_SIZE_SMALL);
 
+        // the padding at the sides, and the thinner one above and below
         let pad = (text.letter_height * 1.1).round();
-        let icon = (title.font.line_height * 1.4).round();
+        let pad_y = (pad * PAD_Y).round();
+        let icon = (title.font.line_height * ICON).round();
         if let Some(level) = toast.level {
             let card_width = (base * VOLUME_WIDTH).min(width * MAX_WIDTH).round();
-            let card_height = (pad * 2.0 + icon).round();
+            let card_height = (pad_y * 2.0 + icon).round();
             let mut pixmap = card(theme, card_width, card_height, pad)?;
             let color = title.style.color;
-            draw_icon(&mut pixmap, toast.icon, icon, (pad, pad), color);
+            draw_icon(&mut pixmap, toast.icon, icon, (pad, pad_y), color);
             let bar = Bar {
                 left: pad * 2.0 + icon,
                 right: card_width - pad,
-                middle: pad + icon / 2.0,
+                middle: pad_y + icon / 2.0,
                 icon,
             };
             bar.draw(&mut pixmap, level, color);
@@ -81,7 +87,7 @@ impl ToastCard {
             fonts.wrap(&text.font, &toast.text, text_width, MAX_LINES)
         };
         let text_height = title.font.line_height + text.font.line_height * lines.len() as f32;
-        let card_height = (pad * 2.0 + text_height.max(icon)).round();
+        let card_height = (pad_y * 2.0 + text_height.max(icon)).round();
 
         let mut pixmap = card(theme, card_width, card_height, pad)?;
         let icon_color = title.style.color;
