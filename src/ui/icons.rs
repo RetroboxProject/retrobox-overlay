@@ -130,7 +130,7 @@ impl Icon {
         Self::Gamepad,
     ];
 
-    /// The icon of `name`, its file's (`trophy`, `cup-line`,
+    /// The icon of `name`, its file's (`trophy`, `history-line`,
     /// `signal-wifi-off-line`...), with or without a Remix Icon's `-line`:
     /// what other programs ask for (see `retrobox-overlay --toast`).
     pub fn named(name: &str) -> Option<Self> {
@@ -230,7 +230,7 @@ impl Icon {
             Self::RotateCcw => icon!("reset-left-line"),
             Self::RotateCw => icon!("reset-right-line"),
             Self::Moon => icon!("moon-line"),
-            Self::Coffee => icon!("cup-line"),
+            Self::Coffee => icon!("coffee"),
             Self::Settings => icon!("settings-3-line"),
             Self::Camera => icon!("camera-line"),
             Self::LogOut => icon!("logout-box-r-line"),
@@ -303,8 +303,9 @@ mod tests {
     #[test]
     fn icons_go_by_their_sets_names() {
         assert_eq!(Icon::named("trophy"), Some(Icon::Trophy));
-        assert_eq!(Icon::named("trophy"), Some(Icon::Trophy));
-        assert_eq!(Icon::named("cup"), Some(Icon::Coffee));
+        assert_eq!(Icon::named("history-line"), Some(Icon::History));
+        assert_eq!(Icon::named("history"), Some(Icon::History));
+        assert_eq!(Icon::named("coffee"), Some(Icon::Coffee));
         assert_eq!(Icon::named("signal-wifi-fill"), Some(Icon::Wifi));
         assert_eq!(Icon::named("space"), Some(Icon::Space));
         assert_eq!(Icon::named("nope"), None);

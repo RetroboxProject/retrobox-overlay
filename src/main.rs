@@ -90,7 +90,7 @@ directory) when no daemon runs; started again while open, it closes it.
   --toast        a notice at the top of the screen, on the menu's side, for
                  a few seconds (6, or --seconds), over whatever runs and
                  without taking its input; one waits for the one before it.
-                 --icon: the name of one of the overlay's icons (trophy, cup,
+                 --icon: the name of one of the overlay's icons (trophy, coffee,
                  information...); the texts are shown as given. --toast break:
                  the break reminder (retrobox-inputd shows it after a while
                  playing: [break] in overlay.ini)

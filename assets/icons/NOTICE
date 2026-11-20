@@ -13,8 +13,9 @@ own (*-line, space). As published, but for these:
   signal-wifi-high-line.svg  signal-wifi-line.svg, most of it filled
 
 Lucide (https://lucide.dev), Copyright (c) Lucide Icons and Contributors, ISC
-license (LICENSE-lucide): book-open, disc-3, ethernet-port, gamepad-2,
-keyboard, sun, trophy. Changed to match Remix Icon: their strokes turned
-into shapes (outlines filled), with sharper corners (no rounding of their
-own, only the stroke's width rounding the outer side, flat line ends) and
-round dots; disc-3 redrawn as a filled disc with a wider hole.
+license (LICENSE-lucide): book-open, coffee, disc-3, ethernet-port,
+gamepad-2, keyboard, sun, trophy. Changed to match Remix Icon: their
+strokes turned into shapes (outlines filled), with sharper corners (no
+rounding of their own, only the stroke's width rounding the outer side,
+flat line ends) and round dots; disc-3 redrawn as a filled disc with a wider
+hole; coffee with its handle lower and its steam longer and wavy.

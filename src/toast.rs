@@ -10,7 +10,7 @@
 //! ```
 //!
 //! The icon is one of the overlay's, by name (its file's in assets/icons),
-//! with or without a Remix Icon's `-line` (`trophy`, `cup`,
+//! with or without a Remix Icon's `-line` (`trophy`, `coffee`,
 //! `signal-wifi-off`...); the sound one of the menu's (`select`, the
 //! default, `back`, `scroll`) or `none`. The texts are shown as given: the
 //! caller translates them. A preset is a toast the overlay writes itself:

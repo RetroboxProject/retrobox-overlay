@@ -164,7 +164,7 @@ retrobox-overlay --toast --title TEXT [--text TEXT] [--icon NAME]
 
 `--icon` is the name of one of the overlay's icons, its file's in
 [`assets/icons`](assets/icons) (Remix Icon's or Lucide's), with or without a Remix Icon's `-line`
-(`trophy`, `cup`, `information`, `gamepad-2`...); the texts are shown as given (the caller
+(`trophy`, `coffee`, `information`, `gamepad-2`...); the texts are shown as given (the caller
 translates them). Toasts never overlap:
 one asked for while another shows waits for it to go (a lock in the runtime directory). Opening
 the menu takes the break reminder away.
