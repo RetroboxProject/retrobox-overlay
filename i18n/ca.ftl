@@ -93,7 +93,6 @@ info-players = Jugadors
 info-rating = Valoració
 info-play-count = Vegades jugat
 info-play-time = Temps jugat
-play-time = { $session } · { $total } en total
 break-title = Un descans?
 break-text = Portes { $time } jugant. Descansa la vista i estira't una mica.
 duration-minutes = { $minutes } min

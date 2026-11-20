@@ -25,8 +25,8 @@ runs only while it is shown.
 ### The in-game menu
 
 * **The game at the top:** its name, developer and year (from EmulationStation's scraped
-  information), and a status line with the time played (this time, and in all), the network,
-  the battery and, if wanted, the time.
+  information), and a status line with the time played this time (the game's page has it in
+  all), the network, the battery and, if wanted, the time.
 * **The game's page** (*Game info*): its scraped picture, developer, publisher, release date,
   genre, players, rating, times and time played, and its description.
 * **The controls page** (*Controls*), for a game with a pad-to-keyboard profile: each mapping
@@ -162,8 +162,10 @@ retrobox-overlay --toast --title TEXT [--text TEXT] [--icon NAME]
                  [--sound select|back|scroll|none] [--seconds N]
 ```
 
-`--icon` is the Lucide name of one of the overlay's icons (`trophy`, `coffee`, `info`,
-`wifi-off`...); the texts are shown as given (the caller translates them). Toasts never overlap:
+`--icon` is the name of one of the overlay's icons, its file's in
+[`assets/icons`](assets/icons) (Remix Icon's or Lucide's), with or without a Remix Icon's `-line`
+(`trophy`, `cup`, `information`, `gamepad-2`...); the texts are shown as given (the caller
+translates them). Toasts never overlap:
 one asked for while another shows waits for it to go (a lock in the runtime directory). Opening
 the menu takes the break reminder away.
 
@@ -414,9 +416,11 @@ and fonts of the [*es-theme-iconic*](https://github.com/manu-creative-411/es-the
 
 ## License
 
-GPL-2.0-only, like Retrobox.
+GPL-3.0-only.
 
-The menu icons are [Lucide](https://lucide.dev)'s, under the ISC license
-([`assets/icons/LICENSE`](assets/icons/LICENSE)). The sounds are the
+The menu icons are [Remix Icon](https://remixicon.com)'s (4.5.0, outlined style, Apache License
+2.0) and a few of [Lucide](https://lucide.dev)'s (ISC license); see
+[`assets/icons/NOTICE`](assets/icons/NOTICE) for which is which, the licenses next to it, and
+the few that are changed for the overlay. The sounds are the
 [iconic-es-de](https://github.com/Siddy212/iconic-es-de) theme's, by Siddy212
 ([`assets/sounds/LICENSE`](assets/sounds/LICENSE)).

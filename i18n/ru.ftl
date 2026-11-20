@@ -93,7 +93,6 @@ info-players = Игроки
 info-rating = Рейтинг
 info-play-count = Запусков
 info-play-time = Время в игре
-play-time = { $session } · { $total } всего
 break-title = Пора отдохнуть?
 break-text = Вы играете уже { $time }. Дайте глазам отдохнуть и немного разомнитесь.
 duration-minutes = { $minutes } мин

@@ -93,7 +93,6 @@ info-players = Spelers
 info-rating = Waardering
 info-play-count = Keer gespeeld
 info-play-time = Speeltijd
-play-time = { $session } · { $total } in totaal
 break-title = Tijd voor een pauze?
 break-text = Je speelt al { $time }. Geef je ogen rust en strek je even uit.
 duration-minutes = { $minutes } min

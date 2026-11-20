@@ -93,7 +93,6 @@ info-players = Jokalariak
 info-rating = Balorazioa
 info-play-count = Jokatutako aldiak
 info-play-time = Jokatutako denbora
-play-time = { $session } · { $total } guztira
 break-title = Atseden bat?
 break-text = { $time } daramatzazu jolasten. Atseden hartu begiei eta luzatu pixka bat.
 duration-minutes = { $minutes } min

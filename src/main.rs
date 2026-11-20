@@ -90,8 +90,8 @@ directory) when no daemon runs; started again while open, it closes it.
   --toast        a notice at the top of the screen, on the menu's side, for
                  a few seconds (6, or --seconds), over whatever runs and
                  without taking its input; one waits for the one before it.
-                 --icon: a Lucide name the overlay has (trophy, coffee,
-                 info...); the texts are shown as given. --toast break:
+                 --icon: the name of one of the overlay's icons (trophy, cup,
+                 information...); the texts are shown as given. --toast break:
                  the break reminder (retrobox-inputd shows it after a while
                  playing: [break] in overlay.ini)
   --volume       a volume key: step the default output's volume by 5 %

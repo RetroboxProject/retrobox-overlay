@@ -1,0 +1,16 @@
+The icons in this directory come from two sets:
+
+  Lucide (https://lucide.dev), ISC license (LICENSE-lucide): book-open,
+  disc-3, ethernet-port, gamepad-2, keyboard, sun, trophy.
+
+  Remix Icon 4.5.0 (https://remixicon.com), Copyright (c) 2017 Remix Design,
+  Apache License 2.0 (LICENSE-remixicon): every other one, the files named
+  after Remix Icon's own (*-line, space), as published but for these,
+  changed for the overlay:
+
+    battery-medium-line.svg    battery-low-line.svg, its charge bar to the middle
+    battery-full-line.svg      battery-low-line.svg, its charge bar to the end
+    volume-down-line.svg       moved 3 units left, its speaker where the
+                               other volume icons have theirs
+    signal-wifi-low-line.svg   signal-wifi-line.svg, its lower part filled
+    signal-wifi-high-line.svg  signal-wifi-line.svg, most of it filled

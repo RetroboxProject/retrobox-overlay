@@ -1,6 +1,8 @@
-//! The menu's icons: Lucide (<https://lucide.dev>, ISC license, see
-//! assets/icons/LICENSE), built into the binary and drawn in the colour of
-//! the text next to them.
+//! The menu's icons: Remix Icon's outlined ("line") ones
+//! (<https://remixicon.com>, Apache License 2.0) and a few of Lucide's
+//! (<https://lucide.dev>, ISC license), built into the binary and drawn in
+//! the colour of the text next to them; see assets/icons/NOTICE for which
+//! is which and the ones changed for the overlay.
 
 use resvg::usvg;
 use tiny_skia::{Pixmap, Transform};
@@ -13,8 +15,18 @@ use crate::system::power::PowerAction;
 use crate::system::status::{Battery, Network};
 use crate::theme::Rgba;
 
-/// Lucide draws on a 24×24 grid.
+/// Both sets draw on a 24×24 grid.
 const GRID: f32 = 24.0;
+
+/// An icon's name (its set's) and its SVG, built in.
+macro_rules! icon {
+    ($name:literal) => {
+        (
+            $name,
+            include_str!(concat!("../../assets/icons/", $name, ".svg")),
+        )
+    };
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
@@ -117,18 +129,19 @@ impl Icon {
         Self::Gamepad,
     ];
 
-    /// The icon of Lucide's `name` (`trophy`, `coffee`, `wifi-off`...): what
-    /// other programs ask for (see `retrobox-overlay --toast`).
+    /// The icon of `name`, its file's (`trophy`, `cup-line`,
+    /// `signal-wifi-off-line`...), with or without a Remix Icon's `-line`:
+    /// what other programs ask for (see `retrobox-overlay --toast`).
     pub fn named(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|icon| icon.name() == name)
+        Self::ALL.into_iter().find(|icon| {
+            let own = icon.name();
+            own == name || own.strip_suffix("-line") == Some(name)
+        })
     }
 
-    /// Lucide's name of the icon, from its SVG (`class="lucide lucide-<name>"`).
-    pub fn name(self) -> &'static str {
-        let svg = self.svg();
-        svg.split_once("lucide lucide-")
-            .and_then(|(_, rest)| rest.split(['"', ' ']).next())
-            .unwrap_or_default()
+    /// The icon's name.
+    pub const fn name(self) -> &'static str {
+        self.file().0
     }
 
     /// The icon of a power option.
@@ -203,65 +216,79 @@ impl Icon {
         }
     }
 
-    const fn svg(self) -> &'static str {
+    /// The icon's file: its name in its set (Remix Icon's or Lucide's; the
+    /// ones made for the overlay are named alike).
+    const fn file(self) -> (&'static str, &'static str) {
         match self {
-            Self::Play => include_str!("../../assets/icons/play.svg"),
-            Self::Save => include_str!("../../assets/icons/save.svg"),
-            Self::History => include_str!("../../assets/icons/history.svg"),
-            Self::Eject => include_str!("../../assets/icons/eject.svg"),
-            Self::SkipForward => include_str!("../../assets/icons/skip-forward.svg"),
-            Self::SkipBack => include_str!("../../assets/icons/skip-back.svg"),
-            Self::RotateCcw => include_str!("../../assets/icons/rotate-ccw.svg"),
-            Self::RotateCw => include_str!("../../assets/icons/rotate-cw.svg"),
-            Self::Moon => include_str!("../../assets/icons/moon.svg"),
-            Self::Coffee => include_str!("../../assets/icons/coffee.svg"),
-            Self::Settings => include_str!("../../assets/icons/settings.svg"),
-            Self::Camera => include_str!("../../assets/icons/camera.svg"),
-            Self::LogOut => include_str!("../../assets/icons/log-out.svg"),
-            Self::Disc => include_str!("../../assets/icons/disc-3.svg"),
-            Self::BookOpen => include_str!("../../assets/icons/book-open.svg"),
-            Self::Info => include_str!("../../assets/icons/info.svg"),
-            Self::Keyboard => include_str!("../../assets/icons/keyboard.svg"),
-            Self::Timer => include_str!("../../assets/icons/timer.svg"),
-            Self::Trophy => include_str!("../../assets/icons/trophy.svg"),
-            Self::Check => include_str!("../../assets/icons/check.svg"),
-            Self::Sun => include_str!("../../assets/icons/sun.svg"),
-            Self::VolumeX => include_str!("../../assets/icons/volume-x.svg"),
-            Self::Volume1 => include_str!("../../assets/icons/volume-1.svg"),
-            Self::Volume2 => include_str!("../../assets/icons/volume-2.svg"),
-            Self::Power => include_str!("../../assets/icons/power.svg"),
-            Self::Wifi => include_str!("../../assets/icons/wifi.svg"),
-            Self::WifiHigh => include_str!("../../assets/icons/wifi-high.svg"),
-            Self::WifiLow => include_str!("../../assets/icons/wifi-low.svg"),
-            Self::WifiZero => include_str!("../../assets/icons/wifi-zero.svg"),
-            Self::WifiOff => include_str!("../../assets/icons/wifi-off.svg"),
-            Self::EthernetPort => include_str!("../../assets/icons/ethernet-port.svg"),
-            Self::BatteryLow => include_str!("../../assets/icons/battery-low.svg"),
-            Self::BatteryMedium => include_str!("../../assets/icons/battery-medium.svg"),
-            Self::BatteryFull => include_str!("../../assets/icons/battery-full.svg"),
-            Self::BatteryCharging => include_str!("../../assets/icons/battery-charging.svg"),
-            Self::BatteryWarning => include_str!("../../assets/icons/battery-warning.svg"),
-            Self::CornerDownLeft => include_str!("../../assets/icons/corner-down-left.svg"),
-            Self::ArrowBigUp => include_str!("../../assets/icons/arrow-big-up.svg"),
-            Self::ArrowBigUpDash => include_str!("../../assets/icons/arrow-big-up-dash.svg"),
-            Self::Delete => include_str!("../../assets/icons/delete.svg"),
-            Self::Space => include_str!("../../assets/icons/space.svg"),
-            Self::X => include_str!("../../assets/icons/x.svg"),
-            Self::ArrowLeft => include_str!("../../assets/icons/arrow-left.svg"),
-            Self::ArrowRight => include_str!("../../assets/icons/arrow-right.svg"),
-            Self::ArrowRightToLine => include_str!("../../assets/icons/arrow-right-to-line.svg"),
-            Self::Gamepad => include_str!("../../assets/icons/gamepad-2.svg"),
+            Self::Play => icon!("play-large-line"),
+            Self::Save => icon!("save-line"),
+            Self::History => icon!("history-line"),
+            Self::Eject => icon!("eject-line"),
+            Self::SkipForward => icon!("skip-forward-line"),
+            Self::SkipBack => icon!("skip-back-line"),
+            Self::RotateCcw => icon!("reset-left-line"),
+            Self::RotateCw => icon!("reset-right-line"),
+            Self::Moon => icon!("moon-line"),
+            Self::Coffee => icon!("cup-line"),
+            Self::Settings => icon!("settings-3-line"),
+            Self::Camera => icon!("camera-line"),
+            Self::LogOut => icon!("logout-box-r-line"),
+            Self::Disc => icon!("disc-3"),
+            Self::BookOpen => icon!("book-open"),
+            Self::Info => icon!("information-line"),
+            Self::Keyboard => icon!("keyboard"),
+            Self::Timer => icon!("timer-line"),
+            Self::Trophy => icon!("trophy"),
+            Self::Check => icon!("check-line"),
+            Self::Sun => icon!("sun"),
+            Self::VolumeX => icon!("volume-mute-line"),
+            Self::Volume1 => icon!("volume-down-line"),
+            Self::Volume2 => icon!("volume-up-line"),
+            Self::Power => icon!("shut-down-line"),
+            Self::Wifi => icon!("signal-wifi-fill"),
+            Self::WifiHigh => icon!("signal-wifi-high-line"),
+            Self::WifiLow => icon!("signal-wifi-low-line"),
+            Self::WifiZero => icon!("signal-wifi-line"),
+            Self::WifiOff => icon!("signal-wifi-off-line"),
+            Self::EthernetPort => icon!("ethernet-port"),
+            Self::BatteryLow => icon!("battery-low-line"),
+            Self::BatteryMedium => icon!("battery-medium-line"),
+            Self::BatteryFull => icon!("battery-full-line"),
+            Self::BatteryCharging => icon!("battery-charge-line"),
+            Self::BatteryWarning => icon!("battery-line"),
+            Self::CornerDownLeft => icon!("corner-down-left-line"),
+            Self::ArrowBigUp => icon!("arrow-up-line"),
+            Self::ArrowBigUpDash => icon!("upload-line"),
+            Self::Delete => icon!("delete-back-2-line"),
+            Self::Space => icon!("space"),
+            Self::X => icon!("close-line"),
+            Self::ArrowLeft => icon!("arrow-left-line"),
+            Self::ArrowRight => icon!("arrow-right-line"),
+            Self::ArrowRightToLine => icon!("skip-right-line"),
+            Self::Gamepad => icon!("gamepad-2"),
         }
+    }
+
+    const fn svg(self) -> &'static str {
+        self.file().1
     }
 
     /// The icon as a `size`×`size` image in `color`.
     pub fn render(self, size: u32, color: Rgba) -> Option<Pixmap> {
         let [red, green, blue, alpha] = color.0.to_be_bytes();
-        let stroke = format!(
-            "stroke=\"#{red:02x}{green:02x}{blue:02x}\" stroke-opacity=\"{:.3}\"",
-            f32::from(alpha) / 255.0
-        );
-        let svg = self.svg().replace("stroke=\"currentColor\"", &stroke);
+        let paint = format!("#{red:02x}{green:02x}{blue:02x}");
+        let opacity = f32::from(alpha) / 255.0;
+        // Remix Icon fills its shapes, Lucide strokes its lines
+        let svg = self
+            .svg()
+            .replace(
+                "fill=\"currentColor\"",
+                &format!("fill=\"{paint}\" fill-opacity=\"{opacity:.3}\""),
+            )
+            .replace(
+                "stroke=\"currentColor\"",
+                &format!("stroke=\"{paint}\" stroke-opacity=\"{opacity:.3}\""),
+            );
         let tree = usvg::Tree::from_str(&svg, &usvg::Options::default())
             .inspect_err(|err| log::warn!("icon {self:?}: {err}"))
             .ok()?;
@@ -281,12 +308,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn icons_go_by_lucide_s_names() {
+    fn icons_go_by_their_sets_names() {
         assert_eq!(Icon::named("trophy"), Some(Icon::Trophy));
-        assert_eq!(
-            Icon::named("arrow-right-to-line"),
-            Some(Icon::ArrowRightToLine)
-        );
+        assert_eq!(Icon::named("trophy"), Some(Icon::Trophy));
+        assert_eq!(Icon::named("cup"), Some(Icon::Coffee));
+        assert_eq!(Icon::named("signal-wifi-fill"), Some(Icon::Wifi));
+        assert_eq!(Icon::named("space"), Some(Icon::Space));
         assert_eq!(Icon::named("nope"), None);
         for icon in Icon::ALL {
             assert_eq!(Icon::named(icon.name()), Some(icon), "{icon:?}");

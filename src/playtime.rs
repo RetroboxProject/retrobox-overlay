@@ -1,7 +1,7 @@
 //! How long the game has been played: this time (since its emulator
-//! started) and in all (EmulationStation's `gametime`, which counts the
-//! times before, plus this one), shown in the menu's status line and on the
-//! game's page.
+//! started), in the menu's status line, and in all (EmulationStation's
+//! `gametime`, which counts the times before, plus this one), on the game's
+//! page.
 
 use std::time::{Duration, Instant};
 
@@ -31,19 +31,9 @@ impl PlayClock {
         self.before + self.session()
     }
 
-    /// "25 min", or "25 min · 3 h 10 min in total" when it was played before.
+    /// "25 min": this time (the total is the game page's).
     pub fn text(&self, translator: &Translator) -> String {
-        let session = duration_text(self.session(), translator);
-        if self.before.is_zero() {
-            return session;
-        }
-        translator.text_strings(
-            "play-time",
-            &[
-                ("session", &session),
-                ("total", &duration_text(self.total(), translator)),
-            ],
-        )
+        duration_text(self.session(), translator)
     }
 }
 
@@ -78,11 +68,11 @@ mod tests {
     #[test]
     fn this_time_and_in_all() {
         let translator = Translator::new("en_US");
-        let clock = |before: u64| PlayClock {
+        let clock = PlayClock {
             started: Instant::now().checked_sub(Duration::from_mins(25)).unwrap(),
-            before: Duration::from_mins(before),
+            before: Duration::from_mins(165),
         };
-        assert_eq!(clock(0).text(&translator), "25 min");
-        assert_eq!(clock(165).text(&translator), "25 min · 3 h 10 min in total");
+        assert_eq!(clock.text(&translator), "25 min");
+        assert_eq!(duration_text(clock.total(), &translator), "3 h 10 min");
     }
 }

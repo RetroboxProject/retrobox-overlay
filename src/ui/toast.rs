@@ -1,14 +1,14 @@
 //! A toast's card (see `toast`): drawn once in the menu's colours and fonts
 //! (the theme's background, title and small text), with an icon, a title and
 //! a line or two; the volume keys' one has the volume's icon and a bar like
-//! the menu's volume slider, with the volume in percent after it.
+//! the menu's volume slider.
 
 use cosmic_text::Align;
 use tiny_skia::Pixmap;
 
 use super::panel::{
-    DISABLED_ALPHA, Element, FONT_SIZE_MEDIUM, FONT_SIZE_SMALL, TRACK_ALPHA, draw_icon, fill,
-    fill_circle, fill_path, rounded_rect,
+    DISABLED_ALPHA, Element, FONT_SIZE_MEDIUM, FONT_SIZE_SMALL, TRACK_ALPHA, draw_icon, fill_path,
+    rounded_rect,
 };
 use super::text::{Fonts, TextBox};
 use crate::theme::{MenuTheme, Rgba};
@@ -23,10 +23,8 @@ const MAX_WIDTH: f32 = 0.45;
 const MAX_LINES: usize = 3;
 /// The volume's card is narrower, relative to the screen's smaller side.
 const VOLUME_WIDTH: f32 = 0.4;
-/// Its bar's thickness and knob, relative to the icon (the menu slider's
-/// proportions).
-const TRACK_THICKNESS: f32 = 0.14;
-const KNOB_RADIUS: f32 = 0.27;
+/// Its bar's thickness, relative to the icon.
+const BAR_THICKNESS: f32 = 0.2;
 
 /// A toast drawn for a screen: its picture, and where it goes.
 pub struct ToastCard {
@@ -65,11 +63,10 @@ impl ToastCard {
             let bar = Bar {
                 left: pad * 2.0 + icon,
                 right: card_width - pad,
-                top: pad,
-                height: icon,
+                middle: pad + icon / 2.0,
                 icon,
             };
-            bar.draw(&mut pixmap, fonts, &text, level, color);
+            bar.draw(&mut pixmap, level, color);
             return Some(Self {
                 pixmap,
                 margin: pad as u32,
@@ -143,66 +140,46 @@ fn card(theme: &MenuTheme, width: f32, height: f32, pad: f32) -> Option<Pixmap> 
     Some(pixmap)
 }
 
-/// Where the volume's bar goes, the percentage included.
+/// Where the volume's bar goes: between the icon and the card's edge, past
+/// its padding (`left`, `right`), across the icon's middle.
 struct Bar {
     left: f32,
     right: f32,
-    top: f32,
-    height: f32,
+    middle: f32,
     icon: f32,
 }
 
 impl Bar {
-    /// A line filled up to the volume, with a knob, and the volume in percent
-    /// after it; muted, faded (its value kept), as the menu's slider.
-    fn draw(
-        &self,
-        pixmap: &mut Pixmap,
-        fonts: &mut Fonts,
-        text: &Element,
-        level: Level,
-        color: Rgba,
-    ) {
+    /// A rounded bar filled up to the volume, faded when muted (its value
+    /// kept), as the menu's slider is; it only shows, so it has no knob.
+    fn draw(&self, pixmap: &mut Pixmap, level: Level, color: Rgba) {
         let color = if level.muted {
             color.with_alpha(DISABLED_ALPHA.min((color.0 & 0xff) as u8))
         } else {
             color
         };
-        let value_width = fonts.measure(&text.font, "100%").ceil() + self.icon * 0.3;
-        let (start, end) = (self.left + self.icon * 0.2, self.right - value_width);
-        let middle = self.top + self.height / 2.0;
-        let thickness = (self.icon * TRACK_THICKNESS).max(3.0).round();
-        let knob = (self.icon * KNOB_RADIUS).max(6.0);
-        let filled = start + (end - start) * level.value();
-        fill(
-            pixmap,
-            filled,
-            middle - thickness / 2.0,
-            end - filled,
-            thickness,
-            color.with_alpha(TRACK_ALPHA.min((color.0 & 0xff) as u8)),
-        );
-        fill(
-            pixmap,
-            start,
-            middle - thickness / 2.0,
-            filled - start,
-            thickness,
-            color,
-        );
-        fill_circle(pixmap, (filled, middle), knob, color);
-        fonts.draw(
-            pixmap,
-            &text.font,
-            &format!("{}%", level.percent),
-            TextBox {
-                x: end,
-                y: self.top,
-                width: self.right - end,
-                height: self.height,
-                align: Align::Right,
-            },
-            color,
-        );
+        let thickness = (self.icon * BAR_THICKNESS).max(4.0).round();
+        let top = self.middle - thickness / 2.0;
+        let width = self.right - self.left;
+        let track = color.with_alpha(TRACK_ALPHA.min((color.0 & 0xff) as u8));
+        pill(pixmap, self.left, top, width, thickness, track);
+        let filled = (width * level.value()).round();
+        if filled > 0.0 {
+            pill(
+                pixmap,
+                self.left,
+                top,
+                filled.max(thickness),
+                thickness,
+                color,
+            );
+        }
+    }
+}
+
+/// A rectangle with round ends.
+fn pill(pixmap: &mut Pixmap, x: f32, y: f32, width: f32, height: f32, color: Rgba) {
+    if let Some(path) = rounded_rect(x, y, width, height, height.min(width) / 2.0) {
+        fill_path(pixmap, &path, color);
     }
 }

@@ -93,7 +93,6 @@ info-players = Gracze
 info-rating = Ocena
 info-play-count = Liczba uruchomień
 info-play-time = Czas gry
-play-time = { $session } · { $total } łącznie
 break-title = Czas na przerwę?
 break-text = Grasz już { $time }. Daj odpocząć oczom i trochę się rozciągnij.
 duration-minutes = { $minutes } min

@@ -93,7 +93,6 @@ info-players = Players
 info-rating = Rating
 info-play-count = Times played
 info-play-time = Time played
-play-time = { $session } · { $total } in total
 break-title = Time for a break?
 break-text = You've been playing for { $time }. Rest your eyes and stretch a little.
 duration-minutes = { $minutes } min

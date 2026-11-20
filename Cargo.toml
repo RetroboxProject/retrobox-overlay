@@ -5,7 +5,7 @@
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.91"
-license = "GPL-2.0-only"
+license = "GPL-3.0-only"
 authors = ["Manu Romero <manu4.2012@gmail.com>"]
 repository = "https://github.com/RetroboxProject/retrobox-overlay"
 
@@ -111,10 +111,13 @@ assets = [
     ["data/retrobox-inputd.service", "usr/lib/systemd/user/", "644"],
     ["README.md", "usr/share/doc/retrobox-overlay/", "644"],
     ["data/overlay.ini", "usr/share/doc/retrobox-overlay/overlay.ini.example", "644"],
+    ["assets/icons/NOTICE", "usr/share/doc/retrobox-overlay/icons/", "644"],
+    ["assets/icons/LICENSE-remixicon", "usr/share/doc/retrobox-overlay/icons/", "644"],
+    ["assets/icons/LICENSE-lucide", "usr/share/doc/retrobox-overlay/icons/", "644"],
 ]
 
 [package.metadata.generate-rpm]
-license = "GPL-2.0-only"
+license = "GPL-3.0-only"
 assets = [
     { source = "target/release/retrobox-overlay", dest = "/usr/bin/retrobox-overlay", mode = "755" },
     { source = "target/release/retrobox-inputd", dest = "/usr/bin/retrobox-inputd", mode = "755" },
@@ -122,6 +125,9 @@ assets = [
     { source = "README.md", dest = "/usr/share/doc/retrobox-overlay/README.md", mode = "644", doc = true },
     { source = "data/overlay.ini", dest = "/usr/share/doc/retrobox-overlay/overlay.ini.example", mode = "644", doc = true },
     { source = "LICENSE", dest = "/usr/share/licenses/retrobox-overlay/LICENSE", mode = "644", doc = true },
+    { source = "assets/icons/NOTICE", dest = "/usr/share/licenses/retrobox-overlay/icons/NOTICE", mode = "644", doc = true },
+    { source = "assets/icons/LICENSE-remixicon", dest = "/usr/share/licenses/retrobox-overlay/icons/LICENSE-remixicon", mode = "644", doc = true },
+    { source = "assets/icons/LICENSE-lucide", dest = "/usr/share/licenses/retrobox-overlay/icons/LICENSE-lucide", mode = "644", doc = true },
 ]
 
 [package.metadata.generate-rpm.requires]

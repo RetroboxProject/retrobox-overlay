@@ -1861,7 +1861,7 @@ fn first_choice(page: &ListPage) -> usize {
 }
 
 /// A filled circle.
-pub(super) fn fill_circle(pixmap: &mut Pixmap, centre: (f32, f32), radius: f32, color: Rgba) {
+fn fill_circle(pixmap: &mut Pixmap, centre: (f32, f32), radius: f32, color: Rgba) {
     if let Some(path) = PathBuilder::from_circle(centre.0, centre.1, radius) {
         fill_path(pixmap, &path, color);
     }
@@ -2013,7 +2013,7 @@ fn draw_fitted(pixmap: &mut Pixmap, image: &Pixmap, frame: (f32, f32, f32, f32))
     );
 }
 
-pub(super) fn fill(pixmap: &mut Pixmap, x: f32, y: f32, width: f32, height: f32, color: Rgba) {
+fn fill(pixmap: &mut Pixmap, x: f32, y: f32, width: f32, height: f32, color: Rgba) {
     if let Some(rect) = Rect::from_xywh(x, y, width, height) {
         let mut paint = Paint::default();
         paint.set_color(color.to_color());
