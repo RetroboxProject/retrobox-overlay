@@ -104,6 +104,16 @@ the keyboard or the mouse.
 * With EmulationStation's *Right analog stick changes volume* option on (the default), the
   right stick sets the volume wherever the selection is in the main menu.
 
+### Volume keys
+
+`retrobox-overlay --volume up|down|mute` is a volume key: it steps the default output's volume
+by 5 % (never above 100 %) or mutes and unmutes it, with PipeWire or PulseAudio alike. Retrobox's
+labwc session binds the keyboard's volume keys (and a handheld's buttons) to it. With
+`toast = true` in `[volume]` (off by default: desktops show their own), each press also shows
+the volume at the top of the screen, on the menu's side: its icon and a bar like the menu's
+slider. The toast takes no input at all, follows the presses that come after the first, and goes
+3 seconds after the last one; it does not show while the menu is open (its slider does).
+
 ### Outside games
 
 In EmulationStation the same button opens the system's menu, like the Switch's quick settings:
@@ -317,6 +327,10 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
   changed, and slider changes reach the system at most every 50 ms. Some cost stays: while any
   surface is over a fullscreen game, the compositor composites the game's frames instead of
   showing them directly, as with Steam's overlay.
+* **The game comes first.** The overlay, and the programs it starts (the sound player, the
+  tools it reads the system with), run at a lower CPU priority (nice 10): opening does a lot at
+  once, which on a small machine (a Nintendo Switch) would otherwise take the cores from the
+  game for a moment and make its audio stutter. A silent toast starts no sound player at all.
 * **The game keeps the focus.** Opened from a controller, the overlay does not take the
   keyboard (`take_keyboard = auto`): many games slow down when they lose the focus. Opened
   from the keyboard it takes it, and closes when another window gets it (Alt+Tab).
@@ -363,6 +377,7 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
 | `[status]` | the battery's percentage |
 | `[system]` | whether *Sleep mode* and, on a Nintendo Switch, the performance profiles are offered (the power button) |
 | `[sounds]` | the volume of the menu's sounds (0: none) |
+| `[volume]` | `toast`: show the volume when the volume keys change it (off) |
 | `[break]` | when a break is suggested: `after_min` of play (120; 0: never), then `every_min` (30; 0: once) |
 | `[touch]` | `row_scale`: taller rows for touch screens |
 | `[manual]` | who scales the manual's pages |

@@ -58,6 +58,12 @@ impl Mixer {
         }
     }
 
+    /// What a read said about the mute: a change then only touches it
+    /// when it has to.
+    pub const fn knows_muted(&mut self, muted: bool) {
+        self.muted = Some(muted);
+    }
+
     /// Mute or unmute the default output, its volume kept.
     pub fn set_mute(&mut self, muted: bool) {
         let mute = if muted { "1" } else { "0" };

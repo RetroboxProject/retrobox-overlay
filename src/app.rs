@@ -221,6 +221,9 @@ pub struct Content {
     pub task: Option<crate::task::Options>,
     /// A toast instead of the menu (`--toast`).
     pub toast: Option<Toast>,
+    /// Where the volume keys' presses after the first one come from, for
+    /// their toast (see `volume`).
+    pub toast_feed: Option<std::os::unix::net::UnixDatagram>,
     /// What the threads that read find (the volume, the display settings'
     /// primary screen), and how more threads send it.
     pub controls: Option<Channel<Msg>>,
@@ -506,7 +509,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         grab_keyboard(&handle, window)?;
     }
     let mut state = State {
-        sounds: Sounds::of_menu(content.config.sound_volume),
+        sounds: toast_view::sounds(toast.as_ref(), content.config.sound_volume),
         display,
         focused: false,
         handle,

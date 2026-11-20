@@ -183,7 +183,7 @@ const ICON_GAP: f32 = 0.7;
 /// Opacity of the frame drawn where a slot has no preview.
 const EMPTY_PREVIEW_ALPHA: u8 = 0x30;
 /// Opacity of the text of a slot that cannot be chosen.
-const DISABLED_ALPHA: u8 = 0x80;
+pub(super) const DISABLED_ALPHA: u8 = 0x80;
 
 #[derive(Debug, Clone)]
 pub struct MenuItem {
@@ -236,7 +236,7 @@ impl StatusBar {
 const TRACK_END: f32 = 0.84;
 const VALUE_START: f32 = 0.87;
 /// Opacity of the part of a slider's track past its value.
-const TRACK_ALPHA: u8 = 0x50;
+pub(super) const TRACK_ALPHA: u8 = 0x50;
 /// A slider's track and knob, relative to the entries' height.
 const TRACK_THICKNESS: f32 = 0.12;
 const KNOB_RADIUS: f32 = 0.24;
@@ -1861,7 +1861,7 @@ fn first_choice(page: &ListPage) -> usize {
 }
 
 /// A filled circle.
-fn fill_circle(pixmap: &mut Pixmap, centre: (f32, f32), radius: f32, color: Rgba) {
+pub(super) fn fill_circle(pixmap: &mut Pixmap, centre: (f32, f32), radius: f32, color: Rgba) {
     if let Some(path) = PathBuilder::from_circle(centre.0, centre.1, radius) {
         fill_path(pixmap, &path, color);
     }
@@ -2013,7 +2013,7 @@ fn draw_fitted(pixmap: &mut Pixmap, image: &Pixmap, frame: (f32, f32, f32, f32))
     );
 }
 
-fn fill(pixmap: &mut Pixmap, x: f32, y: f32, width: f32, height: f32, color: Rgba) {
+pub(super) fn fill(pixmap: &mut Pixmap, x: f32, y: f32, width: f32, height: f32, color: Rgba) {
     if let Some(rect) = Rect::from_xywh(x, y, width, height) {
         let mut paint = Paint::default();
         paint.set_color(color.to_color());

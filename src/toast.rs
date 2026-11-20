@@ -28,6 +28,7 @@ use nix::fcntl::{Flock, FlockArg};
 
 use crate::sound::Sound;
 use crate::ui::icons::Icon;
+use crate::volume::{self, Level};
 
 /// How long a toast stays when nothing says it, and at most.
 const DEFAULT_SECONDS: u64 = 6;
@@ -46,6 +47,9 @@ pub struct Toast {
     pub sound: Option<Sound>,
     /// How long it stays, faded in.
     pub shown: Duration,
+    /// The volume, as a bar in place of the texts (the volume keys' toast,
+    /// see `volume`).
+    pub level: Option<Level>,
 }
 
 /// What `--toast` asks for.
@@ -75,6 +79,7 @@ impl Request {
             text: String::new(),
             sound: Some(Sound::Select),
             shown: Duration::from_secs(DEFAULT_SECONDS),
+            level: None,
         };
         let mut args = args.iter();
         while let Some(option) = args.next() {
@@ -119,6 +124,34 @@ impl Toast {
             text,
             sound: Some(Sound::Select),
             shown: Duration::from_secs(BREAK_SECONDS),
+            level: None,
+        }
+    }
+
+    /// The volume keys' toast, silent: the volume's icon and a bar (see
+    /// `volume`).
+    pub fn volume(level: Level) -> Self {
+        Self {
+            icon: Self::volume_icon(level),
+            title: String::new(),
+            text: String::new(),
+            sound: None,
+            shown: volume::STAYS,
+            level: Some(level),
+        }
+    }
+
+    /// The same toast at another volume.
+    pub fn set_level(&mut self, level: Level) {
+        self.icon = Self::volume_icon(level);
+        self.level = Some(level);
+    }
+
+    fn volume_icon(level: Level) -> Icon {
+        if level.muted {
+            Icon::VolumeX
+        } else {
+            Icon::volume(level.value())
         }
     }
 }
@@ -170,6 +203,7 @@ mod tests {
                 text: "First blood".to_owned(),
                 sound: None,
                 shown: Duration::from_secs(MAX_SECONDS),
+                level: None,
             })
         );
     }

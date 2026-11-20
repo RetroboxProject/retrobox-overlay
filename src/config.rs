@@ -34,6 +34,11 @@
 //!                         ; back), 0 to 100 (0: none); none either with
 //!                         ; ES's "Enable navigation sounds" off
 //!
+//! [volume]                ; the volume keys (retrobox-overlay --volume)
+//! toast = false           ; show the volume as they change it, at the top
+//!                         ; of the screen on the menu's side (for sessions
+//!                         ; without a desktop's own)
+//!
 //! [break]                 ; read by retrobox-inputd (retrobox_input::breaks)
 //! after_min = 120         ; minutes of play before a break is suggested
 //!                         ; (0: never)
@@ -114,6 +119,8 @@ pub struct Config {
     pub row_scale: f32,
     /// The volume of the menu's sounds, in percent (0: none).
     pub sound_volume: u8,
+    /// Whether the volume keys show a toast of the volume.
+    pub volume_toast: bool,
 }
 
 /// The on-screen keyboard's width, relative to the screen's: the least, the
@@ -250,6 +257,7 @@ impl Default for Config {
             },
             row_scale: 1.0,
             sound_volume: SOUND_VOLUME,
+            volume_toast: false,
         }
     }
 }
@@ -390,6 +398,12 @@ impl Config {
                 Ok(volume) => self.sound_volume = volume.clamp(0.0, 100.0).round() as u8,
                 Err(_) => log::warn!("overlay.ini: unknown sounds volume {volume:?}"),
             }
+        }
+        if let Some(toast) = ini
+            .section(Some("volume"))
+            .and_then(|section| section.get("toast"))
+        {
+            self.volume_toast = !is_off(toast);
         }
     }
 
@@ -563,7 +577,7 @@ mod tests {
             user.join(FILE_NAME),
             "[overlay]\ndim=2\n[clock]\nposition=top\nsize=small\n\
              [status]\nbattery_percent=no\n[touch]\nrow_scale=1.66\n\
-             [sounds]\nvolume=150\n[system]\nperformance=off\n",
+             [sounds]\nvolume=150\n[system]\nperformance=off\n[volume]\ntoast=yes\n",
         )
         .unwrap();
 
@@ -575,6 +589,7 @@ mod tests {
         assert!(!config.system.performance);
         assert!((config.row_scale - 1.66).abs() < f32::EPSILON);
         assert_eq!(config.sound_volume, 100);
+        assert!(config.volume_toast);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

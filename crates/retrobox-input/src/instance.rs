@@ -80,11 +80,21 @@ fn read_pid(file: &mut File) -> Option<i32> {
 
 /// Whether the daemon runs, and its pid.
 pub fn daemon_pid(runtime_dir: &Path) -> Option<i32> {
-    let mut file = File::open(runtime_dir.join(DAEMON_LOCK_FILE)).ok()?;
-    // the daemon holds the lock: taking it fails
+    held(runtime_dir, DAEMON_LOCK_FILE).and_then(|mut file| read_pid(&mut file))
+}
+
+/// Whether the overlay is on screen (the menu, or the on-screen keyboard).
+pub fn overlay_open(runtime_dir: &Path) -> bool {
+    held(runtime_dir, LOCK_FILE).is_some()
+}
+
+/// A lock's file, when a process holds it.
+fn held(runtime_dir: &Path, name: &str) -> Option<File> {
+    let file = File::open(runtime_dir.join(name)).ok()?;
+    // its holder keeps it: taking it fails
     match Flock::lock(file.try_clone().ok()?, FlockArg::LockSharedNonblock) {
         Ok(_) => None,
-        Err(_) => read_pid(&mut file),
+        Err(_) => Some(file),
     }
 }
 

@@ -31,6 +31,7 @@ mod task;
 mod theme;
 mod toast;
 mod ui;
+mod volume;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -55,6 +56,9 @@ use crate::ui::text::Fonts;
 use retrobox_input::instance::{self, Instance};
 use retrobox_input::{held, launch, logging, paths};
 
+/// How much lower the overlay's CPU priority is than the game's.
+const NICENESS: i32 = 10;
+
 const HELP: &str = "\
 retrobox-overlay: Retrobox's in-game menu
 
@@ -63,6 +67,7 @@ Usage: retrobox-overlay [--show [--pad DEVICE]... | --osk | --demo]
        retrobox-overlay --toast --title TEXT [--text TEXT] [--icon NAME]
                         [--sound select|back|scroll|none] [--seconds N]
        retrobox-overlay --toast break
+       retrobox-overlay --volume up|down|mute
        retrobox-overlay --task --label NAME --log FILE [--check FILE]
                         [--background PNG] [--pad DEVICE]... [--lang CODE]
                         [--download | --reinstall] -- COMMAND [ARGUMENT]...
@@ -89,6 +94,11 @@ directory) when no daemon runs; started again while open, it closes it.
                  info...); the texts are shown as given. --toast break:
                  the break reminder (retrobox-inputd shows it after a while
                  playing: [break] in overlay.ini)
+  --volume       a volume key: step the default output's volume by 5 %
+                 (up to 100 %), or mute and unmute it; with [volume] toast
+                 in overlay.ini, show it at the top of the screen, on the
+                 menu's side, for 3 seconds after the last press (the
+                 session's key bindings run this)
   --version      print the version
   --help         print this help
 
@@ -114,6 +124,10 @@ Log: stderr from a terminal, else ~/.local/state/retrobox/logs/overlay.log; RUST
 fn main() -> ExitCode {
     let launched = std::time::Instant::now();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // (not the input daemon this mode becomes: the game's input goes through it)
+    if !args.iter().any(|arg| arg == "--daemon") {
+        lower_priority();
+    }
     // before anything else looks at the arguments: those of a task's command
     // come after its own and are none of the overlay's
     match args.first().map(String::as_str) {
@@ -126,6 +140,7 @@ fn main() -> ExitCode {
         }
         Some("--task") => return run_task(&args),
         Some("--toast") => return run_toast(&args[1..]),
+        Some("--volume") => return run_volume(&args[1..]),
         _ => {}
     }
     if args.iter().any(|arg| arg == "--daemon") {
@@ -171,6 +186,18 @@ fn main() -> ExitCode {
             log::error!("{err:#}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// The game first: the overlay, and what it starts (the sound player, the
+/// tools it reads the system with), runs at a lower CPU priority. Opening
+/// does a lot at once (fonts, the theme, pictures, the controllers, a few
+/// programs), which on a small machine (a Nintendo Switch) would otherwise
+/// take the cores from the game for a moment: its audio stutters. With cores
+/// to spare, as when only the menu runs, nothing changes.
+fn lower_priority() {
+    if let Err(err) = rustix::process::nice(NICENESS) {
+        log::warn!("cannot lower the overlay's priority: {err}");
     }
 }
 
@@ -258,6 +285,7 @@ fn task_screen(options: task::Options, log: Option<&std::fs::File>) -> Result<u8
         screens: system::brightness::Screens::scan(),
         task: Some(options),
         toast: None,
+        toast_feed: None,
     })?;
     Ok(match outcome {
         Outcome::Task(status) => status,
@@ -304,32 +332,94 @@ fn toast_screen(request: toast::Request) -> Result<()> {
     let runtime_dir = paths::runtime_dir();
     let _turn = toast::wait_turn(&runtime_dir)?;
     let session = Session::load(&runtime_dir);
+    let config = Config::load(&paths::config_dirs());
+    show_toast(&runtime_dir, session.as_ref(), config, None, |translator| {
+        Ok(match request {
+            toast::Request::Given(toast) => toast,
+            toast::Request::Break => {
+                let played = session
+                    .as_ref()
+                    .and_then(Session::running_for)
+                    .context("no game is running: no break to suggest")?;
+                toast::Toast::break_reminder(
+                    translator.text("break-title"),
+                    translator.text_strings(
+                        "break-text",
+                        &[("time", &playtime::duration_text(played, translator))],
+                    ),
+                )
+            }
+        })
+    })
+}
+
+/// `--volume up|down|mute`: a volume key pressed (see `volume`).
+fn run_volume(args: &[String]) -> ExitCode {
+    let Some(key) = args.first().and_then(|name| volume::Key::parse(name)) else {
+        eprintln!("retrobox-overlay --volume: up, down or mute");
+        return ExitCode::from(2);
+    };
+    let log = logging::init("overlay-volume.log");
+    block_usr1();
+    match volume_key(key, log.as_ref()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            log::error!("{err:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Change the volume and show it: on the toast on screen, or on a new one
+/// (that this process then is, until it goes).
+fn volume_key(key: volume::Key, log: Option<&std::fs::File>) -> Result<()> {
+    let runtime_dir = paths::runtime_dir();
+    std::fs::create_dir_all(&runtime_dir)
+        .with_context(|| format!("cannot create {}", runtime_dir.display()))?;
+    let (level, turn) = volume::press(key, &runtime_dir)?;
+    let config = Config::load(&paths::config_dirs());
+    // the menu's slider shows it already
+    if !config.volume_toast || instance::overlay_open(&runtime_dir) {
+        return Ok(());
+    }
+    let volume::Turn::Toast(shown) = volume::hand_over(level, &runtime_dir)? else {
+        return Ok(());
+    };
+    // the next presses may go on: they reach this toast
+    drop(turn);
+    if let Some(log) = log {
+        log.set_len(0).ok();
+    }
+    let feed = shown
+        .socket
+        .try_clone()
+        .context("cannot share the volume toast's socket")?;
+    let session = Session::load(&runtime_dir);
+    let result = show_toast(&runtime_dir, session.as_ref(), config, Some(feed), |_| {
+        Ok(toast::Toast::volume(level))
+    });
+    shown.end();
+    result
+}
+
+/// Show a toast, in the menu's theme and language (`toast_for` writes it).
+fn show_toast(
+    runtime_dir: &Path,
+    session: Option<&Session>,
+    config: Config,
+    feed: Option<std::os::unix::net::UnixDatagram>,
+    toast_for: impl FnOnce(&Translator) -> Result<toast::Toast>,
+) -> Result<()> {
     let theme_path = session
-        .as_ref()
         .and_then(Session::menu_theme_path)
         .unwrap_or_else(|| runtime_dir.join("es-menu-theme.json"));
     let theme = MenuTheme::load_or_kept(&theme_path, &paths::kept_menu_theme());
     let language = i18n::preferred_language(&theme.language);
     let translator = Translator::new(&language);
-    let toast = match request {
-        toast::Request::Given(toast) => toast,
-        toast::Request::Break => {
-            let played = session
-                .as_ref()
-                .and_then(Session::running_for)
-                .context("no game is running: no break to suggest")?;
-            toast::Toast::break_reminder(
-                translator.text("break-title"),
-                translator.text_strings(
-                    "break-text",
-                    &[("time", &playtime::duration_text(played, &translator))],
-                ),
-            )
-        }
-    };
+    let toast = toast_for(&translator)?;
     let fonts = theme_fonts(&theme, &language);
     app::run(Content {
-        config: Config::load(&paths::config_dirs()),
+        config,
         theme,
         fonts,
         title: String::new(),
@@ -359,6 +449,7 @@ fn toast_screen(request: toast::Request) -> Result<()> {
         screens: system::brightness::Screens::default(),
         task: None,
         toast: Some(toast),
+        toast_feed: feed,
     })?;
     Ok(())
 }
@@ -476,6 +567,7 @@ fn run(
         screens,
         task: None,
         toast: None,
+        toast_feed: None,
     })?;
     // The overlay is gone and the controllers are the game's again; the
     // keyboard focus is on its way back to the game. Another overlay may

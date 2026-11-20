@@ -3,18 +3,27 @@
 //! keyboard nor the controllers. It fades in with its sound, stays its time
 //! and fades out; the overlay then ends. The card is the dim's own surface,
 //! sized to it (see `run`).
+//!
+//! The volume keys' toast (see `volume`) also listens to the presses that
+//! come after the one that showed it: each one redraws its bar and makes it
+//! stay its time again (back from fading out, if it was).
 
+use std::os::unix::net::UnixDatagram;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
+use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
+use smithay_client_toolkit::reexports::calloop::{Interest, Mode, PostAction};
 use smithay_client_toolkit::shell::wlr_layer::Anchor;
 
 use super::display::{Display, Spec};
 use super::{Content, FRAME, Outcome, State, ease_out};
 use crate::config::Side;
-use crate::sound::Sound;
+use crate::sound::{Sound, Sounds};
+use crate::toast::Toast;
 use crate::ui::toast::ToastCard;
+use crate::volume::{self, Level};
 
 /// The screen a card is sized for when the display does not say it.
 const SCREEN: (u32, u32) = (1920, 1080);
@@ -24,6 +33,10 @@ pub(super) struct Shown {
     card: ToastCard,
     sound: Option<Sound>,
     stays: Duration,
+    /// What it shows, and the screen it is drawn for (the volume's card is
+    /// drawn again as the volume changes).
+    toast: Toast,
+    screen: (u32, u32),
 }
 
 /// The toast's card, drawn for the screen, when one is asked for: it only
@@ -40,7 +53,16 @@ pub(super) fn card(content: &mut Content, display: &Display) -> Result<Option<Sh
         card,
         sound: toast.sound,
         stays: toast.shown,
+        toast,
+        screen,
     }))
+}
+
+/// The menu's sounds, at `volume`; none for a silent toast, which then
+/// starts no player (no stream next to the game's).
+pub(super) fn sounds(shown: Option<&Shown>, volume: u8) -> Sounds {
+    let silent = shown.is_some_and(|shown| shown.sound.is_none());
+    Sounds::of_menu(if silent { 0 } else { volume })
 }
 
 /// Where the card goes: at the top of the screen, on the menu's side.
@@ -67,11 +89,69 @@ impl State {
             self.sounds.play(sound);
         }
         self.started = Some(Instant::now());
-        let started = self
-            .handle
-            .insert_source(Timer::immediate(), |_, &mut (), state| state.toast_frame());
-        if started.is_err() {
+        if !self.toast_timer() {
             self.outcome = Some(Outcome::Back);
+        }
+        if let Some(socket) = self.content.toast_feed.take() {
+            self.listen_to_presses(socket);
+        }
+    }
+
+    /// Start the steps of the card's life; false when it cannot.
+    fn toast_timer(&self) -> bool {
+        self.handle
+            .insert_source(Timer::immediate(), |_, &mut (), state| state.toast_frame())
+            .is_ok()
+    }
+
+    /// The volume keys' presses after the first: their volume, as it comes.
+    fn listen_to_presses(&self, socket: UnixDatagram) {
+        let source = Generic::new(socket, Interest::READ, Mode::Level);
+        let listening = self.handle.insert_source(source, |_, socket, state| {
+            if let Some(level) = volume::latest(socket) {
+                state.toast_volume(level);
+            }
+            Ok(PostAction::Continue)
+        });
+        if let Err(err) = listening {
+            log::warn!("cannot listen to the volume keys: {err}");
+        }
+    }
+
+    /// A press changed the volume: the bar shows it, and the card stays
+    /// from now (at full opacity again, if it was fading out; brought back,
+    /// if it had just gone).
+    fn toast_volume(&mut self, level: Level) {
+        let fade = Duration::from_millis(self.content.config.animation_ms);
+        let Some(shown) = self.toast.as_mut() else {
+            return;
+        };
+        if shown.toast.level != Some(level) {
+            shown.toast.set_level(level);
+            let card = ToastCard::new(
+                &self.content.theme,
+                shown.screen,
+                &mut self.content.fonts,
+                &shown.toast,
+            );
+            if let Some(card) = card {
+                shown.card = card;
+                self.draw_toast();
+            }
+        }
+        let now = Instant::now();
+        let fading_in = self
+            .started
+            .is_some_and(|started| now.duration_since(started) < fade);
+        if !fading_in {
+            self.started = Some(now.checked_sub(fade).unwrap_or(now));
+        }
+        // it had ended: its steps start again
+        if self.outcome == Some(Outcome::Back) {
+            self.outcome = None;
+            if !self.toast_timer() {
+                self.outcome = Some(Outcome::Back);
+            }
         }
     }
 
