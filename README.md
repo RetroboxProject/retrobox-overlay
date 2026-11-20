@@ -419,7 +419,7 @@ and fonts of the [*es-theme-iconic*](https://github.com/manu-creative-411/es-the
 GPL-3.0-only.
 
 The menu icons are [Remix Icon](https://remixicon.com)'s (4.5.0, outlined style, Apache License
-2.0) and a few of [Lucide](https://lucide.dev)'s (ISC license); see
+2.0) and a few of [Lucide](https://lucide.dev)'s (ISC license), redrawn to match; see
 [`assets/icons/NOTICE`](assets/icons/NOTICE) for which is which, the licenses next to it, and
 the few that are changed for the overlay. The sounds are the
 [iconic-es-de](https://github.com/Siddy212/iconic-es-de) theme's, by Siddy212

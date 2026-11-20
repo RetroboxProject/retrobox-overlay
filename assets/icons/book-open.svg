@@ -1,16 +1,1 @@
-<!-- @license lucide-static v1.70.0 - ISC -->
-<svg
-  class="lucide lucide-book-open"
-  xmlns="http://www.w3.org/2000/svg"
-  width="24"
-  height="24"
-  viewBox="0 0 24 24"
-  fill="none"
-  stroke="currentColor"
-  stroke-width="2"
-  stroke-linecap="round"
-  stroke-linejoin="round"
->
-  <path d="M12 5v16" />
-  <path d="M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z" />
-</svg>
+<svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M23,19 Q23,19.414 22.707,19.707 Q22.414,20 22,20 L16,20 Q14.162,20 13,21.351 L13,22 L12.064,22 Q12.014,22.003 11.962,22 L11,22 L11,21.351 Q9.838,20 8,20 L2,20 Q1.586,20 1.293,19.707 Q1,19.414 1,19 L1,3 Q1,2.586 1.293,2.293 Q1.586,2 2,2 L8,2 Q10.377,2 12,3.506 Q13.623,2 16,2 L22,2 Q22.414,2 22.707,2.293 Q23,2.586 23,3 Z M11,5.351 Q9.838,4 8,4 L3,4 L3,18 L8,18 Q9.691,18 11,18.762 Z M21,18 L21,4 L16,4 Q14.162,4 13,5.351 L13,18.762 Q14.309,18 16,18 Z"/></svg>

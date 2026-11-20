@@ -1,8 +1,9 @@
 //! The menu's icons: Remix Icon's outlined ("line") ones
 //! (<https://remixicon.com>, Apache License 2.0) and a few of Lucide's
-//! (<https://lucide.dev>, ISC license), built into the binary and drawn in
-//! the colour of the text next to them; see assets/icons/NOTICE for which
-//! is which and the ones changed for the overlay.
+//! (<https://lucide.dev>, ISC license) redrawn in Remix Icon's manner (shapes
+//! instead of strokes, sharper corners), built into the binary and filled in
+//! the colour of the text next to them; see assets/icons/NOTICE for which is
+//! which and what was changed for the overlay.
 
 use resvg::usvg;
 use tiny_skia::{Pixmap, Transform};
@@ -276,19 +277,11 @@ impl Icon {
     /// The icon as a `size`×`size` image in `color`.
     pub fn render(self, size: u32, color: Rgba) -> Option<Pixmap> {
         let [red, green, blue, alpha] = color.0.to_be_bytes();
-        let paint = format!("#{red:02x}{green:02x}{blue:02x}");
-        let opacity = f32::from(alpha) / 255.0;
-        // Remix Icon fills its shapes, Lucide strokes its lines
-        let svg = self
-            .svg()
-            .replace(
-                "fill=\"currentColor\"",
-                &format!("fill=\"{paint}\" fill-opacity=\"{opacity:.3}\""),
-            )
-            .replace(
-                "stroke=\"currentColor\"",
-                &format!("stroke=\"{paint}\" stroke-opacity=\"{opacity:.3}\""),
-            );
+        let fill = format!(
+            "fill=\"#{red:02x}{green:02x}{blue:02x}\" fill-opacity=\"{:.3}\"",
+            f32::from(alpha) / 255.0
+        );
+        let svg = self.svg().replace("fill=\"currentColor\"", &fill);
         let tree = usvg::Tree::from_str(&svg, &usvg::Options::default())
             .inspect_err(|err| log::warn!("icon {self:?}: {err}"))
             .ok()?;
