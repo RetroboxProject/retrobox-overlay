@@ -45,8 +45,10 @@ runs only while it is shown.
   itself in a small bubble.
 * **Sliders** for the volume and, on a built-in screen, the brightness, as tall as the
   buttons' row.
-* **Sounds** for moving, choosing and going back, like EmulationStation's (`[sounds]` in
-  `overlay.ini` sets their volume, or turns them off).
+* **Sounds** for moving, choosing and going back, like EmulationStation's, when its
+  *Enable navigation sounds* option is on (Retrobox's EmulationStation has it on by default);
+  the toasts' sounds follow it too. `[sounds]` in `overlay.ini` sets their volume, or turns
+  them off.
 * **Break reminder:** after two hours playing, and then every half hour, a toast at the top
   of the screen (on the menu's side, in its colours) suggests a break, with a sound, and goes
   away on its own a few seconds later. `[break]` in `overlay.ini` sets when, or turns it off.

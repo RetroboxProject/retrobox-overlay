@@ -31,7 +31,8 @@
 //!
 //! [sounds]
 //! volume = 50             ; the menu's sounds (moving, choosing, going
-//!                         ; back), 0 to 100 (0: none)
+//!                         ; back), 0 to 100 (0: none); none either with
+//!                         ; ES's "Enable navigation sounds" off
 //!
 //! [break]                 ; read by retrobox-inputd (retrobox_input::breaks)
 //! after_min = 120         ; minutes of play before a break is suggested

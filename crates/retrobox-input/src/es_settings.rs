@@ -6,16 +6,29 @@ use crate::paths;
 /// The option "RIGHT ANALOG STICK CHANGES VOLUME" of ES's advanced menu.
 const RIGHT_STICK_VOLUME: &str = "RightStickVolume";
 
+/// The option "ENABLE NAVIGATION SOUNDS" of ES's sound settings.
+const NAVIGATION_SOUNDS: &str = "EnableSounds";
+
 /// Whether the right stick sets the volume: ES's option, which is on unless
 /// the file says otherwise (ES does not write an option that has its default
 /// value).
 pub fn right_stick_volume() -> bool {
+    option(RIGHT_STICK_VOLUME).unwrap_or(true)
+}
+
+/// Whether the menu plays its sounds: ES's option, on by default (Retrobox's
+/// EmulationStation turns it on, upstream's has it off).
+pub fn navigation_sounds() -> bool {
+    option(NAVIGATION_SOUNDS).unwrap_or(true)
+}
+
+/// A boolean option of the user's `es_settings.cfg`, when it is written.
+fn option(name: &str) -> Option<bool> {
     paths::config_dirs()
         .pop()
         .map(|dir| dir.join("frontend/.emulationstation/es_settings.cfg"))
         .and_then(|file| std::fs::read_to_string(file).ok())
-        .and_then(|text| boolean(&text, RIGHT_STICK_VOLUME))
-        .unwrap_or(true)
+        .and_then(|text| boolean(&text, name))
 }
 
 /// The boolean option `name` of `text` (`es_settings.cfg`), if it has it. The

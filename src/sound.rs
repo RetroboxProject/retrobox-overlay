@@ -25,6 +25,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use retrobox_input::es_settings;
+
 use crate::system;
 
 /// The sounds' format (all three alike, see the tests): 16-bit stereo.
@@ -168,6 +170,16 @@ impl Sounds {
     pub fn new(volume: u8) -> Self {
         let feeder = (volume > 0).then(|| start(volume)).flatten();
         Self { feeder }
+    }
+
+    /// The overlay's, at `volume` percent: silent when EmulationStation's
+    /// navigation sounds are off.
+    pub fn of_menu(volume: u8) -> Self {
+        Self::new(if es_settings::navigation_sounds() {
+            volume
+        } else {
+            0
+        })
     }
 
     /// Play a sound, cutting the one before it short.

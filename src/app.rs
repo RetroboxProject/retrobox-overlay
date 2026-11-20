@@ -506,7 +506,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         grab_keyboard(&handle, window)?;
     }
     let mut state = State {
-        sounds: Sounds::new(content.config.sound_volume),
+        sounds: Sounds::of_menu(content.config.sound_volume),
         display,
         focused: false,
         handle,
