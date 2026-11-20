@@ -231,7 +231,7 @@ impl Icon {
             Self::RotateCw => icon!("reset-right-line"),
             Self::Moon => icon!("moon-line"),
             Self::Coffee => icon!("coffee"),
-            Self::Settings => icon!("settings-3-line"),
+            Self::Settings => icon!("settings"),
             Self::Camera => icon!("camera-line"),
             Self::LogOut => icon!("logout-box-r-line"),
             Self::Disc => icon!("disc-3"),
