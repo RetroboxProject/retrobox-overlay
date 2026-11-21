@@ -389,7 +389,11 @@ impl State {
             | Nav::Enter
             | Nav::StickUp
             | Nav::StickDown
-            | Nav::Flip => {}
+            | Nav::Flip
+            // (handled before, see `input`)
+            | Nav::VolumeUp
+            | Nav::VolumeDown
+            | Nav::Mute => {}
         }
     }
 

@@ -18,14 +18,18 @@
 //! `retrobox_input::breaks`).
 //!
 //! Toasts never overlap: one waits for the one before it to go (a lock in
-//! the runtime directory), so a burst of them shows one after another.
+//! the runtime directory), so a burst of them shows one after another. None
+//! shows while the overlay is open: opening it takes the one on screen away
+//! (the volume keys' too), and the ones waiting are dropped.
 
 use std::fs::{File, OpenOptions};
+use std::io::{Seek as _, Write as _};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use nix::fcntl::{Flock, FlockArg};
+use retrobox_input::instance;
 
 use crate::sound::Sound;
 use crate::ui::icons::Icon;
@@ -37,6 +41,10 @@ const MAX_SECONDS: u64 = 60;
 /// The break reminder's: a little longer, it has more to read.
 const BREAK_SECONDS: u64 = 8;
 const LOCK_FILE: &str = "toast.lock";
+/// How long the overlay waits for the toasts on screen to go, and how often
+/// it looks.
+const CLOSE_WAIT: Duration = Duration::from_millis(500);
+const CLOSE_POLL: Duration = Duration::from_millis(10);
 
 /// What a toast shows, and how.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,8 +175,40 @@ pub fn wait_turn(runtime_dir: &Path) -> Result<Flock<File>> {
         .write(true)
         .open(&path)
         .with_context(|| format!("cannot open {}", path.display()))?;
-    Flock::lock(file, FlockArg::LockExclusive)
-        .map_err(|(_, err)| anyhow!("cannot lock {}: {err}", path.display()))
+    let mut lock = Flock::lock(file, FlockArg::LockExclusive)
+        .map_err(|(_, err)| anyhow!("cannot lock {}: {err}", path.display()))?;
+    write_pid(&mut lock);
+    Ok(lock)
+}
+
+/// Write this process's pid in a lock it holds (see `close_shown`).
+pub fn write_pid(lock: &mut File) {
+    let written = lock
+        .set_len(0)
+        .and_then(|()| lock.rewind())
+        .and_then(|()| write!(lock, "{}", std::process::id()))
+        .and_then(|()| lock.flush());
+    if let Err(err) = written {
+        log::warn!("cannot write the toast's pid: {err}");
+    }
+}
+
+/// The overlay opens: the toasts on screen go (told as the overlay's
+/// shortcut tells it, SIGUSR1), and this waits, a moment at most, for them
+/// to be gone, so that the menu comes up alone. The ones waiting their turn
+/// see the overlay open, and never show (see `retrobox-overlay --toast`).
+pub fn close_shown(runtime_dir: &Path) {
+    for name in [LOCK_FILE, volume::TOAST_LOCK] {
+        let Some(pid) = instance::holder(runtime_dir, name) else {
+            continue;
+        };
+        log::info!("closing the toast on screen ({pid})");
+        instance::close_running(Some(pid));
+        let deadline = Instant::now() + CLOSE_WAIT;
+        while instance::is_held(runtime_dir, name) && Instant::now() < deadline {
+            std::thread::sleep(CLOSE_POLL);
+        }
+    }
 }
 
 #[cfg(test)]

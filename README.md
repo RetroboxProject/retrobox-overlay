@@ -112,7 +112,10 @@ labwc session binds the keyboard's volume keys (and a handheld's buttons) to it.
 `toast = true` in `[volume]` (off by default: desktops show their own), each press also shows
 the volume at the top of the screen, on the menu's side: its icon and a bar like the menu's
 slider. The toast takes no input at all, follows the presses that come after the first, and goes
-3 seconds after the last one; it does not show while the menu is open (its slider does).
+3 seconds after the last one; it does not show while the menu is open (its slider does). With
+the overlay open the volume keys still work: if the compositor hands them to it rather than
+running its bindings, the menu's slider moves (or mutes) with them, and the on-screen keyboard
+changes the volume as above, without a toast.
 
 ### Outside games
 
@@ -166,8 +169,10 @@ retrobox-overlay --toast --title TEXT [--text TEXT] [--icon NAME]
 [`assets/icons`](assets/icons) (Remix Icon's or Lucide's), with or without a Remix Icon's `-line`
 (`trophy`, `coffee`, `information`, `gamepad-2`...); the texts are shown as given (the caller
 translates them). Toasts never overlap:
-one asked for while another shows waits for it to go (a lock in the runtime directory). Opening
-the menu takes the break reminder away.
+one asked for while another shows waits for it to go (a lock in the runtime directory). None
+shows while the overlay is open: opening it takes the one on screen away first (the volume's
+too), so the menu comes up alone, and the ones asked for meanwhile are dropped, not kept for
+later.
 
 Achievements are not toasts: RetroArch, PCSX2, Dolphin and Flycast announce unlocks themselves,
 as soon as they happen, with the badge. Showing them

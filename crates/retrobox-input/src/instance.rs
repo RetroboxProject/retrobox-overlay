@@ -80,12 +80,22 @@ fn read_pid(file: &mut File) -> Option<i32> {
 
 /// Whether the daemon runs, and its pid.
 pub fn daemon_pid(runtime_dir: &Path) -> Option<i32> {
-    held(runtime_dir, DAEMON_LOCK_FILE).and_then(|mut file| read_pid(&mut file))
+    holder(runtime_dir, DAEMON_LOCK_FILE)
 }
 
 /// Whether the overlay is on screen (the menu, or the on-screen keyboard).
 pub fn overlay_open(runtime_dir: &Path) -> bool {
-    held(runtime_dir, LOCK_FILE).is_some()
+    is_held(runtime_dir, LOCK_FILE)
+}
+
+/// The pid of the process that holds a lock (it writes it in the file).
+pub fn holder(runtime_dir: &Path, name: &str) -> Option<i32> {
+    held(runtime_dir, name).and_then(|mut file| read_pid(&mut file))
+}
+
+/// Whether a process holds a lock.
+pub fn is_held(runtime_dir: &Path, name: &str) -> bool {
+    held(runtime_dir, name).is_some()
 }
 
 /// A lock's file, when a process holds it.

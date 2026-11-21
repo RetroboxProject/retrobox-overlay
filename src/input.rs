@@ -57,6 +57,11 @@ pub enum Nav {
     Backspace,
     Space,
     Enter,
+    /// The keyboard's volume keys (a handheld's volume buttons): the system
+    /// volume, wherever the overlay is, as they do outside it.
+    VolumeUp,
+    VolumeDown,
+    Mute,
 }
 
 /// An input going down or coming back up: the manual moves and zooms while

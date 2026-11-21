@@ -331,6 +331,10 @@ fn run_toast(args: &[String]) -> ExitCode {
 fn toast_screen(request: toast::Request) -> Result<()> {
     let runtime_dir = paths::runtime_dir();
     let _turn = toast::wait_turn(&runtime_dir)?;
+    if instance::overlay_open(&runtime_dir) {
+        log::info!("the overlay is open: no toast");
+        return Ok(());
+    }
     let session = Session::load(&runtime_dir);
     let config = Config::load(&paths::config_dirs());
     show_toast(&runtime_dir, session.as_ref(), config, None, |translator| {
@@ -488,6 +492,8 @@ fn run(
     if !overlay_allowed(demo, osk, session.as_ref()) {
         return Ok(());
     }
+    // the overlay comes up alone: no toast over it, or taking its focus away
+    toast::close_shown(&runtime_dir);
 
     let theme_path = session
         .as_ref()

@@ -93,6 +93,7 @@ use crate::ui::panel::{InfoSheet, MenuAction, MenuItem, Panel, Shows, StatusBar,
 use crate::ui::power::{self, PowerRow};
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
+use crate::volume;
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
 use retrobox_input::press::TAP_MAX;
 use retrobox_input::{es_settings, launch, paths};
@@ -1566,14 +1567,15 @@ impl State {
         }
     }
 
-    /// Mute or unmute the volume (A, Enter or a click on its slider).
-    fn toggle_mute(&mut self) {
+    /// Mute or unmute the volume (A, Enter or a click on its slider, the
+    /// mute key): false when there is no slider.
+    fn toggle_mute(&mut self) -> bool {
         let Some(muted) = self
             .panel
             .as_mut()
             .and_then(|(panel, _)| panel.toggle_mute())
         else {
-            return;
+            return false;
         };
         self.draw_panel();
         if let Some(setter) = self
@@ -1582,6 +1584,34 @@ impl State {
             .find(|setter| setter.kind() == SliderKind::Volume)
         {
             setter.mute(muted);
+        }
+        true
+    }
+
+    /// A volume key: the menu's slider moves (or mutes) with it, and sets
+    /// the volume; with no slider (the on-screen keyboard, an installation),
+    /// the volume changes as outside the overlay, without a toast.
+    fn volume_key(&mut self, key: volume::Key) {
+        let handled = match key {
+            volume::Key::Mute => self.toggle_mute(),
+            volume::Key::Up | volume::Key::Down => {
+                let delta = if key == volume::Key::Up { STEP } else { -STEP };
+                let change = self
+                    .panel
+                    .as_mut()
+                    .and_then(|(panel, _)| panel.adjust_volume(delta));
+                let moved = change.is_some();
+                self.slid(change);
+                moved
+            }
+        };
+        if !handled {
+            let runtime_dir = paths::runtime_dir();
+            std::thread::spawn(move || {
+                if let Err(err) = volume::press(key, &runtime_dir) {
+                    log::warn!("{err:#}");
+                }
+            });
         }
     }
 
@@ -1830,6 +1860,13 @@ impl State {
 
     /// A press or release, from a controller or the keyboard.
     fn input(&mut self, input: Input) {
+        // the volume keys, whatever is open (the keyboard repeats them)
+        if let Some(key) = volume_key(input.nav) {
+            if input.pressed {
+                self.volume_key(key);
+            }
+            return;
+        }
         // Quit held: let go, see `let_go_quit`; anything else pressed, it
         // does nothing
         if self.quit_hold.is_some() {
@@ -1917,7 +1954,14 @@ impl State {
                     self.stop_repeat(nav);
                 }
             }
-            Nav::Backspace | Nav::Space | Nav::Enter | Nav::Flip => {}
+            // (the volume keys are handled before, see `input`)
+            Nav::Backspace
+            | Nav::Space
+            | Nav::Enter
+            | Nav::Flip
+            | Nav::VolumeUp
+            | Nav::VolumeDown
+            | Nav::Mute => {}
             // the shortcut that opened the overlay, again: back to the game
             Nav::Close => {
                 self.sounds.play(Sound::Back);
@@ -1988,7 +2032,7 @@ impl State {
                 self.outcome = Some(Outcome::Back);
                 return;
             }
-            Nav::Audio => None,
+            Nav::Audio | Nav::VolumeUp | Nav::VolumeDown | Nav::Mute => None,
         };
         if let Some(key) = key {
             self.osk_activate(key);
@@ -2489,6 +2533,16 @@ impl State {
     }
 }
 
+/// The volume key a press is, if it is one.
+const fn volume_key(nav: Nav) -> Option<volume::Key> {
+    match nav {
+        Nav::VolumeUp => Some(volume::Key::Up),
+        Nav::VolumeDown => Some(volume::Key::Down),
+        Nav::Mute => Some(volume::Key::Mute),
+        _ => None,
+    }
+}
+
 /// What a key does on X11, by its key code: an evdev code plus 8 with the
 /// usual drivers (evdev, libinput), whatever the keyboard layout.
 fn x11_key_nav(keycode: u8) -> Option<Nav> {
@@ -2507,6 +2561,9 @@ fn x11_key_nav(keycode: u8) -> Option<Nav> {
         KeyCode::KEY_ESC | KeyCode::KEY_BACKSPACE => Nav::Back,
         KeyCode::KEY_F7 => Nav::Close,
         KeyCode::KEY_F2 => Nav::Audio,
+        KeyCode::KEY_VOLUMEUP => Nav::VolumeUp,
+        KeyCode::KEY_VOLUMEDOWN => Nav::VolumeDown,
+        KeyCode::KEY_MUTE => Nav::Mute,
         _ => return None,
     })
 }
@@ -2656,6 +2713,9 @@ fn key_nav(keysym: Keysym) -> Option<Nav> {
         Keysym::Escape | Keysym::BackSpace => Nav::Back,
         Keysym::F7 => Nav::Close,
         Keysym::F2 => Nav::Audio,
+        Keysym::XF86_AudioRaiseVolume => Nav::VolumeUp,
+        Keysym::XF86_AudioLowerVolume => Nav::VolumeDown,
+        Keysym::XF86_AudioMute => Nav::Mute,
         _ => return None,
     })
 }

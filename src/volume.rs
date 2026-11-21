@@ -23,6 +23,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use nix::fcntl::{Flock, FlockArg};
 
 use crate::system::audio::Mixer;
+use crate::toast;
 
 /// How much a press steps the volume, in percent (EmulationStation's step).
 const STEP: u8 = 5;
@@ -30,7 +31,7 @@ const STEP: u8 = 5;
 pub const STAYS: Duration = Duration::from_secs(3);
 /// The toast's lock and socket, and the presses' lock, in the runtime
 /// directory.
-const TOAST_LOCK: &str = "volume-toast.lock";
+pub const TOAST_LOCK: &str = "volume-toast.lock";
 const SOCKET: &str = "volume-toast.sock";
 const PRESS_LOCK: &str = "volume-press.lock";
 /// How long a press tries to reach the toast (one starting or ending), and
@@ -166,10 +167,12 @@ pub fn hand_over(level: Level, runtime_dir: &Path) -> Result<Turn> {
     let sender = UnixDatagram::unbound().context("cannot create a socket")?;
     let tries = HAND_OVER.as_millis() / RETRY.as_millis();
     for _ in 0..tries {
-        if let Ok(lock) = lock(
+        if let Ok(mut lock) = lock(
             &runtime_dir.join(TOAST_LOCK),
             FlockArg::LockExclusiveNonblock,
         ) {
+            // (the overlay, opening, finds this toast by it)
+            toast::write_pid(&mut lock);
             // a toast that ended badly may have left its socket
             std::fs::remove_file(&path).ok();
             let socket = UnixDatagram::bind(&path)
