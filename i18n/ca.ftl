@@ -18,7 +18,8 @@ menu-quit = Surt del joc
 menu-save-quit = Desa i surt
 # the power button and its page (sleep in games; restart and turn off
 # outside them), and the sliders
-menu-power = Energia
+menu-system = Sistema
+menu-update = Actualitza el sistema
 menu-standby = Mode de repòs
 menu-reboot = Reinicia
 menu-poweroff = Apaga
@@ -78,6 +79,10 @@ task-reinstall-ask = Voleu instal·lar { $label } de nou? S'actualitzarà.
 task-reinstalling = S'està instal·lant { $label } de nou…
 task-reinstall-failed = No s'ha pogut actualitzar { $label }
 task-reinstalled = { $label } està actualitzat
+task-update-ask = Vols actualitzar el sistema? Es posaran al dia Retrobox i els programes del sistema.
+task-updating = S'està actualitzant el sistema…
+task-update-failed = No s'ha pogut actualitzar el sistema
+task-updated = El sistema està al dia. Reinicia per fer servir el que ha canviat.
 task-downloading = S'està baixant { $label }…
 task-download-failed = No s'ha pogut baixar { $label }
 task-exit-status = L'instal·lador ha acabat amb l'estat { $status }.

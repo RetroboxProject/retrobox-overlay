@@ -1,5 +1,5 @@
-//! Sleeping, restarting and turning the computer off, from the power
-//! button's page: through systemd (`systemctl`) where it is the init, else
+//! Sleeping, restarting and turning the computer off, from the System
+//! page (and updating it, see `update`): through systemd (`systemctl`) where it is the init, else
 //! through elogind's `loginctl` (the other inits' logind); with neither,
 //! the page offers nothing. Both let the active local session do it without
 //! a password (polkit's default). EmulationStation, the games and the
@@ -10,12 +10,14 @@ use std::path::Path;
 
 use super::{installed, run};
 
-/// What the power button's page offers.
+/// What the System page offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerAction {
     Standby,
     Reboot,
     PowerOff,
+    /// Update the system, in the task screen (see `update`).
+    Update,
 }
 
 impl PowerAction {
@@ -25,15 +27,17 @@ impl PowerAction {
             Self::Standby => "menu-standby",
             Self::Reboot => "menu-reboot",
             Self::PowerOff => "menu-poweroff",
+            Self::Update => "menu-update",
         }
     }
 
-    /// The verb of `systemctl` and `loginctl`.
-    const fn verb(self) -> &'static str {
+    /// The verb of `systemctl` and `loginctl` (none for the update).
+    const fn verb(self) -> Option<&'static str> {
         match self {
-            Self::Standby => "suspend",
-            Self::Reboot => "reboot",
-            Self::PowerOff => "poweroff",
+            Self::Standby => Some("suspend"),
+            Self::Reboot => Some("reboot"),
+            Self::PowerOff => Some("poweroff"),
+            Self::Update => None,
         }
     }
 }
@@ -88,11 +92,15 @@ fn offered(in_game: bool, standby: bool) -> Vec<PowerAction> {
 
 /// Do it (once the overlay is gone).
 pub fn perform(action: PowerAction) {
+    let Some(verb) = action.verb() else {
+        super::update::start();
+        return;
+    };
     let Some(manager) = Manager::find() else {
         return;
     };
-    log::info!("{} {}", manager.program(), action.verb());
-    run(manager.program(), &[action.verb()]);
+    log::info!("{} {verb}", manager.program());
+    run(manager.program(), &[verb]);
 }
 
 #[cfg(test)]

@@ -18,7 +18,8 @@ menu-quit = Quitter le jeu
 menu-save-quit = Sauvegarder et quitter
 # the power button and its page (sleep in games; restart and turn off
 # outside them), and the sliders
-menu-power = Alimentation
+menu-system = Système
+menu-update = Mettre à jour le système
 menu-standby = Mode veille
 menu-reboot = Redémarrer
 menu-poweroff = Éteindre
@@ -78,6 +79,10 @@ task-reinstall-ask = Réinstaller { $label } ? Il sera mis à jour.
 task-reinstalling = Réinstallation de { $label }…
 task-reinstall-failed = Impossible de mettre à jour { $label }
 task-reinstalled = { $label } est à jour
+task-update-ask = Mettre à jour le système ? Retrobox et les programmes du système seront mis à jour.
+task-updating = Mise à jour du système…
+task-update-failed = Impossible de mettre à jour le système
+task-updated = Le système est à jour. Redémarrez pour profiter des changements.
 task-downloading = Téléchargement de { $label }…
 task-download-failed = Impossible de télécharger { $label }
 task-exit-status = L'installateur s'est terminé avec le statut { $status }.

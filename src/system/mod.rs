@@ -1,7 +1,8 @@
 //! The system controls and information the overlay shows everywhere, like
 //! the Switch's quick settings: the screen's brightness and the system's
 //! volume (sliders), the network and the battery (the status line), and
-//! sleeping, restarting and turning the computer off (`power`).
+//! sleeping, restarting and turning the computer off (`power`) and updating
+//! it (`update`), from the System page.
 //!
 //! Nothing here may stall the menu: what takes a program to read (the
 //! volume, the primary screen) is read in a thread as soon as the overlay
@@ -21,6 +22,7 @@ pub mod brightness;
 pub mod performance;
 pub mod power;
 pub mod status;
+pub mod update;
 
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};

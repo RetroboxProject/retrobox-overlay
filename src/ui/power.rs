@@ -1,6 +1,6 @@
-//! The power button's page: sleep (and, outside games, restart and turn
-//! off), then, on a Nintendo Switch, its performance profiles, the one in
-//! use ticked. A page of choices of the side menu.
+//! The System page: sleep (and, outside games, restart, turn off and update
+//! the system), then, on a Nintendo Switch, its performance profiles, the
+//! one in use ticked. A page of choices of the side menu.
 
 use super::icons::Icon;
 use super::panel::{ListPage, ListRow, RowKind};
@@ -56,7 +56,7 @@ pub fn page(
         }
     }
     let page = ListPage {
-        title: translator.text("menu-power"),
+        title: translator.text("menu-system"),
         rows,
     };
     (page, does)

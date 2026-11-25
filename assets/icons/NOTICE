@@ -11,6 +11,8 @@ own (*-line, space). As published, but for these:
                              volume icons have theirs
   signal-wifi-low-line.svg   signal-wifi-line.svg, its lower part filled
   signal-wifi-high-line.svg  signal-wifi-line.svg, most of it filled
+  download-line.svg          upload-line.svg with its arrow turned to point
+                             down, into the tray
 
 Lucide (https://lucide.dev), Copyright (c) Lucide Icons and Contributors, ISC
 license (LICENSE-lucide): book-open, coffee, disc-3, ethernet-port,
@@ -19,5 +21,10 @@ their strokes turned into shapes (outlines filled), with sharper corners (no
 rounding of their own, only the stroke's width rounding the outer side,
 flat line ends) and round dots; disc-3 redrawn as a filled disc with a wider
 hole; coffee with its handle lower and its steam longer and wavy; settings
-redrawn like disc-3: a filled gear, its six teeth made of straight lines
-instead of arcs, with a round hole.
+redrawn: a filled gear with eight thin teeth of straight lines and a wide
+round hole.
+
+Made for the overlay, in the same manner: system (the System page's button),
+the gear of settings without its top tooth and with a wider hole, its ring
+opened at the top for the bar of a power symbol: the ring is the symbol's
+circle, as in the system menu of Ubuntu's Humanity icons.

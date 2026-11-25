@@ -70,6 +70,8 @@ pub enum Icon {
     Volume1,
     Volume2,
     Power,
+    System,
+    Download,
     Wifi,
     WifiHigh,
     WifiLow,
@@ -95,7 +97,7 @@ pub enum Icon {
 
 impl Icon {
     /// Every icon (for `named`).
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 48] = [
         Self::Play,
         Self::Save,
         Self::History,
@@ -121,6 +123,8 @@ impl Icon {
         Self::Volume1,
         Self::Volume2,
         Self::Power,
+        Self::System,
+        Self::Download,
         Self::Wifi,
         Self::WifiHigh,
         Self::WifiLow,
@@ -165,6 +169,7 @@ impl Icon {
             PowerAction::Standby => Self::Moon,
             PowerAction::Reboot => Self::RotateCw,
             PowerAction::PowerOff => Self::Power,
+            PowerAction::Update => Self::Download,
         }
     }
 
@@ -189,7 +194,7 @@ impl Icon {
             MenuAction::Controls => Self::Keyboard,
             MenuAction::Achievements => Self::Trophy,
             MenuAction::Quit { .. } => Self::LogOut,
-            MenuAction::Power => Self::Power,
+            MenuAction::Power => Self::System,
             MenuAction::Slider(SliderKind::Brightness) => Self::Sun,
             MenuAction::Slider(SliderKind::Volume) => Self::Volume2,
             MenuAction::Slot(..) | MenuAction::Choice(_) => return None,
@@ -260,6 +265,8 @@ impl Icon {
             Self::Volume1 => icon!("volume-down-line"),
             Self::Volume2 => icon!("volume-up-line"),
             Self::Power => icon!("shut-down-line"),
+            Self::System => icon!("system"),
+            Self::Download => icon!("download-line"),
             Self::Wifi => icon!("signal-wifi-fill"),
             Self::WifiHigh => icon!("signal-wifi-high-line"),
             Self::WifiLow => icon!("signal-wifi-low-line"),

@@ -70,7 +70,7 @@ Usage: retrobox-overlay [--show [--pad DEVICE]... | --osk | --demo]
        retrobox-overlay --volume up|down|mute
        retrobox-overlay --task --label NAME --log FILE [--check FILE]
                         [--background PNG] [--pad DEVICE]... [--lang CODE]
-                        [--download | --reinstall] -- COMMAND [ARGUMENT]...
+                        [--download | --reinstall | --update] -- COMMAND [ARGUMENT]...
        retrobox-overlay --held
 
 Without a mode, asks the daemon to open or close the overlay, or shows the
@@ -107,7 +107,9 @@ directory) when no daemon runs; started again while open, it closes it.
                  it): Retrobox runs it for the emulators and the content it
                  needs. It asks whether to install NAME first, unless
                  --download runs it at once (and closes when it works);
-                 --reinstall offers to install what is installed again.
+                 --reinstall offers to install what is installed again;
+                 --update asks whether to update the system (the System
+                 page runs it, with the system settings program's update).
                  Exit status: 0 done, 10 declined or cancelled, 11 failed,
                  12 no screen. FILE is the file the installation leaves
                  (checked after the command works), PNG the background.
@@ -752,8 +754,9 @@ fn clock_formats(
     (big, small)
 }
 
-/// What the power button's page offers (nothing over the on-screen
-/// keyboard): the power actions, and a Nintendo Switch's performance
+/// What the System page offers (nothing over the on-screen keyboard): the
+/// power actions, updating the system (outside games, where the machine's
+/// system settings program can), and a Nintendo Switch's performance
 /// profiles (they tell the menu through `sender` when they change).
 fn power_page(
     config: &Config,
@@ -764,16 +767,20 @@ fn power_page(
     if osk {
         return (Vec::new(), None);
     }
+    let mut actions = power::actions(in_game, config.system.standby);
+    if !in_game && system::update::available() {
+        actions.push(power::PowerAction::Update);
+    }
     (
-        power::actions(in_game, config.system.standby),
+        actions,
         Performance::find(config.system.performance, sender),
     )
 }
 
 /// The menu's entries and round buttons: a game's (with its emulator and
-/// whether it has a manual), or the system's (only the power button; the
+/// whether it has a manual), or the system's (only the System button; the
 /// sliders come as they are found). `autosave`: whether quitting saves
-/// the automatic state; `power`: whether the power button offers anything.
+/// the automatic state; `power`: whether the System page offers anything.
 fn menus(
     translator: &Translator,
     game: Option<(&Emulator, &GamePages)>,
@@ -790,7 +797,7 @@ fn menus(
     };
     if power {
         buttons.push(MenuItem::new(
-            translator.text("menu-power"),
+            translator.text("menu-system"),
             MenuAction::Power,
         ));
     }

@@ -8,7 +8,10 @@
 //!   install it, runs the installer and shows what it prints (with `--reinstall`
 //!   the emulator is there, and it offers to install it again, to update it);
 //! * before EmulationStation starts, `--download` runs a download (the default
-//!   theme, bezels and shaders) right away and closes when it succeeds.
+//!   theme, bezels and shaders) right away and closes when it succeeds;
+//! * from the menu's System page, `--update` asks whether to update the
+//!   system, then runs the update (`<system settings program> update run`)
+//!   and shows what it prints.
 //!
 //! This module holds what does not need a display: the command line, the
 //! steps of the screen and its exit status. The terminal's text is in
@@ -54,6 +57,8 @@ pub struct Options {
     pub download: bool,
     /// The label is installed: offer to install it again (to update it).
     pub reinstall: bool,
+    /// The command updates the system (the label is not shown).
+    pub update: bool,
     /// The controllers to read (evdev devices); every one if there are none.
     pub pads: Vec<PathBuf>,
     /// The language of the texts (default: from the theme, else the system).
@@ -72,6 +77,7 @@ impl Options {
             background: None,
             download: false,
             reinstall: false,
+            update: false,
             pads: Vec::new(),
             language: None,
         };
@@ -93,6 +99,7 @@ impl Options {
                 "--lang" => options.language = Some(value("--lang")?),
                 "--download" => options.download = true,
                 "--reinstall" => options.reinstall = true,
+                "--update" => options.update = true,
                 "--" => {
                     options.command = arguments.cloned().collect();
                     break;
@@ -109,8 +116,13 @@ impl Options {
         if options.command.is_empty() {
             return Err("missing the installer command (after --)".into());
         }
-        if options.download && options.reinstall {
-            return Err("--download and --reinstall exclude each other".into());
+        if [options.download, options.reinstall, options.update]
+            .into_iter()
+            .filter(|&flag| flag)
+            .count()
+            > 1
+        {
+            return Err("--download, --reinstall and --update exclude each other".into());
         }
         Ok(options)
     }
@@ -155,6 +167,7 @@ pub struct Model {
     focus: usize,
     download: bool,
     reinstall: bool,
+    update: bool,
 }
 
 impl Model {
@@ -164,6 +177,7 @@ impl Model {
             focus: 0,
             download: options.download,
             reinstall: options.reinstall,
+            update: options.update,
         }
     }
 
@@ -215,6 +229,14 @@ impl Model {
 
     /// The id of the text that says what is going on.
     pub const fn message_key(&self) -> &'static str {
+        if self.update {
+            return match self.phase {
+                Phase::Ask => "task-update-ask",
+                Phase::Running => "task-updating",
+                Phase::Failed => "task-update-failed",
+                Phase::Done => "task-updated",
+            };
+        }
         match (self.download, self.reinstall, self.phase) {
             (true, _, Phase::Ask | Phase::Running) => "task-downloading",
             (true, _, Phase::Failed) => "task-download-failed",
@@ -309,9 +331,48 @@ mod tests {
             background: None,
             download,
             reinstall,
+            update: false,
             pads: Vec::new(),
             language: None,
         }
+    }
+
+    #[test]
+    fn the_update_asks_then_says_how_it_went() {
+        let parsed = Options::parse(&arguments(&[
+            "--task",
+            "--update",
+            "--label",
+            "Retrobox",
+            "--log",
+            "/tmp/update.log",
+            "--",
+            "retrobox-system-settings",
+            "update",
+            "run",
+        ]))
+        .unwrap();
+        assert!(parsed.update);
+        let mut model = Model::new(&parsed);
+        assert_eq!(model.message_key(), "task-update-ask");
+        assert_eq!(model.buttons(), [Choice::Yes, Choice::No]);
+        model.set_phase(Phase::Running);
+        assert_eq!(model.message_key(), "task-updating");
+        model.set_phase(Phase::Failed);
+        assert_eq!(model.message_key(), "task-update-failed");
+        model.set_phase(Phase::Done);
+        assert_eq!(model.message_key(), "task-updated");
+        let both = Options::parse(&arguments(&[
+            "--update",
+            "--reinstall",
+            "--label",
+            "x",
+            "--log",
+            "/tmp/x",
+            "--",
+            "true",
+        ]));
+        assert!(both.is_err());
     }
 
     #[test]

@@ -18,7 +18,8 @@ menu-quit = Spel afsluiten
 menu-save-quit = Opslaan en afsluiten
 # the power button and its page (sleep in games; restart and turn off
 # outside them), and the sliders
-menu-power = Aan/uit
+menu-system = Systeem
+menu-update = Systeem bijwerken
 menu-standby = Slaapstand
 menu-reboot = Opnieuw opstarten
 menu-poweroff = Uitschakelen
@@ -78,6 +79,10 @@ task-reinstall-ask = { $label } opnieuw installeren? Het wordt bijgewerkt.
 task-reinstalling = { $label } wordt opnieuw geïnstalleerd…
 task-reinstall-failed = { $label } kon niet worden bijgewerkt
 task-reinstalled = { $label } is up-to-date
+task-update-ask = Het systeem bijwerken? Retrobox en de programma's van het systeem worden bijgewerkt.
+task-updating = Systeem wordt bijgewerkt…
+task-update-failed = Het systeem kon niet worden bijgewerkt
+task-updated = Het systeem is bijgewerkt. Herstart om de wijzigingen te gebruiken.
 task-downloading = { $label } wordt gedownload…
 task-download-failed = { $label } kon niet worden gedownload
 task-exit-status = Het installatieprogramma eindigde met status { $status }.
