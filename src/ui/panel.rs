@@ -43,6 +43,9 @@ use crate::system::SliderKind;
 use crate::system::status::Status;
 use crate::theme::{FontSpec, MenuTheme, Rgba, TextStyle};
 
+/// The least the list scrolls by (pixels): less is not worth a frame.
+pub const MIN_SCROLL: f32 = 0.5;
+
 // MenuComponent.h / Font.h, as fractions of the screen height
 const TITLE_VERT_PADDING: f32 = 0.0637;
 const TITLE_WITHSUB_VERT_PADDING: f32 = 0.05;
@@ -949,7 +952,7 @@ impl Panel {
     /// selected entry among the ones shown whole; true when it moved.
     pub fn scroll_by(&mut self, pixels: f32) -> bool {
         let scroll = (self.scroll + pixels).clamp(0.0, self.max_scroll());
-        if (scroll - self.scroll).abs() < 0.5 {
+        if (scroll - self.scroll).abs() < MIN_SCROLL {
             return false;
         }
         self.scroll = scroll;

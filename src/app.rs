@@ -89,7 +89,9 @@ use crate::ui::clock::Clock;
 use crate::ui::help::{Help, Prompt};
 use crate::ui::layout::Layout;
 use crate::ui::osk::{Action as OskAction, Direction, Labels, Osk};
-use crate::ui::panel::{InfoSheet, MenuAction, MenuItem, Panel, Shows, StatusBar, Target};
+use crate::ui::panel::{
+    InfoSheet, MIN_SCROLL, MenuAction, MenuItem, Panel, Shows, StatusBar, Target,
+};
 use crate::ui::power::{self, PowerRow};
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
@@ -245,6 +247,51 @@ struct Late {
     timer: bool,
 }
 
+/// The panel's frames.
+#[derive(Debug, Default)]
+struct Frames {
+    /// The last one, drawn over for the next one.
+    last: Option<tiny_skia::Pixmap>,
+    stats: FrameStats,
+}
+
+/// What the panel's frames cost over a second or so (logged with
+/// `RUST_LOG=debug`): what tells an overlay that draws too slowly from a
+/// compositor that shows its frames too slowly, on a given machine.
+#[derive(Debug, Default)]
+struct FrameStats {
+    since: Option<Instant>,
+    frames: u32,
+    drawing: Duration,
+    handing: Duration,
+    /// Frames drawn by the timer: the compositor's frame callback did not
+    /// come in time.
+    forced: u32,
+}
+
+impl FrameStats {
+    fn add(&mut self, drawing: Duration, handing: Duration) {
+        let since = *self.since.get_or_insert_with(Instant::now);
+        self.frames += 1;
+        self.drawing += drawing;
+        self.handing += handing;
+        let elapsed = since.elapsed();
+        if elapsed >= Duration::from_secs(1) {
+            let each = |total: Duration| total.as_secs_f32() * 1000.0 / self.frames as f32;
+            log::debug!(
+                "menu: {} frames in {:.1} s, {:.2} ms drawing and {:.2} ms handing over \
+                 each, {} without the compositor's frame callback",
+                self.frames,
+                elapsed.as_secs_f32(),
+                each(self.drawing),
+                each(self.handing),
+                self.forced
+            );
+            *self = Self::default();
+        }
+    }
+}
+
 struct State {
     display: Display,
     /// Whether the menu has the keyboard focus.
@@ -290,8 +337,7 @@ struct State {
     menu_help_shown: Option<(bool, Focus, bool)>,
     /// Redraws put off until the compositor shows the last frame.
     late: Late,
-    /// The panel's last frame, drawn over for the next one.
-    panel_frame: Option<tiny_skia::Pixmap>,
+    frames: Frames,
     /// What follows the sound server, once it is known to be there.
     audio: Option<Box<Hub>>,
     /// The outputs and profiles, as last sent while the audio page is open.
@@ -555,7 +601,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         stick_volume: es_settings::right_stick_volume(),
         menu_help_shown: None,
         late: Late::default(),
-        panel_frame: None,
+        frames: Frames::default(),
         audio: None,
         devices: None,
         audio_rows: Vec::new(),
@@ -1077,7 +1123,8 @@ impl State {
                 return;
             }
             self.late.panel = false;
-            let last = self.panel_frame.take();
+            let last = self.frames.last.take();
+            let started = Instant::now();
             if let Some(pixmap) = panel.render(&mut self.content.fonts, piece.size.1, last) {
                 if !piece.has_content() {
                     log::debug!(
@@ -1085,8 +1132,10 @@ impl State {
                         self.content.launched.elapsed().as_millis()
                     );
                 }
+                let drawn = Instant::now();
                 piece.present(&mut self.display, &pixmap);
-                self.panel_frame = Some(pixmap);
+                self.frames.stats.add(drawn - started, drawn.elapsed());
+                self.frames.last = Some(pixmap);
             }
         }
     }
@@ -1101,6 +1150,7 @@ impl State {
             self.handle
                 .insert_source(Timer::from_duration(FRAME_WAIT), |_, &mut (), state| {
                     if state.late.panel {
+                        state.frames.stats.forced += 1;
                         state.draw_panel();
                     }
                     if state.late.osk {
@@ -2428,12 +2478,17 @@ impl State {
                 return;
             }
             Gesture::Scroll => {
-                // pixel by pixel: dragging up shows what is below
+                // pixel by pixel: dragging up shows what is below; a move
+                // too small to scroll for yet is kept for the next (a finger
+                // dragging slowly moves by less than a pixel at a time),
+                // unless the list is at its end
                 let moved = press.start.1 as f32 - y;
-                press.start.1 = f64::from(y);
                 if panel.scroll_by(moved) {
+                    press.start.1 = f64::from(y);
                     self.draw_panel();
                     self.draw_menu_help();
+                } else if moved.abs() >= MIN_SCROLL {
+                    press.start.1 = f64::from(y);
                 }
             }
             Gesture::Tap => {}
