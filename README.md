@@ -402,7 +402,7 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
 
 | Section | What |
 |---|---|
-| `[overlay]` | side of the menu, dim, animation length, `take_keyboard`, icons |
+| `[overlay]` | side of the menu, dim (0 to 1: opaque black), animation length, `take_keyboard`, icons |
 | `[clock]` | on/off, big or small, position, colour, `strftime` formats |
 | `[status]` | the battery's percentage |
 | `[system]` | whether *Sleep mode* and, on a Nintendo Switch, the performance profiles are offered (the System page) |

@@ -1315,7 +1315,7 @@ impl State {
                     x += panel.width as i32;
                 }
                 sub.move_to(x, y);
-                sub.show_pixmap(&mut self.display, &pixmap);
+                sub.show_pixmap(&mut self.display, &pixmap, &self.dim);
             }
             None => sub.hide(),
         }

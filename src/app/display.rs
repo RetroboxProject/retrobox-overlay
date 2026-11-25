@@ -1255,6 +1255,35 @@ enum Attached {
     Failed,
 }
 
+/// Draw the pixels of a child window (ARGB8888, `size`) over those of its
+/// parent at `position` (source over, both premultiplied), in place.
+fn over_parent(canvas: &mut [u8], size: (u32, u32), position: (i32, i32), parent: &Window) {
+    let (width, height) = (i64::from(size.0), i64::from(size.1));
+    let (parent_width, parent_height) = (i64::from(parent.size.0), i64::from(parent.size.1));
+    if parent.pixels.len() < (parent_width * parent_height * 4) as usize {
+        return;
+    }
+    let (x, y) = (i64::from(position.0), i64::from(position.1));
+    let (left, right) = (x.max(0), (x + width).min(parent_width));
+    let (top, bottom) = (y.max(0), (y + height).min(parent_height));
+    if left >= right {
+        return;
+    }
+    let span = (right - left) as usize * 4;
+    for row in top..bottom {
+        let from = ((row * parent_width + left) * 4) as usize;
+        let to = (((row - y) * width + left - x) * 4) as usize;
+        let (unders, _) = parent.pixels[from..from + span].as_chunks::<4>();
+        let (pixels, _) = canvas[to..to + span].as_chunks_mut::<4>();
+        for (pixel, under) in pixels.iter_mut().zip(unders) {
+            let rest = 255 - u32::from(pixel[3]);
+            for (channel, below) in pixel.iter_mut().zip(under) {
+                *channel = channel.saturating_add(crate::ui::div255(u32::from(*below) * rest));
+            }
+        }
+    }
+}
+
 /// ARGB8888 (B, G, R, A in memory): what every compositor reads, and X11.
 const ARGB: wl_shm::Format = wl_shm::Format::Argb8888;
 
@@ -1416,9 +1445,22 @@ impl Sub {
         }
     }
 
-    /// Show a pixmap, at its size.
-    pub fn show_pixmap(&mut self, display: &mut Display, pixmap: &Pixmap) {
+    /// Show a pixmap, at its size, over `parent` (what the sub is in).
+    ///
+    /// An X11 child window is not blended with its parent (with or without
+    /// a compositing manager, its pixels replace the parent's), so there
+    /// the pixmap is drawn over the parent's own pixels first: the dim
+    /// behind the help's labels rather than black, or a hole in it.
+    pub fn show_pixmap(&mut self, display: &mut Display, pixmap: &Pixmap, parent: &Piece) {
         let (width, height) = (pixmap.width(), pixmap.height());
+        if let (SubKind::X11 { .. }, Kind::Window(under)) = (&self.kind, &parent.kind) {
+            let position = self.position;
+            self.show(display, (width, height), ARGB, |canvas| {
+                to_argb8888(pixmap, canvas);
+                over_parent(canvas, (width, height), position, under);
+            });
+            return;
+        }
         let format = shm_format(display);
         self.show(display, (width, height), format, |canvas| {
             fill_from(pixmap, format, canvas);
@@ -1593,6 +1635,21 @@ mod tests {
         assert!(!sway_before_scene("sway version 1.10.1"));
         assert!(!sway_before_scene("sway version 1.11-dev-abc"));
         assert!(!sway_before_scene(""));
+    }
+
+    #[test]
+    fn draws_over_the_parent() {
+        let mut parent = Window::default();
+        parent.size = (3, 2);
+        parent.pixels = [[10, 20, 30, 200]; 6].concat();
+        // a clear pixel, a half one and an opaque one, at (1, 1): the last
+        // falls outside the parent and keeps its own
+        let mut canvas = [[0, 0, 0, 0], [100, 0, 0, 128], [1, 2, 3, 255]].concat();
+        over_parent(&mut canvas, (3, 1), (1, 1), &parent);
+        assert_eq!(
+            canvas,
+            [[10, 20, 30, 200], [105, 10, 15, 228], [1, 2, 3, 255]].concat()
+        );
     }
 
     #[test]

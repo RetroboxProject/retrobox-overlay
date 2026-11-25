@@ -70,7 +70,7 @@ pub fn blit(pixmap: &mut tiny_skia::Pixmap, image: &tiny_skia::Pixmap, at: (i32,
 }
 
 /// `value / 255`, rounded, for `value` up to 255 × 255.
-const fn div255(value: u32) -> u8 {
+pub const fn div255(value: u32) -> u8 {
     let value = value + 128;
     ((value + (value >> 8)) >> 8) as u8
 }

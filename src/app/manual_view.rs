@@ -279,7 +279,7 @@ impl State {
             Some(pixmap) => {
                 let (x, y) = help.place(pixmap.width());
                 sub.move_to(x, y);
-                sub.show_pixmap(&mut self.display, &pixmap);
+                sub.show_pixmap(&mut self.display, &pixmap, &screen.backdrop);
             }
             None => sub.hide(),
         }

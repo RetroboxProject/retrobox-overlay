@@ -4,7 +4,7 @@
 //! ```ini
 //! [overlay]
 //! side = right            ; right | left
-//! dim = 0.75              ; opacity of the black layer over the game
+//! dim = 0.75              ; opacity of the black layer over the game: 0 none, 1 black
 //! animation_ms = 150
 //! take_keyboard = auto    ; auto (not when opened from a controller) | yes | no
 //!
