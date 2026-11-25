@@ -84,6 +84,7 @@ use crate::system::status::Status;
 use crate::system::{Control, Found, Msg, STEP, Setter, SliderKind, VolumeChange};
 use crate::theme::MenuTheme;
 use crate::toast::Toast;
+use crate::trace::{self, trace};
 use crate::ui::audio::AudioMenu;
 use crate::ui::clock::Clock;
 use crate::ui::help::{Help, Prompt};
@@ -991,6 +992,7 @@ impl State {
                 return;
             }
             if piece.waits_for_frame() {
+                trace!("defer", "piece=osk");
                 self.late.osk = true;
                 self.draw_late();
                 return;
@@ -1014,6 +1016,7 @@ impl State {
             return TimeoutAction::Drop;
         }
         let t = ease_out(self.progress());
+        trace!("slide", "t={t:.3}");
         if let Some((osk, piece)) = &mut self.osk {
             let margin = (-(osk.height as f32) * (1.0 - t)).round() as i32;
             piece.set_margin(&self.display, osk_margin(osk.view.top, margin));
@@ -1118,6 +1121,7 @@ impl State {
                 return;
             }
             if piece.waits_for_frame() {
+                trace!("defer", "piece=panel");
                 self.late.panel = true;
                 self.draw_late();
                 return;
@@ -1135,6 +1139,12 @@ impl State {
                 let drawn = Instant::now();
                 piece.present(&mut self.display, &pixmap);
                 self.frames.stats.add(drawn - started, drawn.elapsed());
+                trace!(
+                    "draw",
+                    "piece=panel render={:.3} present={:.3}",
+                    (drawn - started).as_secs_f64() * 1000.0,
+                    drawn.elapsed().as_secs_f64() * 1000.0
+                );
                 self.frames.last = Some(pixmap);
             }
         }
@@ -1150,10 +1160,12 @@ impl State {
             self.handle
                 .insert_source(Timer::from_duration(FRAME_WAIT), |_, &mut (), state| {
                     if state.late.panel {
+                        trace!("timeout", "piece=panel");
                         state.frames.stats.forced += 1;
                         state.draw_panel();
                     }
                     if state.late.osk {
+                        trace!("timeout", "piece=osk");
                         state.draw_osk();
                     }
                     if state.late.panel || state.late.osk {
@@ -1207,9 +1219,17 @@ impl State {
             if piece.size.0 == 0 {
                 return;
             }
+            let started = trace::now();
             if let Some(pixmap) = clock.render(&mut self.content.fonts, piece.size.0, &Local::now())
             {
+                let drawn = trace::now();
                 piece.present(&mut self.display, &pixmap);
+                trace!(
+                    "draw",
+                    "piece=clock render={:.3} present={:.3}",
+                    drawn - started,
+                    trace::now() - drawn
+                );
             }
         }
     }
@@ -2271,6 +2291,20 @@ fn dim_spec(toast: Option<&toast_view::Shown>, side: Side, task: bool) -> Spec {
     )
 }
 
+/// An input event in the trace: when the compositor had it (`time`, its
+/// milliseconds) and how long before it is handled (`lag`).
+fn trace_input(name: &str, time: u32, (x, y): (f64, f64)) {
+    if trace::enabled() {
+        trace::event(
+            name,
+            format_args!(
+                "time={time} lag={:.3} x={x:.1} y={y:.1}",
+                trace::since(time)
+            ),
+        );
+    }
+}
+
 /// A configure with the size a piece already shows: it is only committed
 /// (which acknowledges the configure), not drawn again.
 fn same_size(piece: &Piece, size: (u32, u32)) -> bool {
@@ -2297,6 +2331,7 @@ impl State {
         // overlay's moves (the panel and the keyboard slide in, a frame at a
         // time), mostly with the size it had: what was drawn stays (the
         // commit takes the configure in).
+        trace!("configure", "size={}x{}", size.0, size.1);
         if self.dim.is(surface) {
             let first = self.dim.size == (0, 0);
             if self.dim.size == size && self.dim.has_content() {
@@ -2483,7 +2518,9 @@ impl State {
                 // dragging slowly moves by less than a pixel at a time),
                 // unless the list is at its end
                 let moved = press.start.1 as f32 - y;
-                if panel.scroll_by(moved) {
+                let scrolled = panel.scroll_by(moved);
+                trace!("scroll", "moved={moved:.2} scrolled={scrolled}");
+                if scrolled {
                     press.start.1 = f64::from(y);
                     self.draw_panel();
                     self.draw_menu_help();
@@ -2873,6 +2910,18 @@ impl PointerHandler for State {
         events: &[PointerEvent],
     ) {
         for event in events {
+            if trace::enabled() {
+                let (name, time) = match event.kind {
+                    PointerEventKind::Motion { time } => ("pointer_motion", time),
+                    PointerEventKind::Press { time, .. } => ("pointer_press", time),
+                    PointerEventKind::Release { time, .. } => ("pointer_release", time),
+                    PointerEventKind::Axis { time, .. } => ("pointer_axis", time),
+                    PointerEventKind::Enter { .. } | PointerEventKind::Leave { .. } => {
+                        ("pointer_cross", 0)
+                    }
+                };
+                trace_input(name, time, event.position);
+            }
             let kind = match event.kind {
                 PointerEventKind::Enter { .. } => {
                     if let Some(pointer) = &self.display.wl().pointer
@@ -2990,11 +3039,12 @@ impl TouchHandler for State {
         _: &QueueHandle<Self>,
         _: &wl_touch::WlTouch,
         _: u32,
-        _: u32,
+        time: u32,
         surface: wl_surface::WlSurface,
         id: i32,
         position: (f64, f64),
     ) {
+        trace_input("touch_down", time, position);
         if self.finger.is_some() {
             return;
         }
@@ -3013,9 +3063,10 @@ impl TouchHandler for State {
         _: &QueueHandle<Self>,
         _: &wl_touch::WlTouch,
         _: u32,
-        _: u32,
+        time: u32,
         id: i32,
     ) {
+        trace_input("touch_up", time, (0.0, 0.0));
         let Some((finger, surface, position)) = self.finger.take() else {
             return;
         };
@@ -3035,10 +3086,11 @@ impl TouchHandler for State {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: &wl_touch::WlTouch,
-        _: u32,
+        time: u32,
         id: i32,
         position: (f64, f64),
     ) {
+        trace_input("touch_motion", time, position);
         let Some((finger, surface, _)) = self.finger.clone() else {
             return;
         };
@@ -3105,24 +3157,32 @@ impl CompositorHandler for State {
         _: &Connection,
         _: &QueueHandle<Self>,
         surface: &wl_surface::WlSurface,
-        _: u32,
+        time: u32,
     ) {
         let surface = SurfaceId::Wayland(surface.clone());
+        let done = |piece: &str, waited: Option<f64>, late: bool| {
+            trace!(
+                "frame_done",
+                "piece={piece} waited={:.3} time={time} ago={:.3} late={late}",
+                waited.unwrap_or(-1.0),
+                trace::since(time)
+            );
+        };
         if let Some((_, piece)) = self.panel.as_mut().filter(|(_, piece)| piece.is(&surface)) {
-            piece.frame_done();
+            done("panel", piece.frame_done(), self.late.panel);
             if self.late.panel {
                 self.draw_panel();
             }
         } else if let Some((_, piece)) = self.osk.as_mut().filter(|(_, piece)| piece.is(&surface)) {
-            piece.frame_done();
+            done("osk", piece.frame_done(), self.late.osk);
             if self.late.osk {
                 self.draw_osk();
             }
         } else if let Some((_, piece)) = self.clock.as_mut().filter(|(_, piece)| piece.is(&surface))
         {
-            piece.frame_done();
+            done("clock", piece.frame_done(), false);
         } else if self.dim.is(&surface) {
-            self.dim.frame_done();
+            done("dim", self.dim.frame_done(), false);
         }
     }
     fn surface_enter(

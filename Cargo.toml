@@ -64,7 +64,7 @@ nix.workspace = true
 resvg = { version = "0.49", default-features = false }
 roxmltree.workspace = true
 rust-ini.workspace = true
-rustix = { workspace = true, features = ["param", "pipe"] }
+rustix = { workspace = true, features = ["param", "pipe", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 smithay-client-toolkit = "0.21"

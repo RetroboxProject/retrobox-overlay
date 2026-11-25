@@ -72,6 +72,7 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
 use super::State;
+use crate::trace::{self, trace};
 use crate::ui::to_argb8888;
 
 /// The layer surfaces' namespace on Wayland, which compositors may match in
@@ -903,10 +904,14 @@ impl Piece {
     }
 
     /// The compositor showed the last buffer (its frame callback).
-    pub fn frame_done(&mut self) {
+    /// How long it took (milliseconds; none when no frame was awaited).
+    pub fn frame_done(&mut self) -> Option<f64> {
         if let Kind::Layer { frame, .. } = &mut self.kind {
-            *frame = None;
+            return frame
+                .take()
+                .map(|since| since.elapsed().as_secs_f64() * 1000.0);
         }
+        None
     }
 
     /// Set the opacity (0..1), for the next commit.
@@ -1094,7 +1099,9 @@ impl Piece {
                     let surface = layer.wl_surface();
                     surface.frame(&wl.qh, FrameCallbackData(surface.clone()));
                     *frame = Some(Instant::now());
+                    let committing = trace::now();
                     layer.commit();
+                    trace!("commit", "took={:.3}", trace::now() - committing);
                     *buffer = Some(attached);
                     self.shown = true;
                 }
@@ -1228,14 +1235,29 @@ fn attach(
     (format, rows): (wl_shm::Format, &mut Rows),
     fill: impl FnOnce(&mut [u8]),
 ) -> Attached {
+    let started = trace::now();
     let Ok((buffer, canvas)) =
         pool.create_buffer(width as i32, height as i32, width as i32 * 4, format)
     else {
         log::warn!("cannot allocate a {width}x{height} buffer");
         return Attached::Failed;
     };
+    let created = trace::now();
     fill(canvas);
-    let Some((first, end)) = rows.changed(canvas, width, height) else {
+    let filled = trace::now();
+    let changed = rows.changed(canvas, width, height);
+    trace!(
+        "buffer",
+        "size={width}x{height} create={:.3} fill={:.3} hash={:.3} rows={}",
+        created - started,
+        filled - created,
+        trace::now() - filled,
+        changed.map_or_else(
+            || "same".to_owned(),
+            |(first, end)| format!("{first}-{end}")
+        )
+    );
+    let Some((first, end)) = changed else {
         return Attached::Same;
     };
     if buffer.attach_to(surface).is_err() {

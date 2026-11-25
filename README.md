@@ -436,6 +436,28 @@ a Wayland or X11 session; `RUST_LOG=debug retrobox-inputd` runs the daemon. When
 terminal they log to `~/.local/state/retrobox/logs/` (`overlay.log`, `inputd.log`), or to the
 journal under systemd.
 
+### Diagnosing performance
+
+With `RETROBOX_OVERLAY_TRACE=<file>`, the overlay appends a timeline of what it does to that file:
+every touch and pointer event (with how late it was handled), scroll step, frame drawn or put
+off (what drawing it, filling the buffer, hashing its rows and committing it took), configure
+and frame callback (how long the compositor took to show the frame, and its own frame times).
+`scripts/probe.py` samples the system meanwhile: each thread of the game, the compositor and the
+overlay (CPU use, time spent waiting for a core, preemptions), each core's use and frequency and,
+where the kernel tells them (Tegra's L4T among others), the GPU's load and frequency, the memory
+controller's frequency and the temperatures. `scripts/trace_report.py` puts both together, while
+dragging, while open and not dragging, and before the overlay opened (the game alone):
+
+```sh
+systemctl --user set-environment RETROBOX_OVERLAY_TRACE=/tmp/overlay-trace.log
+systemctl --user restart retrobox-inputd   # the overlay it starts inherits it
+sudo scripts/probe.py --out /tmp/probe.log # Ctrl+C when done (root: the GPU's clocks)
+scripts/trace_report.py /tmp/overlay-trace.log --probe /tmp/probe.log
+systemctl --user unset-environment RETROBOX_OVERLAY_TRACE
+```
+
+Both files use `CLOCK_MONOTONIC` in milliseconds, the clock of the compositor's own event times.
+
 The screenshots use game pictures from the
 [libretro thumbnails](https://github.com/libretro-thumbnails/libretro-thumbnails) and the colours
 and fonts of the [*es-theme-iconic*](https://github.com/manu-creative-411/es-theme-iconic) theme.
