@@ -4,7 +4,7 @@
 //! not), and the badges show up once they are fetched.
 
 use cosmic_text::Align;
-use tiny_skia::{Pixmap, PixmapPaint, Transform};
+use tiny_skia::Pixmap;
 
 use super::{Page, Panel, TRACK_ALPHA, TRACK_THICKNESS, Target, fill};
 use crate::achievements::{Achievement, Earned};
@@ -180,13 +180,10 @@ impl Panel {
         let badge = self.badge_size() as f32;
         let badge_y = y + (height - badge) / 2.0;
         if let Some(Some(image)) = page.badges.get(index) {
-            pixmap.draw_pixmap(
-                padding.round() as i32,
-                badge_y.round() as i32,
-                image.as_ref(),
-                &PixmapPaint::default(),
-                Transform::identity(),
-                None,
+            crate::ui::blit(
+                pixmap,
+                image,
+                (padding.round() as i32, badge_y.round() as i32),
             );
         } else {
             fill(

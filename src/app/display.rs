@@ -990,7 +990,10 @@ impl Piece {
     /// Show a pixmap on it.
     pub fn present(&mut self, display: &mut Display, pixmap: &Pixmap) {
         let (width, height) = (pixmap.width(), pixmap.height());
-        self.show(display, width, height, |canvas| to_argb8888(pixmap, canvas));
+        let format = shm_format(display);
+        self.show(display, (width, height), format, |canvas| {
+            fill_from(pixmap, format, canvas);
+        });
     }
 
     /// Fill it with one ARGB8888 pixel (B, G, R, A in memory), at its size:
@@ -1051,12 +1054,12 @@ impl Piece {
                 .iter()
                 .flat_map(|&[b, g, r, _]| [darker(b), darker(g), darker(r), 0xff])
                 .collect();
-            self.show(display, width, height, |canvas| {
+            self.show(display, (width, height), ARGB, |canvas| {
                 canvas.copy_from_slice(&pixels[..canvas.len()]);
             });
             return;
         }
-        self.show(display, width, height, |canvas| {
+        self.show(display, (width, height), ARGB, |canvas| {
             for target in canvas.as_chunks_mut::<4>().0 {
                 *target = pixel;
             }
@@ -1066,8 +1069,8 @@ impl Piece {
     fn show(
         &mut self,
         display: &mut Display,
-        width: u32,
-        height: u32,
+        (width, height): (u32, u32),
+        format: wl_shm::Format,
         fill: impl FnOnce(&mut [u8]),
     ) {
         match (&mut self.kind, display) {
@@ -1084,7 +1087,7 @@ impl Piece {
                 &mut wl.pool,
                 layer.wl_surface(),
                 (width, height),
-                rows,
+                (format, rows),
                 fill,
             ) {
                 Attached::New(attached) => {
@@ -1191,21 +1194,43 @@ enum Attached {
     Failed,
 }
 
+/// ARGB8888 (B, G, R, A in memory): what every compositor reads, and X11.
+const ARGB: wl_shm::Format = wl_shm::Format::Argb8888;
+
+/// The format to hand a drawing over in: tiny-skia's own (R, G, B, A in
+/// memory, ABGR8888) when the compositor reads it (wlroots, KWin), a plain
+/// copy; otherwise ARGB8888, red and blue swapped pixel by pixel.
+fn shm_format(display: &Display) -> wl_shm::Format {
+    match display {
+        Display::Wayland(wl) if wl.shm.formats().contains(&wl_shm::Format::Abgr8888) => {
+            wl_shm::Format::Abgr8888
+        }
+        _ => ARGB,
+    }
+}
+
+/// Fill a buffer of this format with a drawing.
+fn fill_from(pixmap: &Pixmap, format: wl_shm::Format, canvas: &mut [u8]) {
+    if format == wl_shm::Format::Abgr8888 {
+        let length = canvas.len().min(pixmap.data().len());
+        canvas[..length].copy_from_slice(&pixmap.data()[..length]);
+    } else {
+        to_argb8888(pixmap, canvas);
+    }
+}
+
 /// A buffer of this size, filled and attached to a surface, if it differs
 /// from what the surface shows; only the rows that changed are damaged.
 fn attach(
     pool: &mut SlotPool,
     surface: &WlSurface,
     (width, height): (u32, u32),
-    rows: &mut Rows,
+    (format, rows): (wl_shm::Format, &mut Rows),
     fill: impl FnOnce(&mut [u8]),
 ) -> Attached {
-    let Ok((buffer, canvas)) = pool.create_buffer(
-        width as i32,
-        height as i32,
-        width as i32 * 4,
-        wl_shm::Format::Argb8888,
-    ) else {
+    let Ok((buffer, canvas)) =
+        pool.create_buffer(width as i32, height as i32, width as i32 * 4, format)
+    else {
         log::warn!("cannot allocate a {width}x{height} buffer");
         return Attached::Failed;
     };
@@ -1318,12 +1343,15 @@ impl Sub {
     /// Show a pixmap, at its size.
     pub fn show_pixmap(&mut self, display: &mut Display, pixmap: &Pixmap) {
         let (width, height) = (pixmap.width(), pixmap.height());
-        self.show(display, width, height, |canvas| to_argb8888(pixmap, canvas));
+        let format = shm_format(display);
+        self.show(display, (width, height), format, |canvas| {
+            fill_from(pixmap, format, canvas);
+        });
     }
 
     /// Show ARGB8888 pixels (rows of `width * 4` bytes).
     pub fn show_pixels(&mut self, display: &mut Display, width: u32, height: u32, pixels: &[u8]) {
-        self.show(display, width, height, |canvas| {
+        self.show(display, (width, height), ARGB, |canvas| {
             let length = canvas.len().min(pixels.len());
             canvas[..length].copy_from_slice(&pixels[..length]);
         });
@@ -1332,8 +1360,8 @@ impl Sub {
     fn show(
         &mut self,
         display: &mut Display,
-        width: u32,
-        height: u32,
+        (width, height): (u32, u32),
+        format: wl_shm::Format,
         fill: impl FnOnce(&mut [u8]),
     ) {
         match (&mut self.kind, display) {
@@ -1347,7 +1375,7 @@ impl Sub {
                 Display::Wayland(wl),
             ) => {
                 if let Attached::New(attached) =
-                    attach(&mut wl.pool, surface, (width, height), rows, fill)
+                    attach(&mut wl.pool, surface, (width, height), (format, rows), fill)
                 {
                     *buffer = Some(attached);
                 }

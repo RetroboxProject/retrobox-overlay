@@ -688,14 +688,7 @@ impl TaskUi {
         let max = self.size.0 as f32 * FULL_WINDOW.2;
         if let Some(row) = self.help.render(fonts, prompts, max, None) {
             let (x, y) = self.help.place(row.width());
-            pixmap.draw_pixmap(
-                x,
-                y,
-                row.as_ref(),
-                &PixmapPaint::default(),
-                Transform::identity(),
-                None,
-            );
+            crate::ui::blit(pixmap, &row, (x, y));
         }
     }
 }

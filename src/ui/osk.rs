@@ -562,13 +562,10 @@ impl Osk {
                 if let Some(image) = icon.render(size, text) {
                     let left = x + (w - size as f32) / 2.0;
                     let top = y + (label_height - size as f32) / 2.0;
-                    pixmap.draw_pixmap(
-                        left.round() as i32,
-                        top.round() as i32,
-                        image.as_ref(),
-                        &tiny_skia::PixmapPaint::default(),
-                        Transform::identity(),
-                        None,
+                    crate::ui::blit(
+                        &mut pixmap,
+                        &image,
+                        (left.round() as i32, top.round() as i32),
                     );
                 }
             } else {
@@ -623,14 +620,7 @@ impl Osk {
             let icon = if selected { highlighted } else { normal };
             let left = x + (w - icon.width() as f32) / 2.0;
             let top = y + h * 0.62 + (self.badge_font.line_height - icon.height() as f32) / 2.0;
-            pixmap.draw_pixmap(
-                left.round() as i32,
-                top.round() as i32,
-                icon.as_ref(),
-                &tiny_skia::PixmapPaint::default(),
-                Transform::identity(),
-                None,
-            );
+            crate::ui::blit(pixmap, icon, (left.round() as i32, top.round() as i32));
             return;
         }
         let written = match name {

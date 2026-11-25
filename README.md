@@ -353,6 +353,12 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
   more often than the screen refreshes, and every frame costs the game an upload. Sliding in
   draws nothing again (the compositor configures the surfaces at every step, with the same
   size), and the text's shaping and the icons' rendering are kept from one frame to the next.
+* **Cheap frames.** Images drawn at their size (icons, badges, the controls' keyboard, the
+  game's page, which scrolls as one picture) are copied in a plain loop rather than through
+  tiny-skia's general pipeline, several times slower; save state previews are scaled once, when
+  the page opens; the menu draws over its last frame instead of a new one; and the frame goes
+  to the compositor as it is drawn (`ABGR8888`) when it reads that format, with no per-pixel
+  conversion.
 * **The game keeps the focus.** Opened from a controller, the overlay does not take the
   keyboard (`take_keyboard = auto`): many games slow down when they lose the focus. Opened
   from the keyboard it takes it, and closes when another window gets it (Alt+Tab).

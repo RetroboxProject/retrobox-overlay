@@ -180,6 +180,11 @@ const ICON_ROW_SCALE: f32 = 1.25;
 const STATUS_SCALE: f32 = 1.5;
 /// The gap between an icon and its text, relative to the panel's padding.
 const ICON_GAP: f32 = 0.7;
+/// A slot's margin above and below its preview, part of its row's height.
+const PREVIEW_MARGIN: f32 = 0.1;
+/// How far from its frame's size an image may be and still be drawn as it
+/// is (rounding its sides to whole pixels makes it up to one off).
+const FITTED: f32 = 0.02;
 /// Opacity of the frame drawn where a slot has no preview.
 const EMPTY_PREVIEW_ALPHA: u8 = 0x30;
 /// Opacity of the text of a slot that cannot be chosen.
@@ -737,7 +742,15 @@ impl Panel {
     }
 
     /// Show a save state page instead of the main entries.
-    pub fn open_page(&mut self, page: SlotPage) {
+    pub fn open_page(&mut self, mut page: SlotPage) {
+        // scaled once, not at every frame (one of a game's own size takes
+        // more than the rest of the page to draw)
+        let (width, height) = self.preview_size();
+        for slot in &mut page.slots {
+            if let Some(preview) = &slot.preview {
+                slot.preview = scaled_to_fit(preview, width, height).or(slot.preview.take());
+            }
+        }
         let first = page.slots.iter().position(|slot| slot.enabled).unwrap_or(0);
         self.show_page(Page::Slots(page), first);
     }
@@ -1072,6 +1085,13 @@ impl Panel {
         (self.screen_height - self.header_height()) / self.visible_slots() as f32
     }
 
+    /// A slot's preview frame (width, height): 4:3, as tall as its row but
+    /// for a margin above and below.
+    fn preview_size(&self) -> (f32, f32) {
+        let height = self.slot_height() * (1.0 - 2.0 * PREVIEW_MARGIN);
+        (height * 4.0 / 3.0, height)
+    }
+
     /// The thickness of the separators.
     fn line(&self) -> f32 {
         (self.screen_height / 540.0).max(1.0).round()
@@ -1138,9 +1158,15 @@ impl Panel {
         }
     }
 
-    /// Draw the whole panel for a surface of this height.
-    pub fn render(&self, fonts: &mut Fonts, height: u32) -> Option<Pixmap> {
-        let mut pixmap = Pixmap::new(self.width, height.max(1))?;
+    /// Draw the whole panel for a surface of this height, on the `last`
+    /// frame's pixmap when that has the size: none to allocate and clear at
+    /// every frame (all of it is painted over).
+    pub fn render(&self, fonts: &mut Fonts, height: u32, last: Option<Pixmap>) -> Option<Pixmap> {
+        let height = height.max(1);
+        let mut pixmap = match last {
+            Some(last) if last.width() == self.width && last.height() == height => last,
+            _ => Pixmap::new(self.width, height)?,
+        };
         let width = self.width as f32;
         pixmap.fill(self.background.to_color());
 
@@ -1782,9 +1808,8 @@ impl Panel {
         let line = self.line();
         let row = self.slot_height();
         let style = &self.text.style;
-        let margin = row * 0.1;
-        let preview_height = row - 2.0 * margin;
-        let preview_width = preview_height * 4.0 / 3.0;
+        let margin = row * PREVIEW_MARGIN;
+        let (preview_width, preview_height) = self.preview_size();
         let text_x = padding + preview_width + padding;
         let text_width = (width - text_x - padding).max(1.0);
 
@@ -1974,14 +1999,7 @@ pub(super) fn rounded_rect(
 /// An icon, `size` pixels square, at `at` (its top left corner).
 pub(super) fn draw_icon(pixmap: &mut Pixmap, icon: Icon, size: f32, at: (f32, f32), color: Rgba) {
     if let Some(image) = icon.render(size as u32, color) {
-        pixmap.draw_pixmap(
-            at.0.round() as i32,
-            at.1.round() as i32,
-            image.as_ref(),
-            &PixmapPaint::default(),
-            Transform::identity(),
-            None,
-        );
+        crate::ui::blit(pixmap, &image, (at.0.round() as i32, at.1.round() as i32));
     }
 }
 
@@ -1993,12 +2011,19 @@ const fn slider_order(kind: SliderKind) -> u8 {
     }
 }
 
-/// Draw an image scaled to fit a frame (x, y, width, height), centred.
+/// Draw an image scaled to fit a frame (x, y, width, height), centred; one
+/// already that size (give or take the rounding) as it is.
 fn draw_fitted(pixmap: &mut Pixmap, image: &Pixmap, frame: (f32, f32, f32, f32)) {
     let (x, y, width, height) = frame;
     let scale = (width / image.width() as f32).min(height / image.height() as f32);
     let left = x + (width - image.width() as f32 * scale) / 2.0;
     let top = y + (height - image.height() as f32 * scale) / 2.0;
+    if (scale - 1.0).abs() < FITTED {
+        let left = x + (width - image.width() as f32) / 2.0;
+        let top = y + (height - image.height() as f32) / 2.0;
+        crate::ui::blit(pixmap, image, (left.round() as i32, top.round() as i32));
+        return;
+    }
     let paint = PixmapPaint {
         quality: FilterQuality::Bilinear,
         ..PixmapPaint::default()
@@ -2011,6 +2036,26 @@ fn draw_fitted(pixmap: &mut Pixmap, image: &Pixmap, frame: (f32, f32, f32, f32))
         Transform::from_row(scale, 0.0, 0.0, scale, left, top),
         None,
     );
+}
+
+/// An image scaled (up or down) to fit a frame, to be drawn as it is.
+fn scaled_to_fit(image: &Pixmap, width: f32, height: f32) -> Option<Pixmap> {
+    let scale = (width / image.width() as f32).min(height / image.height() as f32);
+    let side = |side: u32| ((side as f32 * scale).round() as u32).max(1);
+    let mut scaled = Pixmap::new(side(image.width()), side(image.height()))?;
+    let paint = PixmapPaint {
+        quality: FilterQuality::Bilinear,
+        ..PixmapPaint::default()
+    };
+    scaled.draw_pixmap(
+        0,
+        0,
+        image.as_ref(),
+        &paint,
+        Transform::from_scale(scale, scale),
+        None,
+    );
+    Some(scaled)
 }
 
 fn fill(pixmap: &mut Pixmap, x: f32, y: f32, width: f32, height: f32, color: Rgba) {

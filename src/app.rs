@@ -290,6 +290,8 @@ struct State {
     menu_help_shown: Option<(bool, Focus, bool)>,
     /// Redraws put off until the compositor shows the last frame.
     late: Late,
+    /// The panel's last frame, drawn over for the next one.
+    panel_frame: Option<tiny_skia::Pixmap>,
     /// What follows the sound server, once it is known to be there.
     audio: Option<Box<Hub>>,
     /// The outputs and profiles, as last sent while the audio page is open.
@@ -553,6 +555,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         stick_volume: es_settings::right_stick_volume(),
         menu_help_shown: None,
         late: Late::default(),
+        panel_frame: None,
         audio: None,
         devices: None,
         audio_rows: Vec::new(),
@@ -1074,7 +1077,8 @@ impl State {
                 return;
             }
             self.late.panel = false;
-            if let Some(pixmap) = panel.render(&mut self.content.fonts, piece.size.1) {
+            let last = self.panel_frame.take();
+            if let Some(pixmap) = panel.render(&mut self.content.fonts, piece.size.1, last) {
                 if !piece.has_content() {
                     log::debug!(
                         "menu shown {} ms after start",
@@ -1082,6 +1086,7 @@ impl State {
                     );
                 }
                 piece.present(&mut self.display, &pixmap);
+                self.panel_frame = Some(pixmap);
             }
         }
     }

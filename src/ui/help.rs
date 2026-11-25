@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use cosmic_text::Align;
 use resvg::usvg;
-use tiny_skia::{Pixmap, PixmapPaint, Transform};
+use tiny_skia::{Pixmap, Transform};
 
 use super::text::{FontRef, Fonts, TextBox};
 use crate::theme::{HelpTheme, MenuTheme, Rgba};
@@ -178,14 +178,7 @@ impl Help {
         let mut x: f32 = 0.0;
         for (icon, label, label_width) in items {
             if let Some(icon) = icon {
-                pixmap.draw_pixmap(
-                    x.round() as i32,
-                    icon_top,
-                    icon.as_ref(),
-                    &PixmapPaint::default(),
-                    Transform::identity(),
-                    None,
-                );
+                crate::ui::blit(&mut pixmap, &icon, (x.round() as i32, icon_top));
                 x += icon.width() as f32;
             }
             x += self.spacing;

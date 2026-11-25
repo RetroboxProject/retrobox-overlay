@@ -137,14 +137,7 @@ impl Keyboard {
 
     /// Draw it at `(x, y)`, the `chosen` keys lit as selected.
     pub fn draw(&self, pixmap: &mut Pixmap, x: f32, y: f32, chosen: &[String]) {
-        pixmap.draw_pixmap(
-            x.round() as i32,
-            y.round() as i32,
-            self.mapped.as_ref(),
-            &tiny_skia::PixmapPaint::default(),
-            Transform::identity(),
-            None,
-        );
+        crate::ui::blit(pixmap, &self.mapped, (x.round() as i32, y.round() as i32));
         let at = Transform::from_translate(x.round(), y.round());
         let paint = Paint {
             shader: Pattern::new(

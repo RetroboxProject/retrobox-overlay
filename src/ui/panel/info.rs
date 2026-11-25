@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use cosmic_text::Align;
-use tiny_skia::{Pixmap, PixmapPaint, Transform};
+use tiny_skia::Pixmap;
 
 use super::Panel;
 use crate::ui::picture;
@@ -78,14 +78,7 @@ impl Panel {
         let mut y = gap;
         if let Some(image) = image {
             let x = ((width - image.width() as f32) / 2.0).round() as i32;
-            pixmap.draw_pixmap(
-                x,
-                y as i32,
-                image.as_ref(),
-                &PixmapPaint::default(),
-                Transform::identity(),
-                None,
-            );
+            crate::ui::blit(&mut pixmap, &image, (x, y as i32));
             y += image_height;
         }
         let dim = self.small.style.color;
@@ -128,13 +121,13 @@ impl Panel {
     /// The page, scrolled, from the top of the scrolling area.
     pub(super) fn draw_info(&self, pixmap: &mut Pixmap, page: &InfoPage) {
         let (top, _) = self.list_area();
-        pixmap.draw_pixmap(
-            self.padding().round() as i32,
-            (top - self.scroll).round() as i32,
-            page.content.as_ref(),
-            &PixmapPaint::default(),
-            Transform::identity(),
-            None,
+        crate::ui::blit(
+            pixmap,
+            &page.content,
+            (
+                self.padding().round() as i32,
+                (top - self.scroll).round() as i32,
+            ),
         );
     }
 }

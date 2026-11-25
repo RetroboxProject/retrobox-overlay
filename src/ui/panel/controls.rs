@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use cosmic_text::Align;
-use tiny_skia::{Pixmap, PixmapPaint, Transform};
+use tiny_skia::Pixmap;
 
 use super::{Page, Panel, Target, fill};
 use crate::controls::Mapping;
@@ -220,14 +220,7 @@ impl Panel {
                 Some(icons) => {
                     let icon = &icons[selected];
                     let top = y + (row_height - icon.height() as f32) / 2.0;
-                    pixmap.draw_pixmap(
-                        x.round() as i32,
-                        top.round() as i32,
-                        icon.as_ref(),
-                        &PixmapPaint::default(),
-                        Transform::identity(),
-                        None,
-                    );
+                    crate::ui::blit(pixmap, icon, (x.round() as i32, top.round() as i32));
                     x += icon.width() as f32;
                     if let Some((_, Some(side))) = input_icon(input) {
                         x = text(fonts, pixmap, side, x);
