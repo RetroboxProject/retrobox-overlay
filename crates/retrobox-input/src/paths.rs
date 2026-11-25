@@ -26,15 +26,17 @@ pub fn runtime_dir() -> PathBuf {
     env::temp_dir().join(format!("retrobox-{}", getuid()))
 }
 
-/// The configuration directories, lowest priority first: system, then user.
+/// The configuration directories, lowest priority first: `/etc/retrobox`,
+/// then `$XDG_CONFIG_HOME/retrobox` (`~/.config/retrobox`). Retrobox's
+/// configuration is always there: only `XDG_CONFIG_HOME` moves the user's
+/// (`RETROBOX_SYSCONFDIR` the system's, for the tests).
 pub fn config_dirs() -> Vec<PathBuf> {
     let system = env_path("RETROBOX_SYSCONFDIR").unwrap_or_else(|| PathBuf::from("/etc/retrobox"));
-    let user = env_path("RETROBOX_CONFIGDIR").unwrap_or_else(|| {
-        env_path("XDG_CONFIG_HOME")
-            .or_else(|| env_path("HOME").map(|home| home.join(".config")))
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("retrobox")
-    });
+    let user = env_path("XDG_CONFIG_HOME")
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| env_path("HOME").map(|home| home.join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("retrobox");
     vec![system, user]
 }
 
