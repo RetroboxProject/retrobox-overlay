@@ -61,6 +61,7 @@ audio-profile = Profilo
 audio-no-outputs = Nessuna uscita audio trovata
 audio-loading = Caricamento…
 help-audio = AUDIO
+help-quit = ESCI DAL GIOCO
 # the on-screen keyboard's keys
 osk-accents = Accenti
 

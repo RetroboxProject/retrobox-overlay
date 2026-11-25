@@ -61,6 +61,7 @@ audio-profile = Perfil
 audio-no-outputs = Non se atoparon saídas de audio
 audio-loading = Cargando…
 help-audio = AUDIO
+help-quit = SAÍR DO XOGO
 # the on-screen keyboard's keys
 osk-accents = Acentos
 

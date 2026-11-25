@@ -61,6 +61,7 @@ audio-profile = Profil
 audio-no-outputs = Keine Audioausgänge gefunden
 audio-loading = Wird geladen…
 help-audio = AUDIO
+help-quit = SPIEL BEENDEN
 # the on-screen keyboard's keys
 osk-accents = Akzente
 

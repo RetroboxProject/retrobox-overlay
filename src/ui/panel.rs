@@ -417,6 +417,16 @@ impl Panel {
         panel
     }
 
+    /// What the quit button does (with or without saving first), if there
+    /// is one: X on any round button does it at once.
+    pub fn quit_action(&self) -> Option<MenuAction> {
+        self.buttons
+            .iter()
+            .filter(|button| button.enabled)
+            .map(|button| button.action)
+            .find(|action| matches!(action, MenuAction::Quit { .. }))
+    }
+
     /// The round buttons at the bottom; the first one is selected, as the
     /// menu opens there.
     pub fn set_buttons(&mut self, buttons: Vec<MenuItem>) {

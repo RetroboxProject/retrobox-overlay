@@ -235,6 +235,7 @@ with gamepadly's additions, read exactly as gamepadly read them: this replaces g
 | Move | D-pad, left stick | Arrows | Hover, wheel, drag |
 | Choose | South button | Enter | Click, tap |
 | Quit without saving (auto save/load on) | South button held on *save and quit* | Enter held | Held click |
+| Quit at once (as a tap on quit) | X on any round button (Home then X) | | |
 | Back, close | East button, Home | Esc | Right click, click outside |
 | Entries ↔ buttons | R1 / L1 | Page Down / Page Up | |
 | Sliders | Left / Right (held repeats) | Left / Right | Tap or drag the track |

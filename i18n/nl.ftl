@@ -61,6 +61,7 @@ audio-profile = Profiel
 audio-no-outputs = Geen audio-uitvoer gevonden
 audio-loading = Laden…
 help-audio = AUDIO
+help-quit = SPEL AFSLUITEN
 # the on-screen keyboard's keys
 osk-accents = Accenten
 

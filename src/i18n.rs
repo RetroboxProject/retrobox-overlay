@@ -172,6 +172,7 @@ mod tests {
                 "audio-no-outputs",
                 "audio-loading",
                 "help-audio",
+                "help-quit",
                 "help-hold-unsaved",
                 "break-title",
                 "break-text",

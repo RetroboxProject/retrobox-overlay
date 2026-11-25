@@ -335,7 +335,7 @@ struct State {
     stick_volume: bool,
     /// What the menu's help prompts were drawn for (a page open, what kind
     /// of thing selected).
-    menu_help_shown: Option<(bool, Focus, bool)>,
+    menu_help_shown: Option<(bool, Focus, bool, bool)>,
     /// Redraws put off until the compositor shows the last frame.
     late: Late,
     frames: Frames,
@@ -1267,7 +1267,8 @@ impl State {
         // the same prompts as shown: nothing to draw again
         let focus = Focus::of(panel);
         let audio = self.audio.as_ref().is_some_and(|hub| hub.lists_devices());
-        let shown = (panel.page_open(), focus, audio);
+        let quit = panel.quit_action().is_some();
+        let shown = (panel.page_open(), focus, audio, quit);
         if self.menu_help_shown == Some(shown) {
             return;
         }
@@ -1298,10 +1299,17 @@ impl State {
                     prompts.push(prompt("x", "help-audio"));
                 }
             }
-            Focus::Item | Focus::Button => prompts.push(prompt(help.ok(), "help-select")),
+            Focus::Item => prompts.push(prompt(help.ok(), "help-select")),
+            Focus::Button => {
+                prompts.push(prompt(help.ok(), "help-select"));
+                if quit {
+                    prompts.push(prompt("x", "help-quit"));
+                }
+            }
             Focus::Quit => {
                 prompts.push(prompt(help.ok(), "help-select"));
                 prompts.push(prompt(help.ok(), "help-hold-unsaved"));
+                prompts.push(prompt("x", "help-quit"));
             }
             Focus::Page(_) => {}
         }
@@ -1852,6 +1860,26 @@ impl State {
         };
     }
 
+    /// X on a round button, as Home then X closes a game on Nintendo's
+    /// consoles: what a tap of Quit does (saving first when it saves), at
+    /// once; holding it does nothing more.
+    fn quit_at_once(&mut self) {
+        let Some(MenuAction::Quit { autosave }) = self
+            .panel
+            .as_ref()
+            .and_then(|(panel, _)| panel.quit_action())
+        else {
+            return;
+        };
+        self.stop_quit_hold();
+        self.sounds.play(Sound::Select);
+        self.outcome = Some(if autosave {
+            Outcome::SaveAndQuit
+        } else {
+            Outcome::Quit
+        });
+    }
+
     /// Quit went down: held past a tap, its ring fills, and once full it
     /// quits without saving, without waiting for it to be let go.
     fn start_quit_hold(&mut self) {
@@ -2077,16 +2105,13 @@ impl State {
                 self.activate(action);
             }
             Nav::Back => self.back(),
-            // X on the volume, F2 anywhere: the audio page
-            Nav::Options => {
-                if self
-                    .panel
-                    .as_ref()
-                    .is_some_and(|(panel, _)| Focus::of(panel) == Focus::Volume)
-                {
-                    self.open_audio();
-                }
-            }
+            // X on the volume, F2 anywhere: the audio page; X on a round
+            // button: the game closed at once
+            Nav::Options => match self.panel.as_ref().map(|(panel, _)| Focus::of(panel)) {
+                Some(Focus::Volume) => self.open_audio(),
+                Some(Focus::Button | Focus::Quit) => self.quit_at_once(),
+                _ => {}
+            },
             Nav::Audio => self.open_audio(),
             // the volume, wherever the selection is; a page that opened with
             // the stick held takes no more of it

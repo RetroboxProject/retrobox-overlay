@@ -61,6 +61,7 @@ audio-profile = Profila
 audio-no-outputs = Ez da audio-irteerarik aurkitu
 audio-loading = Kargatzen…
 help-audio = AUDIOA
+help-quit = IRTEN JOKOTIK
 # the on-screen keyboard's keys
 osk-accents = Azentuak
 
