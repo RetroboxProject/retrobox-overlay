@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Sample what the machine does while the overlay runs, to diagnose it.
 
-Every INTERVAL seconds it writes, for each thread of the processes it
-watches (the game, the compositor, the overlay and a few others), its CPU
-use, how long it waited for a core (the run queue: a thread that is ready
-but not running) and how often it was preempted; for each core its use and
-frequency; and the GPU's load and frequency, the memory controller's
-frequency and the temperatures, where the kernel tells them (Tegra's L4T
-among others). The header has what the compositor renders with.
+Every INTERVAL seconds it writes, for each thread of the processes that
+used the CPU meanwhile (and of those it always watches: the game, the
+display server, the compositor, the overlay...), its CPU use, how long it
+waited for a core (the run queue: a thread that is ready but not running)
+and how often it was preempted; for each core its use and frequency; and
+the GPU's load and frequency, the memory controller's frequency and the
+temperatures, where the kernel tells them (Tegra's L4T among others). The
+header has the display servers, window managers and compositors running,
+and what they render with.
 
 Lines are `<time> <event> <field>=<value>...`, the time being
 CLOCK_MONOTONIC in milliseconds, as in the overlay's trace
@@ -26,9 +28,31 @@ import sys
 import time
 from pathlib import Path
 
-WATCHED = (
-    "retroarch",
+DISPLAY = (
+    "Xorg",
+    "X",
+    "Xwayland",
     "labwc",
+    "sway",
+    "kwin_wayland",
+    "kwin_x11",
+    "picom",
+    "compton",
+    "xcompmgr",
+    "openbox",
+    "xfwm4",
+    "marco",
+    "mutter",
+    "gnome-shell",
+    "matchbox-window",
+    "i3",
+    "fluxbox",
+    "icewm",
+)
+"""Display servers, window managers and compositors (as /proc/PID/comm has
+their names: 15 characters at most)."""
+WATCHED = DISPLAY + (
+    "retroarch",
     "retrobox-overla",
     "retrobox-inputd",
     "emulationstatio",
@@ -36,9 +60,8 @@ WATCHED = (
     "pipewire",
     "pipewire-pulse",
     "wireplumber",
-    "Xwayland",
 )
-"""Process names (as /proc/PID/comm has them: 15 characters at most)."""
+"""Processes always sampled, busy or not."""
 
 GPU_LOADS = (
     "/sys/devices/gpu.0/load",
@@ -89,14 +112,18 @@ def emit(out, event, **fields):
     out.write(f"{now():.3f} {event} {text}\n")
 
 
-def watched_processes():
-    """The watched processes running: {pid: name}."""
+def processes():
+    """The processes running but this one: {pid: (name, CPU ticks)}."""
     found = {}
     for entry in os.listdir("/proc"):
-        if entry.isdigit():
-            name = read(f"/proc/{entry}/comm")
-            if name in WATCHED:
-                found[int(entry)] = name
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        stat = read(f"/proc/{entry}/stat")
+        if not stat:
+            continue
+        name = stat[stat.index("(") + 1 : stat.rindex(")")]
+        fields = stat[stat.rindex(")") + 2 :].split()
+        found[int(entry)] = (name, int(fields[11]) + int(fields[12]))
     return found
 
 
@@ -149,14 +176,16 @@ def write_header(out):
     for name, paths in (("gpu_load", GPU_LOADS), ("gpu_freq", GPU_FREQS), ("emc", EMC_FREQS)):
         path, _ = first_readable(paths)
         out.write(f"# {name} {path or 'unavailable'}\n")
-    for pid, name in watched_processes().items():
-        if name != "labwc":
+    for pid, (name, _) in processes().items():
+        if name not in DISPLAY:
             continue
+        command = (read(f"/proc/{pid}/cmdline") or "").replace("\0", " ").strip()
+        out.write(f"# display {name} pid={pid} command={command or '-'}\n")
         environ = (read(f"/proc/{pid}/environ") or "").split("\0")
-        hints = [item for item in environ if item.startswith(("WLR_", "LABWC_"))]
-        out.write(f"# labwc pid={pid} env={' '.join(hints) or '-'}\n")
+        hints = [item for item in environ if item.startswith(("WLR_", "LABWC_", "__GL", "DISPLAY"))]
+        out.write(f"# display {name} env={' '.join(hints) or '-'}\n")
         libraries = sorted(set(RENDERER_LIBRARIES.findall(read(f"/proc/{pid}/maps") or "")))
-        out.write(f"# labwc libraries={','.join(libraries) or '-'}\n")
+        out.write(f"# display {name} libraries={','.join(libraries) or '-'}\n")
 
 
 class Probe:
@@ -164,6 +193,7 @@ class Probe:
 
     def __init__(self, out):
         self.out = out
+        self.processes = processes()
         self.threads = {}
         self.cores = core_sample()
         self.sampled = now()
@@ -181,7 +211,14 @@ class Probe:
         """Each watched thread's CPU use, wait and preemptions since the
         last sample."""
         threads = {}
-        for pid, process in watched_processes().items():
+        running = processes()
+        busy = {
+            pid: name
+            for pid, (name, ticks) in running.items()
+            if name in WATCHED or ticks != self.processes.get(pid, (name, ticks))[1]
+        }
+        self.processes = running
+        for pid, process in busy.items():
             try:
                 tids = [int(tid) for tid in os.listdir(f"/proc/{pid}/task")]
             except OSError:
@@ -190,10 +227,15 @@ class Probe:
                 sample = thread_sample(pid, tid)
                 if sample is None:
                     continue
-                threads[tid] = sample
-                if tid in self.threads:
-                    self.emit_thread((process, pid, tid), self.threads[tid], sample, elapsed)
-        self.threads = threads
+                threads[(pid, tid)] = sample
+                last = self.threads.get((pid, tid))
+                if last and (process in WATCHED or sample != last):
+                    self.emit_thread((process, pid, tid), last, sample, elapsed)
+        # the threads not sampled now keep their counters, for when their
+        # process is busy again (those of processes gone are forgotten)
+        self.threads = {
+            key: sample for key, sample in self.threads.items() if key[0] in running
+        } | threads
 
     def emit_thread(self, thread, last, sample, elapsed):
         """A thread's line: what changed from `last` to `sample`."""

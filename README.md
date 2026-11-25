@@ -350,9 +350,11 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
   game for a moment and make its audio stutter. A silent toast starts no sound player at all.
 * **No more frames than the screen shows.** The menu and the keyboard draw a new frame only once
   the compositor has shown the last one (its frame callback): a finger dragging the list moves
-  more often than the screen refreshes, and every frame costs the game an upload. Sliding in
-  draws nothing again (the compositor configures the surfaces at every step, with the same
-  size), and the text's shaping and the icons' rendering are kept from one frame to the next.
+  more often than the screen refreshes, and every frame costs the game an upload. X11 tells
+  nothing of the kind: there a window gets at most one frame per 60 Hz refresh, and only the rows
+  that changed are sent to the server. Sliding in draws nothing again (the compositor configures
+  the surfaces at every step, with the same size), and the text's shaping and the icons'
+  rendering are kept from one frame to the next.
 * **Cheap frames.** Images drawn at their size (icons, badges, the controls' keyboard, the
   game's page, which scrolls as one picture) are copied in a plain loop rather than through
   tiny-skia's general pipeline, several times slower; save state previews are scaled once, when
@@ -440,13 +442,16 @@ journal under systemd.
 
 With `RETROBOX_OVERLAY_TRACE=<file>`, the overlay appends a timeline of what it does to that file:
 every touch and pointer event (with how late it was handled), scroll step, frame drawn or put
-off (what drawing it, filling the buffer, hashing its rows and committing it took), configure
-and frame callback (how long the compositor took to show the frame, and its own frame times).
-`scripts/probe.py` samples the system meanwhile: each thread of the game, the compositor and the
-overlay (CPU use, time spent waiting for a core, preemptions), each core's use and frequency and,
-where the kernel tells them (Tegra's L4T among others), the GPU's load and frequency, the memory
-controller's frequency and the temperatures. `scripts/trace_report.py` puts both together, while
-dragging, while open and not dragging, and before the overlay opened (the game alone):
+off (what drawing it, filling the buffer, hashing its rows and committing or, on X11, sending
+it took), configure and frame callback (how long the compositor took to show the frame, and its
+own frame times), and on X11 whether a compositing manager runs and each time the overlay raised
+itself over another window. `scripts/probe.py` samples the system meanwhile: each thread of every
+process that used the CPU, and always of the game, the display server, the window manager or
+compositor and the overlay (CPU use, time spent waiting for a core, preemptions), each core's
+use and frequency and, where the kernel tells them (Tegra's L4T among others), the GPU's load and
+frequency, the memory controller's frequency and the temperatures. `scripts/trace_report.py`
+puts both together, while dragging, while open and not dragging, and before the overlay opened
+(the game alone):
 
 ```sh
 systemctl --user set-environment RETROBOX_OVERLAY_TRACE=/tmp/overlay-trace.log

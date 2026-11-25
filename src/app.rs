@@ -266,7 +266,7 @@ struct FrameStats {
     drawing: Duration,
     handing: Duration,
     /// Frames drawn by the timer: the compositor's frame callback did not
-    /// come in time.
+    /// come in time (Wayland), or the pace was kept (X11).
     forced: u32,
 }
 
@@ -281,7 +281,7 @@ impl FrameStats {
             let each = |total: Duration| total.as_secs_f32() * 1000.0 / self.frames as f32;
             log::debug!(
                 "menu: {} frames in {:.1} s, {:.2} ms drawing and {:.2} ms handing over \
-                 each, {} without the compositor's frame callback",
+                 each, {} drawn by the timer (no frame callback, or X11's pace)",
                 self.frames,
                 elapsed.as_secs_f32(),
                 each(self.drawing),
@@ -1156,26 +1156,46 @@ impl State {
         if self.late.timer {
             return;
         }
-        let token =
-            self.handle
-                .insert_source(Timer::from_duration(FRAME_WAIT), |_, &mut (), state| {
-                    if state.late.panel {
-                        trace!("timeout", "piece=panel");
+        let token = self.handle.insert_source(
+            Timer::from_duration(self.late_wait()),
+            |_, &mut (), state| {
+                if state.late.panel {
+                    trace!("timeout", "piece=panel");
+                    state.draw_panel();
+                    if !state.late.panel {
                         state.frames.stats.forced += 1;
-                        state.draw_panel();
                     }
-                    if state.late.osk {
-                        trace!("timeout", "piece=osk");
-                        state.draw_osk();
-                    }
-                    if state.late.panel || state.late.osk {
-                        TimeoutAction::ToDuration(FRAME_WAIT)
-                    } else {
-                        state.late.timer = false;
-                        TimeoutAction::Drop
-                    }
-                });
+                }
+                if state.late.osk {
+                    trace!("timeout", "piece=osk");
+                    state.draw_osk();
+                }
+                if state.late.panel || state.late.osk {
+                    TimeoutAction::ToDuration(state.late_wait())
+                } else {
+                    state.late.timer = false;
+                    TimeoutAction::Drop
+                }
+            },
+        );
         self.late.timer = token.is_ok();
+    }
+
+    /// How long until a piece put off may be drawn (the soonest, none being
+    /// at least a millisecond: no timer spinning).
+    fn late_wait(&self) -> Duration {
+        let wait = |late: bool, piece: Option<&Piece>| {
+            late.then(|| piece.and_then(Piece::frame_wait).unwrap_or_default())
+        };
+        [
+            wait(self.late.panel, self.panel.as_ref().map(|(_, piece)| piece)),
+            wait(self.late.osk, self.osk.as_ref().map(|(_, piece)| piece)),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(FRAME_WAIT)
+        .max(Duration::from_millis(1))
     }
 
     /// A round button highlighted: its function shows after a while;
@@ -2293,8 +2313,9 @@ fn dim_spec(toast: Option<&toast_view::Shown>, side: Side, task: bool) -> Spec {
 
 /// An input event in the trace: when the compositor had it (`time`, its
 /// milliseconds) and how long before it is handled (`lag`).
-fn trace_input(name: &str, time: u32, (x, y): (f64, f64)) {
+fn trace_input(name: &str, time: u32, (x, y): (impl Into<f64>, impl Into<f64>)) {
     if trace::enabled() {
+        let (x, y): (f64, f64) = (x.into(), y.into());
         trace::event(
             name,
             format_args!(
@@ -2622,6 +2643,7 @@ impl State {
                 }
             }
             XEvent::ButtonPress(event) => {
+                trace_input("pointer_press", event.time, (event.event_x, event.event_y));
                 let kind = match event.detail {
                     1 => PointerKind::Press(BTN_LEFT),
                     3 => PointerKind::Press(BTN_RIGHT),
@@ -2632,6 +2654,11 @@ impl State {
                 self.pointer(&pointer(event.event, event.event_x, event.event_y, kind));
             }
             XEvent::ButtonRelease(event) => {
+                trace_input(
+                    "pointer_release",
+                    event.time,
+                    (event.event_x, event.event_y),
+                );
                 let kind = match event.detail {
                     1 => PointerKind::Release(BTN_LEFT),
                     3 => PointerKind::Release(BTN_RIGHT),
@@ -2639,12 +2666,15 @@ impl State {
                 };
                 self.pointer(&pointer(event.event, event.event_x, event.event_y, kind));
             }
-            XEvent::MotionNotify(event) => self.pointer(&pointer(
-                event.event,
-                event.event_x,
-                event.event_y,
-                PointerKind::Motion,
-            )),
+            XEvent::MotionNotify(event) => {
+                trace_input("pointer_motion", event.time, (event.event_x, event.event_y));
+                self.pointer(&pointer(
+                    event.event,
+                    event.event_x,
+                    event.event_y,
+                    PointerKind::Motion,
+                ));
+            }
             XEvent::EnterNotify(event) => self.pointer(&pointer(
                 event.event,
                 event.event_x,
@@ -2680,6 +2710,7 @@ impl State {
         if let Some(x11) = self.display.x11()
             && !x11.is_top(window)
         {
+            trace!("x11_raise", "window={window:#x}");
             log::debug!("window {window:#x} restacked: raising the overlay");
             x11.raise();
         }

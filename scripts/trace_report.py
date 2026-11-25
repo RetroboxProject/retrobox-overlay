@@ -97,6 +97,9 @@ def drags(lines):
         elif event in UPS and start is not None:
             windows.append((start, time))
             start = None
+    if start is not None and lines:
+        # still held when the trace ends
+        windows.append((start, lines[-1][0]))
     return windows
 
 
@@ -113,6 +116,26 @@ def outside(lines, windows, span):
         for line in lines
         if first <= line[0] <= last and not any(start <= line[0] <= end for start, end in windows)
     ]
+
+
+def report_x11(lines, seconds):
+    """What the X11 windows were sent."""
+    puts = [line for line in lines if line[1] == "x11_put"]
+    if not puts:
+        return
+    same = sum(1 for line in puts if line[2].get("rows") == "same")
+    rows = []
+    for line in puts:
+        first, _, end = line[2].get("rows", "").partition("-")
+        if end:
+            rows.append(float(end) - float(first))
+    print(f"  x11: {len(puts) / seconds:.1f} windows' frames/s, {same} unchanged")
+    for field in ("fill", "hash", "put"):
+        print(f"    {field:7}{spread(numbers(lines, 'x11_put', field))}")
+    print(f"    rows sent: {spread(rows, unit='')}")
+    raises = sum(1 for line in lines if line[1] == "x11_raise")
+    exposes = sum(1 for line in lines if line[1] == "x11_expose")
+    print(f"    {raises} raises (another window restacked), {exposes} exposures")
 
 
 def report_overlay(title, lines, seconds):
@@ -132,14 +155,15 @@ def report_overlay(title, lines, seconds):
     defers = sum(1 for line in lines if line[1] == "defer" and line[2].get("piece") == "panel")
     timeouts = sum(1 for line in lines if line[1] == "timeout" and line[2].get("piece") == "panel")
     print(
-        f"panel frames: {len(draws) / seconds:.1f}/s ({len(draws)}), "
-        f"{defers} put off, {timeouts} drawn by the timer (no frame callback)"
+        f"panel frames: {len(draws) / seconds:.1f}/s ({len(draws)}), {defers} put off, "
+        f"{timeouts} drawn by the timer (Wayland: no frame callback; X11: the pace)"
     )
     print(f"  render:  {spread(numbers(lines, 'draw', 'render', piece='panel'))}")
     print(f"  present: {spread(numbers(lines, 'draw', 'present', piece='panel'))}")
     for field in ("create", "fill", "hash"):
         print(f"    {field:7}{spread(numbers(lines, 'buffer', field))}")
     print(f"    commit {spread(numbers(lines, 'commit', 'took'))}")
+    report_x11(lines, seconds)
     print(f"  between frames: {spread(intervals([line[0] for line in draws]))}")
     waited = numbers(lines, "frame_done", "waited", piece="panel")
     waited = [value for value in waited if value >= 0]
@@ -234,6 +258,9 @@ def main():
     dragging = sum(end - start for start, end in windows) / 1000.0
     print(f"session {args.session % len(found) + 1} of {len(found)}: {(last - first) / 1000:.1f} s")
     print(f"{len(windows)} drags, {dragging:.1f} s in all")
+    for _, event, fields in session:
+        if event == "x11":
+            print("x11: " + " ".join(f"{key}={value}" for key, value in fields.items()))
     report_overlay("while dragging", within(session, windows), dragging)
     rest = outside(session, windows, (first, last))
     report_overlay("open, not dragging", rest, (last - first) / 1000.0 - dragging)

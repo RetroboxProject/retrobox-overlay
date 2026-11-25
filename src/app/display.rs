@@ -427,6 +427,10 @@ impl X11 {
                 " (no compositing manager: the dim darkens a copy of the screen)"
             }
         );
+        trace!(
+            "x11",
+            "monitor={}x{} depth={depth} composited={composited}", monitor.2, monitor.3
+        );
         let backdrop = if composited {
             None
         } else {
@@ -614,6 +618,8 @@ impl X11 {
             depth: self.depth,
             size: (width, height),
             pixels: Vec::new(),
+            rows: Rows::default(),
+            sent: None,
             tops: None,
         })
     }
@@ -763,6 +769,11 @@ pub(super) struct Window {
     depth: u8,
     size: (u32, u32),
     pixels: Vec<u8>,
+    /// What it shows, a hash per row: only the rows a redraw changes are
+    /// sent to the server.
+    rows: Rows,
+    /// When pixels were last sent (to pace the next ones).
+    sent: Option<Instant>,
     /// The list of top-level windows it is in, if it is one.
     tops: Option<Rc<RefCell<Vec<xproto::Window>>>>,
 }
@@ -771,8 +782,11 @@ impl Window {
     /// Show ARGB8888 pixels (B, G, R, A in memory; the X server's order on
     /// little-endian machines), resizing the window to them.
     fn show(&mut self, width: u32, height: u32, fill: impl FnOnce(&mut [u8])) {
-        let mut pixels = vec![0; width as usize * height as usize * 4];
-        fill(&mut pixels);
+        let started = trace::now();
+        // the last frame's pixels are painted over: no allocation per frame
+        self.pixels.resize(width as usize * height as usize * 4, 0);
+        fill(&mut self.pixels);
+        let filled = trace::now();
         if self.size != (width, height)
             && let Some(conn) = &self.conn
         {
@@ -786,24 +800,47 @@ impl Window {
             );
             self.size = (width, height);
         }
-        self.pixels = pixels;
-        self.repaint();
+        let changed = self.rows.changed(&self.pixels, width, height);
+        let hashed = trace::now();
+        if let Some(band) = changed {
+            self.put(band);
+            self.sent = Some(Instant::now());
+        }
+        trace!(
+            "x11_put",
+            "size={width}x{height} fill={:.3} hash={:.3} put={:.3} rows={}",
+            filled - started,
+            hashed - filled,
+            trace::now() - hashed,
+            changed.map_or_else(
+                || "same".to_owned(),
+                |(first, end)| format!("{first}-{end}")
+            )
+        );
     }
 
-    /// Put the pixels on the window again (after an exposure), in strips
-    /// small enough for one request each.
+    /// Put all the pixels on the window again (after an exposure).
     pub fn repaint(&self) {
+        trace!("x11_expose", "window={:#x}", self.id);
+        self.put((0, self.size.1 as usize));
+    }
+
+    /// Put these rows (first, end) of the pixels on the window, in strips
+    /// small enough for one request each.
+    fn put(&self, (first, end): (usize, usize)) {
         let Some(conn) = &self.conn else {
             return;
         };
         let (width, height) = self.size;
         let row = width as usize * 4;
-        if row == 0 || self.pixels.len() < row * height as usize {
+        let end = end.min(height as usize);
+        if row == 0 || first >= end || self.pixels.len() < row * end {
             return;
         }
         let rows_per_request = ((conn.maximum_request_bytes().saturating_sub(64)) / row).max(1);
-        for (index, strip) in self.pixels.chunks(row * rows_per_request).enumerate() {
-            let top = index * rows_per_request;
+        let band = &self.pixels[row * first..row * end];
+        for (index, strip) in band.chunks(row * rows_per_request).enumerate() {
+            let top = first + index * rows_per_request;
             let rows = strip.len() / row;
             log_error(conn.put_image(
                 ImageFormat::Z_PIXMAP,
@@ -857,6 +894,8 @@ enum Kind {
 /// How long a frame callback is waited for before drawing anyway (one that
 /// never comes must not freeze a piece).
 pub(super) const FRAME_WAIT: Duration = Duration::from_millis(100);
+/// The least time between two frames of a window on X11: a 60 Hz refresh.
+const X11_FRAME: Duration = Duration::from_micros(16_667);
 
 /// A surface of the overlay's own, placed like a layer-shell surface.
 pub(super) struct Piece {
@@ -895,12 +934,27 @@ impl Piece {
     /// another one now would only replace it unseen, the game paying for
     /// both (on X11 never).
     pub fn waits_for_frame(&self) -> bool {
-        match &self.kind {
+        self.frame_wait().is_some()
+    }
+
+    /// How much longer to wait before drawing again, if at all: until the
+    /// frame callback comes (or [`FRAME_WAIT`] has gone by) on Wayland; on
+    /// X11, which tells nothing of the kind, until a refresh's time has
+    /// gone by since the last pixels were sent ([`X11_FRAME`]: an X server
+    /// and a compositing manager handed pixels at every pointer motion
+    /// take that from the game).
+    pub fn frame_wait(&self) -> Option<Duration> {
+        let (since, wait) = match &self.kind {
             Kind::Layer {
                 frame: Some(since), ..
-            } => since.elapsed() < FRAME_WAIT,
-            _ => false,
-        }
+            } => (since, FRAME_WAIT),
+            Kind::Window(Window {
+                sent: Some(since), ..
+            }) => (since, X11_FRAME),
+            _ => return None,
+        };
+        wait.checked_sub(since.elapsed())
+            .filter(|left| !left.is_zero())
     }
 
     /// The compositor showed the last buffer (its frame callback).
