@@ -27,14 +27,17 @@
 //! Every buffer costs the compositor an upload, which a game running under
 //! the overlay pays for: the dim is one pixel the compositor stretches over
 //! the screen (`wp_single_pixel_buffer` with `wp_viewporter`, when the
-//! compositor has them: KWin 6, wlroots), and a redraw only tells the
-//! compositor about the rows that changed (nothing at all when none did).
+//! compositor has them: KWin 6, wlroots), a redraw only tells the
+//! compositor about the rows that changed (nothing at all when none did),
+//! and every buffer asks for a frame callback, so that the next one can wait
+//! for the compositor to have shown it ([`Piece::waits_for_frame`]).
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
-use smithay_client_toolkit::compositor::CompositorState;
+use smithay_client_toolkit::compositor::{CompositorState, FrameCallbackData};
 use smithay_client_toolkit::output::OutputState;
 use smithay_client_toolkit::registry::{RegistryState, SimpleGlobal};
 use smithay_client_toolkit::seat::SeatState;
@@ -343,6 +346,7 @@ impl Display {
                     fade,
                     rows: Rows::default(),
                     pixel: None,
+                    frame: None,
                 }
             }
             Self::X11(x11) => Kind::Window(x11.create_window(&spec)),
@@ -842,9 +846,16 @@ enum Kind {
         rows: Rows,
         /// One pixel stretched over the surface (the dim).
         pixel: Option<(WlBuffer, Option<WpViewport>)>,
+        /// Since when the compositor has the last buffer and has not said it
+        /// showed it yet (its frame callback).
+        frame: Option<Instant>,
     },
     Window(Window),
 }
+
+/// How long a frame callback is waited for before drawing anyway (one that
+/// never comes must not freeze a piece).
+pub(super) const FRAME_WAIT: Duration = Duration::from_millis(100);
 
 /// A surface of the overlay's own, placed like a layer-shell surface.
 pub(super) struct Piece {
@@ -877,6 +888,25 @@ impl Piece {
 
     pub const fn has_content(&self) -> bool {
         self.shown
+    }
+
+    /// Whether the compositor has not shown the last buffer yet: drawing
+    /// another one now would only replace it unseen, the game paying for
+    /// both (on X11 never).
+    pub fn waits_for_frame(&self) -> bool {
+        match &self.kind {
+            Kind::Layer {
+                frame: Some(since), ..
+            } => since.elapsed() < FRAME_WAIT,
+            _ => false,
+        }
+    }
+
+    /// The compositor showed the last buffer (its frame callback).
+    pub fn frame_done(&mut self) {
+        if let Kind::Layer { frame, .. } = &mut self.kind {
+            *frame = None;
+        }
     }
 
     /// Set the opacity (0..1), for the next commit.
@@ -1046,6 +1076,7 @@ impl Piece {
                     layer,
                     buffer,
                     rows,
+                    frame,
                     ..
                 },
                 Display::Wayland(wl),
@@ -1057,6 +1088,9 @@ impl Piece {
                 fill,
             ) {
                 Attached::New(attached) => {
+                    let surface = layer.wl_surface();
+                    surface.frame(&wl.qh, FrameCallbackData(surface.clone()));
+                    *frame = Some(Instant::now());
                     layer.commit();
                     *buffer = Some(attached);
                     self.shown = true;
@@ -1124,17 +1158,27 @@ impl Rows {
     }
 }
 
-/// A fast hash of a row of pixels (only compared with itself).
+/// A fast hash of a row of pixels (only compared with itself): four words at
+/// a time, each in a lane of its own, so that the processor need not wait
+/// for one multiplication before the next.
 fn row_hash(row: &[u8]) -> u64 {
-    let (words, rest) = row.as_chunks::<8>();
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for word in words {
-        hash = (hash ^ u64::from_le_bytes(*word))
-            .wrapping_mul(0x0100_0000_01b3)
-            .rotate_left(29);
+    const PRIME: u64 = 0x0100_0000_01b3;
+    let mix = |hash: u64, word: u64| (hash ^ word).wrapping_mul(PRIME).rotate_left(29);
+    let (blocks, rest) = row.as_chunks::<32>();
+    let mut lanes: [u64; 4] = [
+        0xcbf2_9ce4_8422_2325,
+        0x8422_2325_cbf2_9ce4,
+        0x9ce4_cbf2_2325_8422,
+        0x2325_8422_9ce4_cbf2,
+    ];
+    for block in blocks {
+        for (lane, word) in lanes.iter_mut().zip(block.as_chunks::<8>().0) {
+            *lane = mix(*lane, u64::from_le_bytes(*word));
+        }
     }
+    let mut hash = lanes.into_iter().fold(0, mix);
     for byte in rest {
-        hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+        hash = mix(hash, u64::from(*byte));
     }
     hash
 }
@@ -1458,6 +1502,15 @@ mod tests {
         assert_eq!(rows.changed(&canvas, 3, 5), Some((2, 4)));
         // another size: everything
         assert_eq!(rows.changed(&canvas[..4 * 2 * 5], 2, 5), Some((0, 5)));
+
+        // rows wide enough to be hashed a block at a time
+        let mut wide = vec![0u8; 4 * 41 * 4];
+        assert_eq!(rows.changed(&wide, 41, 4), Some((0, 4)));
+        assert_eq!(rows.changed(&wide, 41, 4), None);
+        wide[4 * 41 + 4 * 37 + 2] = 1;
+        assert_eq!(rows.changed(&wide, 41, 4), Some((1, 2)));
+        wide[4 * 41 * 3 + 4 * 40 + 3] = 1;
+        assert_eq!(rows.changed(&wide, 41, 4), Some((3, 4)));
     }
 
     use super::*;

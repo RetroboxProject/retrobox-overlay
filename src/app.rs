@@ -104,7 +104,7 @@ mod manual_view;
 mod task_view;
 mod toast_view;
 
-use display::{Display, Piece, Spec, Sub, SurfaceId, X11};
+use display::{Display, FRAME_WAIT, Piece, Spec, Sub, SurfaceId, X11};
 use manual_view::ManualState;
 use task_view::TaskView;
 
@@ -232,6 +232,19 @@ pub struct Content {
     pub screens: Screens,
 }
 
+/// Redraws of the panel and the keyboard put off while the compositor has
+/// not shown their last frame yet: a finger dragging the list moves more
+/// often than the screen refreshes, and every buffer drawn costs the game
+/// under the overlay an upload; the next frame callback draws what changed
+/// meanwhile, once (a timer, when none comes).
+#[derive(Debug, Default)]
+struct Late {
+    panel: bool,
+    osk: bool,
+    /// Whether the timer that draws them anyway is set.
+    timer: bool,
+}
+
 struct State {
     display: Display,
     /// Whether the menu has the keyboard focus.
@@ -275,6 +288,8 @@ struct State {
     /// What the menu's help prompts were drawn for (a page open, what kind
     /// of thing selected).
     menu_help_shown: Option<(bool, Focus, bool)>,
+    /// Redraws put off until the compositor shows the last frame.
+    late: Late,
     /// What follows the sound server, once it is known to be there.
     audio: Option<Box<Hub>>,
     /// The outputs and profiles, as last sent while the audio page is open.
@@ -537,6 +552,7 @@ pub fn run(mut content: Content) -> Result<(Outcome, Emulator, Vec<Setter>)> {
         finger: None,
         stick_volume: es_settings::right_stick_volume(),
         menu_help_shown: None,
+        late: Late::default(),
         audio: None,
         devices: None,
         audio_rows: Vec::new(),
@@ -925,6 +941,12 @@ impl State {
             if piece.size.1 == 0 {
                 return;
             }
+            if piece.waits_for_frame() {
+                self.late.osk = true;
+                self.draw_late();
+                return;
+            }
+            self.late.osk = false;
             if let Some(pixmap) = osk.render(&mut self.content.fonts) {
                 if !piece.has_content() {
                     log::info!(
@@ -1046,6 +1068,12 @@ impl State {
             if piece.size.1 == 0 {
                 return;
             }
+            if piece.waits_for_frame() {
+                self.late.panel = true;
+                self.draw_late();
+                return;
+            }
+            self.late.panel = false;
             if let Some(pixmap) = panel.render(&mut self.content.fonts, piece.size.1) {
                 if !piece.has_content() {
                     log::debug!(
@@ -1056,6 +1084,31 @@ impl State {
                 piece.present(&mut self.display, &pixmap);
             }
         }
+    }
+
+    /// Draw the panel and the keyboard if they were put off, once the
+    /// compositor has had the time to show their last frame (see [`Late`]).
+    fn draw_late(&mut self) {
+        if self.late.timer {
+            return;
+        }
+        let token =
+            self.handle
+                .insert_source(Timer::from_duration(FRAME_WAIT), |_, &mut (), state| {
+                    if state.late.panel {
+                        state.draw_panel();
+                    }
+                    if state.late.osk {
+                        state.draw_osk();
+                    }
+                    if state.late.panel || state.late.osk {
+                        TimeoutAction::ToDuration(FRAME_WAIT)
+                    } else {
+                        state.late.timer = false;
+                        TimeoutAction::Drop
+                    }
+                });
+        self.late.timer = token.is_ok();
     }
 
     /// A round button highlighted: its function shows after a while;
@@ -2163,6 +2216,16 @@ fn dim_spec(toast: Option<&toast_view::Shown>, side: Side, task: bool) -> Spec {
     )
 }
 
+/// A configure with the size a piece already shows: it is only committed
+/// (which acknowledges the configure), not drawn again.
+fn same_size(piece: &Piece, size: (u32, u32)) -> bool {
+    let same = piece.size == size && piece.has_content();
+    if same {
+        piece.commit();
+    }
+    same
+}
+
 const fn edge_margin(side: Side, margin: i32) -> [i32; 4] {
     match side {
         Side::Right => [0, margin, 0, 0],
@@ -2175,8 +2238,16 @@ const fn edge_margin(side: Side, margin: i32) -> [i32; 4] {
 impl State {
     /// A surface has its size (Wayland's configure; at once on X11).
     fn configured(&mut self, surface: &SurfaceId, size: (u32, u32)) {
+        // The compositor configures a surface again whenever one of the
+        // overlay's moves (the panel and the keyboard slide in, a frame at a
+        // time), mostly with the size it had: what was drawn stays (the
+        // commit takes the configure in).
         if self.dim.is(surface) {
             let first = self.dim.size == (0, 0);
+            if self.dim.size == size && self.dim.has_content() {
+                self.dim.commit();
+                return;
+            }
             self.dim.size = size;
             self.draw_dim();
             if first && size.0 > 0 && size.1 > 0 {
@@ -2185,13 +2256,22 @@ impl State {
             }
         } else if let Some((_, piece)) = self.panel.as_mut().filter(|(_, piece)| piece.is(surface))
         {
+            if same_size(piece, size) {
+                return;
+            }
             piece.size = size;
             self.draw_panel();
         } else if let Some((_, piece)) = self.clock.as_mut().filter(|(_, piece)| piece.is(surface))
         {
+            if same_size(piece, size) {
+                return;
+            }
             piece.size = size;
             self.draw_clock();
         } else if let Some((_, piece)) = self.osk.as_mut().filter(|(_, piece)| piece.is(surface)) {
+            if same_size(piece, size) {
+                return;
+            }
             piece.size = size;
             self.draw_osk();
         } else {
@@ -2958,7 +3038,33 @@ impl CompositorHandler for State {
         _: wl_output::Transform,
     ) {
     }
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
+    /// The compositor showed a surface's last buffer: what was put off
+    /// meanwhile is drawn now.
+    fn frame(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        surface: &wl_surface::WlSurface,
+        _: u32,
+    ) {
+        let surface = SurfaceId::Wayland(surface.clone());
+        if let Some((_, piece)) = self.panel.as_mut().filter(|(_, piece)| piece.is(&surface)) {
+            piece.frame_done();
+            if self.late.panel {
+                self.draw_panel();
+            }
+        } else if let Some((_, piece)) = self.osk.as_mut().filter(|(_, piece)| piece.is(&surface)) {
+            piece.frame_done();
+            if self.late.osk {
+                self.draw_osk();
+            }
+        } else if let Some((_, piece)) = self.clock.as_mut().filter(|(_, piece)| piece.is(&surface))
+        {
+            piece.frame_done();
+        } else if self.dim.is(&surface) {
+            self.dim.frame_done();
+        }
+    }
     fn surface_enter(
         &mut self,
         _: &Connection,

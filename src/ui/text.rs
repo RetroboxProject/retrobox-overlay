@@ -95,9 +95,50 @@ pub struct TextBox {
     pub align: Align,
 }
 
+/// How many shaped texts are kept (all of them are forgotten past that):
+/// more than a menu's worth, with the lines tried while fitting.
+const LAYOUTS_KEPT: usize = 2048;
+
+/// What a shaped text depends on.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LayoutKey {
+    path: PathBuf,
+    size: u32,
+    line_height: u32,
+    bold: bool,
+    text: String,
+    width: Option<u32>,
+    align: u8,
+}
+
+impl LayoutKey {
+    fn new(font: &FontRef, text: &str, width: Option<f32>, align: Align) -> Self {
+        Self {
+            path: font.path.clone(),
+            size: font.size.to_bits(),
+            line_height: font.line_height.to_bits(),
+            bold: font.bold,
+            text: text.to_owned(),
+            width: width.map(f32::to_bits),
+            align: match align {
+                Align::Left => 0,
+                Align::Right => 1,
+                Align::Center => 2,
+                Align::Justified => 3,
+                Align::End => 4,
+            },
+        }
+    }
+}
+
 pub struct Fonts {
     system: FontSystem,
     cache: SwashCache,
+    /// Texts already shaped, to be drawn again (a menu redraws the same
+    /// ones over and over: shaping is most of what drawing it costs).
+    layouts: HashMap<LayoutKey, Buffer>,
+    /// The widths already measured.
+    widths: HashMap<LayoutKey, f32>,
     families: HashMap<PathBuf, String>,
     default_family: Option<String>,
     /// The families that have a bold face.
@@ -189,6 +230,8 @@ impl Fonts {
         Self {
             system: FontSystem::new_with_locale_and_db(locale.to_owned(), db),
             cache: SwashCache::new(),
+            layouts: HashMap::new(),
+            widths: HashMap::new(),
             families,
             default_family,
             bold_families,
@@ -239,12 +282,21 @@ impl Fonts {
 
     /// The width of a line of text.
     pub fn measure(&mut self, font: &FontRef, text: &str) -> f32 {
+        let key = LayoutKey::new(font, text, None, Align::Left);
+        if let Some(width) = self.widths.get(&key) {
+            return *width;
+        }
         let buffer = self.layout(font, text, None, Align::Left);
-        buffer
+        let width = buffer
             .layout_runs()
             .map(|run| run.line_w)
             .fold(0.0, f32::max)
-            + self.faux_bold(font)
+            + self.faux_bold(font);
+        if self.widths.len() >= LAYOUTS_KEPT {
+            self.widths.clear();
+        }
+        self.widths.insert(key, width);
+        width
     }
 
     /// Break a text into lines no wider than `width`, at its spaces (a word
@@ -380,7 +432,17 @@ impl Fonts {
         area: TextBox,
         color: Rgba,
     ) {
-        let mut buffer = self.layout(font, text, Some(area.width), area.align);
+        let key = LayoutKey::new(font, text, Some(area.width), area.align);
+        if !self.layouts.contains_key(&key) {
+            let buffer = self.layout(font, text, Some(area.width), area.align);
+            if self.layouts.len() >= LAYOUTS_KEPT {
+                self.layouts.clear();
+            }
+            self.layouts.insert(key.clone(), buffer);
+        }
+        let Some(buffer) = self.layouts.get_mut(&key) else {
+            return;
+        };
         let line_height = buffer.metrics().line_height;
         let top = area.y + (area.height - line_height) / 2.0;
         let (left, upper) = (area.x.max(0.0) as i32, area.y.max(0.0) as i32);

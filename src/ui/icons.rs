@@ -5,6 +5,9 @@
 //! the colour of the text next to them; see assets/icons/NOTICE for which is
 //! which and what was changed for the overlay.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use resvg::usvg;
 use tiny_skia::{Pixmap, Transform};
 
@@ -19,6 +22,17 @@ use crate::theme::Rgba;
 /// Both sets draw on a 24×24 grid.
 const GRID: f32 = 24.0;
 
+/// How many rendered icons are kept (all of them are forgotten past that).
+const RENDERS_KEPT: usize = 512;
+
+thread_local! {
+    /// The icons already rendered, by size and colour: a menu draws the same
+    /// ones every time, and parsing and rendering an SVG costs far more than
+    /// copying its pixels.
+    static RENDERS: RefCell<HashMap<(Icon, u32, u32), Option<Pixmap>>> =
+        RefCell::new(HashMap::new());
+}
+
 /// An icon's name (its set's) and its SVG, built in.
 macro_rules! icon {
     ($name:literal) => {
@@ -29,7 +43,7 @@ macro_rules! icon {
     };
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Icon {
     Play,
     Save,
@@ -276,6 +290,21 @@ impl Icon {
 
     /// The icon as a `size`×`size` image in `color`.
     pub fn render(self, size: u32, color: Rgba) -> Option<Pixmap> {
+        let key = (self, size, color.0);
+        if let Some(rendered) = RENDERS.with_borrow(|renders| renders.get(&key).cloned()) {
+            return rendered;
+        }
+        let rendered = self.rasterize(size, color);
+        RENDERS.with_borrow_mut(|renders| {
+            if renders.len() >= RENDERS_KEPT {
+                renders.clear();
+            }
+            renders.insert(key, rendered.clone());
+        });
+        rendered
+    }
+
+    fn rasterize(self, size: u32, color: Rgba) -> Option<Pixmap> {
         let [red, green, blue, alpha] = color.0.to_be_bytes();
         let fill = format!(
             "fill=\"#{red:02x}{green:02x}{blue:02x}\" fill-opacity=\"{:.3}\"",
