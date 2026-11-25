@@ -40,6 +40,9 @@ struct Modifiers {
     shift: bool,
 }
 
+/// How often the cursor blinks (on, then off).
+const BLINK: Duration = Duration::from_millis(530);
+
 /// The task screen's state.
 pub(super) struct TaskView {
     options: Options,
@@ -61,6 +64,8 @@ pub(super) struct TaskView {
     draw_pending: bool,
     /// What types on X11, where the server only says key codes.
     keys: Option<xkb::State>,
+    /// The cursor's blink, while its timer runs: whether it shows now.
+    blink: Option<bool>,
 }
 
 impl TaskView {
@@ -79,6 +84,7 @@ impl TaskView {
             modifiers: Modifiers::default(),
             draw_pending: false,
             keys: None,
+            blink: None,
         }
     }
 
@@ -210,6 +216,10 @@ impl State {
         task.model.set_phase(Phase::Running);
         task.terminal = Terminal::new();
         task.scroll = 0;
+        self.start_blinking();
+        let Some(task) = self.task.as_mut() else {
+            return;
+        };
         match Process::start(&task.options.command, &task.options.log, size, events) {
             Ok(process) => task.process = Some(process),
             Err(err) => {
@@ -228,6 +238,10 @@ impl State {
         match event {
             process::Event::Output(text) => {
                 task.terminal.feed(&text);
+                // what is typed or printed shows the cursor at once
+                if task.blink.is_some() {
+                    task.blink = Some(true);
+                }
                 self.schedule_task_draw();
             }
             process::Event::Exited(status) => {
@@ -273,6 +287,37 @@ impl State {
         task.scroll = 0;
         task.model.set_phase(Phase::Failed);
         self.draw_task();
+    }
+
+    /// Blink the cursor while the command runs: a timer of its own, which
+    /// stops once it has ended.
+    fn start_blinking(&mut self) {
+        let Some(task) = self.task.as_mut() else {
+            return;
+        };
+        if task.blink.is_some() {
+            return;
+        }
+        task.blink = Some(true);
+        let inserted =
+            self.handle
+                .insert_source(Timer::from_duration(BLINK), |_, &mut (), state| {
+                    let Some(task) = state.task.as_mut() else {
+                        return TimeoutAction::Drop;
+                    };
+                    if task.model.phase() != Phase::Running {
+                        task.blink = None;
+                        return TimeoutAction::Drop;
+                    }
+                    task.blink = task.blink.map(|on| !on);
+                    state.schedule_task_draw();
+                    TimeoutAction::ToDuration(BLINK)
+                });
+        if inserted.is_err()
+            && let Some(task) = self.task.as_mut()
+        {
+            task.blink = None;
+        }
     }
 
     /// Draw soon, once for all the output that arrives meanwhile.
@@ -361,6 +406,7 @@ impl State {
                 focus: (!buttons.is_empty()).then(|| task.model.focus()),
                 hover: task.hover,
                 terminal: show_output.then_some((&task.terminal, task.scroll)),
+                cursor: task.model.phase() == Phase::Running && task.blink.unwrap_or(true),
                 prompts: &prompts,
             },
         );

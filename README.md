@@ -323,7 +323,8 @@ only one overlay or keyboard runs at a time (`overlay.lock`), and a second start
                      -- COMMAND [ARGUMENT]...
 
 `--check` is a file the command must leave (a command that works but leaves nothing has
-failed); `--reinstall` offers to install again what is installed; `--update` asks whether to
+failed; the background, when not given, is Retrobox's `emusetup/background.png`, from
+`~/.config/retrobox`, `/etc/retrobox` or the install's `share/`); `--reinstall` offers to install again what is installed; `--update` asks whether to
 update the system (the System page's *Update system*); `--download` runs at once and closes
 when it works. Exit status: 0 done, 10 declined or cancelled, 11 failed (the output
 stays until closed), 12 no screen. The full output is saved in the log file. A selection made

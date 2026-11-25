@@ -112,7 +112,8 @@ directory) when no daemon runs; started again while open, it closes it.
                  page runs it, with the system settings program's update).
                  Exit status: 0 done, 10 declined or cancelled, 11 failed,
                  12 no screen. FILE is the file the installation leaves
-                 (checked after the command works), PNG the background.
+                 (checked after the command works), PNG the background
+                 (default: Retrobox's emusetup/background.png).
   --held         exit with status 0 if a controller has L1 and R1 held down,
                  or a keyboard Ctrl and Shift, else 1 (how a game's start
                  asks for a reinstall)
@@ -248,6 +249,10 @@ fn task_screen(options: task::Options, log: Option<&std::fs::File>) -> Result<u8
         &paths::kept_menu_theme(),
     );
     let config = Config::load(&paths::config_dirs());
+    let mut options = options;
+    if options.background.is_none() {
+        options.background = paths::layered_file(task::BACKGROUND);
+    }
     let language = options
         .language
         .clone()

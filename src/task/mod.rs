@@ -27,6 +27,11 @@ pub mod terminal;
 
 use std::path::PathBuf;
 
+/// The picture behind the screen when the command line gives none: Retrobox's
+/// (`share/emusetup/background.png`, replaceable from `/etc/retrobox` and
+/// `~/.config/retrobox`), the same for every task.
+pub const BACKGROUND: &str = "emusetup/background.png";
+
 /// The lock the task screen holds (one at a time).
 pub const LOCK_FILE: &str = "task.lock";
 
@@ -50,7 +55,8 @@ pub struct Options {
     pub log: PathBuf,
     /// A file that must exist after a successful run.
     pub check: Option<PathBuf>,
-    /// The picture behind the screen (a PNG).
+    /// The picture behind the screen (a PNG); Retrobox's (`BACKGROUND`)
+    /// when not given.
     pub background: Option<PathBuf>,
     /// The command downloads the label: run it right away, close when it
     /// succeeds.

@@ -160,6 +160,11 @@ impl Terminal {
         self.dropped
     }
 
+    /// The cursor's column in the line being written.
+    pub const fn cursor_column(&self) -> usize {
+        self.cursor
+    }
+
     /// Absolute number of the line being written (where the cursor is).
     pub fn cursor_line(&self) -> usize {
         self.dropped + self.lines.len()

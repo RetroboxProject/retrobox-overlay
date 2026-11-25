@@ -96,6 +96,18 @@ pub fn root_dir() -> Option<PathBuf> {
     })
 }
 
+/// A file of Retrobox's shared tree, as layered as the rest of its
+/// configuration: `~/.config/retrobox/<path>`, else `/etc/retrobox/<path>`,
+/// else the install's `share/<path>`.
+pub fn layered_file(path: &str) -> Option<PathBuf> {
+    config_dirs()
+        .into_iter()
+        .rev()
+        .chain(root_dir().map(|root| root.join("share")))
+        .map(|dir| dir.join(path))
+        .find(|candidate| candidate.is_file())
+}
+
 /// A Retrobox command: from the install's `bin/` (`RETROBOX_ROOTDIR`, else
 /// the packages' `/opt/retrobox`), else from `$PATH`.
 pub fn retrobox_command(name: &str) -> PathBuf {

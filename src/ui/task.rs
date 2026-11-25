@@ -42,12 +42,12 @@ const LINE_WIDTH: f32 = 0.032;
 const PADDING: f32 = 0.6;
 const BUTTON_SIZE: f32 = 0.84;
 /// The output's letters, relative to the screen's smaller side.
-const TERMINAL_SIZE: f32 = 0.027;
+const TERMINAL_SIZE: f32 = 0.02;
 /// A line's height, relative to its font's size.
 const LINE_SPACING: f32 = 1.35;
 /// The least letters per row of the output box: the font shrinks to fit
 /// them, as a terminal's own default.
-const MIN_COLUMNS: usize = 80;
+const MIN_COLUMNS: usize = 100;
 /// What the output box shows: white on black, whatever the theme.
 const TERMINAL_BACKGROUND: Rgba = Rgba(0x0000_00FF);
 const TERMINAL_TEXT: Rgba = Rgba(0xFFFF_FFFF);
@@ -86,6 +86,8 @@ pub struct Frame<'a> {
     /// The output box, if it shows: the text and how many rows it is
     /// scrolled up from the end.
     pub terminal: Option<(&'a Terminal, usize)>,
+    /// Whether the cursor shows (while the command runs, when it blinks on).
+    pub cursor: bool,
     pub prompts: &'a [Prompt],
 }
 
@@ -517,7 +519,7 @@ impl TaskUi {
         );
         self.draw_buttons(&mut pixmap, fonts, frame, layout.buttons_row);
         if let Some((terminal, scroll)) = frame.terminal {
-            self.draw_terminal(&mut pixmap, fonts, terminal, scroll);
+            self.draw_terminal(&mut pixmap, fonts, terminal, scroll, frame.cursor);
         }
         self.draw_help(&mut pixmap, fonts, frame.prompts);
         pixmap
@@ -595,6 +597,7 @@ impl TaskUi {
         fonts: &mut Fonts,
         terminal: &Terminal,
         scroll: usize,
+        cursor: bool,
     ) {
         let area = self.terminal;
         fill_rounded(pixmap, area, self.radius * 0.6, TERMINAL_BACKGROUND);
@@ -637,6 +640,47 @@ impl TaskUi {
                 },
                 TERMINAL_TEXT,
             );
+            if cursor
+                && let Some(column) = cursor_in(row, terminal, rows.get(index + 1), self.columns())
+            {
+                self.draw_cursor(pixmap, fonts, terminal, row, column, top);
+            }
+        }
+    }
+
+    /// A block over the cursor's cell, with the letter under it (if any) in
+    /// the box's colour, as terminals draw it.
+    fn draw_cursor(
+        &self,
+        pixmap: &mut Pixmap,
+        fonts: &mut Fonts,
+        terminal: &Terminal,
+        row: &Row,
+        column: usize,
+        top: f32,
+    ) {
+        let x = self.terminal.x + self.inset() + (column - row.start) as f32 * self.cell.0;
+        let cell = Rect {
+            x,
+            y: top,
+            width: self.cell.0,
+            height: self.cell.1,
+        };
+        fill(pixmap, cell, TERMINAL_TEXT);
+        if let Some(letter) = terminal.line(row.line).get(column) {
+            fonts.draw(
+                pixmap,
+                &self.terminal_font,
+                &letter.to_string(),
+                TextBox {
+                    x,
+                    y: top,
+                    width: self.cell.0 * 2.0,
+                    height: self.cell.1,
+                    align: Align::Left,
+                },
+                TERMINAL_BACKGROUND,
+            );
         }
     }
 
@@ -653,6 +697,24 @@ impl TaskUi {
                 None,
             );
         }
+    }
+}
+
+/// The cursor's column, when it is in `row`: the row of the line being
+/// written that holds its column, or that line's last row shown when the
+/// cursor is past its end (at most on the row's last cell, `columns`).
+fn cursor_in(row: &Row, terminal: &Terminal, next: Option<&Row>, columns: usize) -> Option<usize> {
+    if row.line != terminal.cursor_line() {
+        return None;
+    }
+    let column = terminal.cursor_column();
+    let last_of_line = next.is_none_or(|next| next.line != row.line);
+    if (row.start..row.end).contains(&column) {
+        Some(column)
+    } else if last_of_line && column >= row.start {
+        Some(column.min(row.start + columns.max(1) - 1))
+    } else {
+        None
     }
 }
 
@@ -684,6 +746,22 @@ fn selected_span(row: &Row, start: Position, end: Position) -> Option<(usize, us
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_cursor_is_on_the_row_of_its_column() {
+        let mut terminal = Terminal::new();
+        terminal.feed("done\r\nabcdefgh");
+        let line = terminal.cursor_line();
+        let rows = terminal.rows(4, 0, 3, terminal.row_count(4));
+        // "abcd" then "efgh": the cursor, past the end of a full row, on its last cell
+        assert_eq!(cursor_in(&rows[1], &terminal, rows.get(2), 4), None);
+        assert_eq!(cursor_in(&rows[2], &terminal, None, 4), Some(7));
+        assert_eq!(cursor_in(&rows[0], &terminal, rows.get(1), 4), None);
+        terminal.feed("\r");
+        assert_eq!(cursor_in(&rows[1], &terminal, rows.get(2), 4), Some(0));
+        assert_eq!(rows[1].line, line);
+    }
+
     use super::*;
 
     const ROW: Row = Row {
