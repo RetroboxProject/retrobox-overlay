@@ -16,7 +16,9 @@ use cosmic_text::Align;
 use tiny_skia::{FilterQuality, Paint, Pixmap, PixmapPaint, Rect as SkiaRect, Stroke, Transform};
 
 use super::help::{Help, Prompt};
-use super::panel::{Element, FONT_SIZE_MEDIUM, HOVER_ALPHA, rounded_rect, selector_paint};
+use super::panel::{
+    Element, FONT_SIZE_MEDIUM, HOVER_ALPHA, StatusBar, StatusLine, rounded_rect, selector_paint,
+};
 use super::text::{FontRef, Fonts, TextBox};
 use crate::task::terminal::{Position, Row, Terminal};
 use crate::theme::{MenuTheme, Rgba};
@@ -89,6 +91,8 @@ pub struct Frame<'a> {
     /// Whether the cursor shows (while the command runs, when it blinks on).
     pub cursor: bool,
     pub prompts: &'a [Prompt],
+    /// The status line (the network, the battery, the time), top right.
+    pub status: &'a StatusBar,
 }
 
 /// Where the parts of a window go.
@@ -168,6 +172,8 @@ pub struct TaskUi {
     text: crate::theme::TextStyle,
     /// The buttons as last drawn.
     buttons: Vec<Rect>,
+    /// The status line, and where its row starts.
+    status: (StatusLine, f32),
     /// What does not change from one frame to the next (the background,
     /// the window, its question, the output box), drawn for this layout:
     /// its rounded rectangles cover most of the screen, and filling them
@@ -302,7 +308,10 @@ impl TaskUi {
         let room = (help.place(1).1 as f32 - padding * 0.6).min(height * 0.96);
         let message_height = message_font.line_height;
         let button_height = (button_font.line_height * 1.3).round();
-        let top = height * FULL_WINDOW.1;
+        // the status line, as the menu's, top right; the window under it
+        let status = StatusLine::of_theme(theme, size);
+        let status_top = StatusLine::margin(height);
+        let top = (status_top + status.height() + padding * 0.5).max(height * FULL_WINDOW.1);
         let full = Layout::new(
             Rect {
                 x: width * FULL_WINDOW.0,
@@ -348,6 +357,7 @@ impl TaskUi {
             window_color: theme.background.center_color.with_alpha(WINDOW_OPACITY),
             text: theme.text.clone(),
             buttons: Vec::new(),
+            status: (status, status_top),
             chrome: None,
         })
     }
@@ -511,6 +521,9 @@ impl TaskUi {
             self.draw_terminal(&mut pixmap, fonts, terminal, scroll, frame.cursor);
         }
         self.draw_help(&mut pixmap, fonts, frame.prompts);
+        let (line, top) = &self.status;
+        let right = self.full_window.x + self.full_window.width;
+        line.draw(&mut pixmap, fonts, frame.status, (right, *top));
         pixmap
     }
 

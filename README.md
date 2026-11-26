@@ -211,7 +211,8 @@ log, and two notices for every unlock.
 When Retrobox needs something it has not got (the emulator a game needs, or the default theme,
 bezels and shaders before EmulationStation starts), it shows this screen over its background
 picture: a question in EmulationStation's style, then the installer's output in a terminal
-(white on black, at least 80 columns). What asks for something, such as sudo's password, gets
+(white on black, at least 80 columns), with the menu's status line at the top right (the
+network, the battery, the time). What asks for something, such as sudo's password, gets
 the keyboard's keys, as in any terminal. Hold **L1+R1** (or **Ctrl+Shift**) while a game starts
 to be offered its emulator's installation again, to update it.
 

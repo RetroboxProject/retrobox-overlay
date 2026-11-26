@@ -19,13 +19,14 @@ use smithay_client_toolkit::seat::keyboard::KeyEvent;
 use x11rb::protocol::xproto::KeyButMask;
 use xkbcommon::xkb;
 
-use super::{BTN_LEFT, BTN_RIGHT, Outcome, PointerInput, PointerKind, State};
+use super::{BTN_LEFT, BTN_RIGHT, Outcome, PointerInput, PointerKind, STATUS_EVERY, State};
 use crate::input::{Input, Nav};
 use crate::sound::Sound;
 use crate::task::process::{self, Process};
 use crate::task::terminal::Terminal;
 use crate::task::{Choice, Model, Options, Outcome as Finish, Phase, Problem, clipboard};
 use crate::ui::help::Prompt;
+use crate::ui::panel::StatusBar;
 use crate::ui::task::{Frame, TaskUi};
 
 /// The output is drawn at most this often while it streams in.
@@ -66,6 +67,8 @@ pub(super) struct TaskView {
     keys: Option<xkb::State>,
     /// The cursor's blink, while its timer runs: whether it shows now.
     blink: Option<bool>,
+    /// The status line (the network, the battery, the time), as last read.
+    status: StatusBar,
 }
 
 impl TaskView {
@@ -85,6 +88,7 @@ impl TaskView {
             draw_pending: false,
             keys: None,
             blink: None,
+            status: StatusBar::default(),
         }
     }
 
@@ -181,6 +185,10 @@ impl State {
         if self.display.x11().is_some() {
             task.keys = x11_keys();
         }
+        self.schedule_task_status();
+        let Some(task) = self.task.as_mut() else {
+            return;
+        };
         let (sender, receiver) = loop_channel::channel::<process::Event>();
         let inserted = self
             .handle
@@ -320,6 +328,28 @@ impl State {
         }
     }
 
+    /// Read the status line now and every second after, drawing the screen
+    /// when it changed.
+    fn schedule_task_status(&mut self) {
+        let bar = self.status_bar();
+        if let Some(task) = self.task.as_mut() {
+            task.status = bar;
+        }
+        self.handle
+            .insert_source(Timer::from_duration(STATUS_EVERY), |_, &mut (), state| {
+                let bar = state.status_bar();
+                let Some(task) = state.task.as_mut() else {
+                    return TimeoutAction::Drop;
+                };
+                if task.status != bar {
+                    task.status = bar;
+                    state.draw_task();
+                }
+                TimeoutAction::ToDuration(STATUS_EVERY)
+            })
+            .ok();
+    }
+
     /// Draw soon, once for all the output that arrives meanwhile.
     fn schedule_task_draw(&mut self) {
         let Some(task) = self.task.as_mut() else {
@@ -415,6 +445,7 @@ impl State {
                 terminal: show_output.then_some((&task.terminal, task.scroll)),
                 cursor: task.model.phase() == Phase::Running && task.blink.unwrap_or(true),
                 prompts: &prompts,
+                status: &task.status,
             },
         );
         self.dim.set_opacity(&self.display, 1.0);

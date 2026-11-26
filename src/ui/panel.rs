@@ -242,6 +242,133 @@ impl StatusBar {
     }
 }
 
+/// How the status line is drawn (the menu's, the task screen's): the
+/// small text, larger, and icons to match.
+#[derive(Debug, Clone)]
+pub(super) struct StatusLine {
+    font: FontRef,
+    icon_size: f32,
+    color: Rgba,
+}
+
+impl StatusLine {
+    /// From the theme's small text, at this screen's size (as the menu's).
+    pub(super) fn of_theme(theme: &MenuTheme, screen: (u32, u32)) -> Self {
+        let (width, height) = (screen.0 as f32, screen.1 as f32);
+        let scale = if theme.screen.height > 0 {
+            height / theme.screen.height as f32
+        } else {
+            1.0
+        };
+        Self::of_small(&Element::new(
+            &theme.text_small,
+            scale,
+            width.min(height) * FONT_SIZE_SMALL,
+        ))
+    }
+
+    fn of_small(small: &Element) -> Self {
+        Self {
+            font: FontRef {
+                size: small.font.size * STATUS_SCALE,
+                line_height: small.font.line_height * STATUS_SCALE,
+                ..small.font.clone()
+            },
+            icon_size: (small.letter_height * STATUS_SCALE * ICON_SCALE)
+                .round()
+                .max(1.0),
+            color: small.style.color,
+        }
+    }
+
+    /// Its height.
+    pub(super) fn height(&self) -> f32 {
+        self.font.line_height
+    }
+
+    /// The space above it, on a screen this high (the menu's).
+    pub(super) fn margin(screen_height: f32) -> f32 {
+        screen_height * SUBTITLE_VERT_PADDING
+    }
+
+    /// Where its icons go, for a row at `top`: (top, size); the icons
+    /// centred on the digits' ink, not on the line.
+    fn icons(&self, fonts: &mut Fonts, top: f32) -> (f32, f32) {
+        let row = self.font.line_height;
+        let middle = fonts
+            .ink_middle(&self.font, "0123456789", row)
+            .unwrap_or(row / 2.0);
+        (
+            (top + middle - self.icon_size / 2.0).round(),
+            self.icon_size,
+        )
+    }
+
+    /// Draw the battery, the network and the time, right to left from
+    /// `right`, on the row at `top`; where they end (their left).
+    pub(super) fn draw(
+        &self,
+        pixmap: &mut Pixmap,
+        fonts: &mut Fonts,
+        bar: &StatusBar,
+        (right, top): (f32, f32),
+    ) -> f32 {
+        let font = &self.font;
+        let row = font.line_height;
+        let (icon_top, icon_size) = self.icons(fonts, top);
+        let gap = icon_size * 0.6;
+        let color = self.color;
+        let mut right = right;
+        let text = |pixmap: &mut Pixmap, fonts: &mut Fonts, right: &mut f32, text: &str| {
+            let width = fonts.measure(font, text) + 1.0;
+            *right -= width;
+            fonts.draw(
+                pixmap,
+                font,
+                text,
+                TextBox {
+                    x: *right,
+                    y: top,
+                    width,
+                    height: row,
+                    align: Align::Right,
+                },
+                color,
+            );
+        };
+        if let Some(battery) = bar.status.battery {
+            if bar.battery_percent {
+                text(pixmap, fonts, &mut right, &format!("{}%", battery.percent));
+                right -= icon_size * 0.25;
+            }
+            right -= icon_size;
+            draw_icon(
+                pixmap,
+                Icon::battery(battery),
+                icon_size,
+                (right, icon_top),
+                color,
+            );
+            right -= gap;
+        }
+        if let Some(network) = bar.status.network {
+            right -= icon_size;
+            draw_icon(
+                pixmap,
+                Icon::network(network),
+                icon_size,
+                (right, icon_top),
+                color,
+            );
+            right -= gap;
+        }
+        if let Some(time) = &bar.time {
+            text(pixmap, fonts, &mut right, time);
+        }
+        right
+    }
+}
+
 /// Where a slider row's parts go, as fractions of the panel's inner width:
 /// the icon first, the track up to `TRACK_END`, the value after
 /// `VALUE_START`. Sliders have no label: their icon says what they are.
@@ -1165,17 +1292,7 @@ impl Panel {
         if self.status_bar.is_empty() {
             0.0
         } else {
-            self.status_font().line_height + self.screen_height * SUBTITLE_VERT_PADDING
-        }
-    }
-
-    /// The status line's font: the small text's, larger.
-    fn status_font(&self) -> FontRef {
-        let font = &self.small.font;
-        FontRef {
-            size: font.size * STATUS_SCALE,
-            line_height: font.line_height * STATUS_SCALE,
-            ..font.clone()
+            StatusLine::of_small(&self.small).height() + StatusLine::margin(self.screen_height)
         }
     }
 
@@ -1272,72 +1389,26 @@ impl Panel {
     /// icons (and the battery's percentage), aligned to the right; the time
     /// played on the left, in what is left.
     fn draw_status_bar(&self, pixmap: &mut Pixmap, fonts: &mut Fonts, padding: f32, height: f32) {
-        let color = self.small.style.color;
-        let font = &self.status_font();
-        let row = font.line_height;
-        let top = height - row;
-        let icon_size = (self.small.letter_height * STATUS_SCALE * ICON_SCALE)
-            .round()
-            .max(1.0);
-        let gap = icon_size * 0.6;
-        // the icons centred on the digits' ink, not on the line
-        let middle = fonts
-            .ink_middle(font, "0123456789", row)
-            .unwrap_or(row / 2.0);
-        let icon_top = (top + middle - icon_size / 2.0).round();
-        let bar = &self.status_bar;
-        // right to left
-        let mut right = self.width as f32 - padding;
-        let text = |pixmap: &mut Pixmap, fonts: &mut Fonts, right: &mut f32, text: &str| {
-            let width = fonts.measure(font, text) + 1.0;
-            *right -= width;
-            fonts.draw(
-                pixmap,
-                font,
-                text,
-                TextBox {
-                    x: *right,
-                    y: top,
-                    width,
-                    height: row,
-                    align: Align::Right,
-                },
-                color,
-            );
-        };
-        if let Some(battery) = bar.status.battery {
-            if bar.battery_percent {
-                text(pixmap, fonts, &mut right, &format!("{}%", battery.percent));
-                right -= icon_size * 0.25;
-            }
-            right -= icon_size;
-            draw_icon(
-                pixmap,
-                Icon::battery(battery),
-                icon_size,
-                (right, icon_top),
-                color,
-            );
-            right -= gap;
-        }
-        if let Some(network) = bar.status.network {
-            right -= icon_size;
-            draw_icon(
-                pixmap,
-                Icon::network(network),
-                icon_size,
-                (right, icon_top),
-                color,
-            );
-            right -= gap;
-        }
-        if let Some(time) = &bar.time {
-            text(pixmap, fonts, &mut right, time);
-        }
-        if let Some(played) = &bar.play_time {
+        let line = StatusLine::of_small(&self.small);
+        let top = height - line.height();
+        let right = line.draw(
+            pixmap,
+            fonts,
+            &self.status_bar,
+            (self.width as f32 - padding, top),
+        );
+        if let Some(played) = &self.status_bar.play_time {
+            let (icon_top, icon_size) = line.icons(fonts, top);
+            let gap = icon_size * 0.6;
             let left = padding + icon_size + gap * 0.5;
-            let (font, played) = fonts.fit(font, played, right - gap - left, 0.7);
-            draw_icon(pixmap, Icon::Timer, icon_size, (padding, icon_top), color);
+            let (font, played) = fonts.fit(&line.font, played, right - gap - left, 0.7);
+            draw_icon(
+                pixmap,
+                Icon::Timer,
+                icon_size,
+                (padding, icon_top),
+                line.color,
+            );
             let width = fonts.measure(&font, &played) + 1.0;
             fonts.draw(
                 pixmap,
@@ -1347,10 +1418,10 @@ impl Panel {
                     x: left,
                     y: top,
                     width,
-                    height: row,
+                    height: line.height(),
                     align: Align::Left,
                 },
-                color,
+                line.color,
             );
         }
     }

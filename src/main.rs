@@ -295,6 +295,9 @@ fn task_screen(options: task::Options, log: Option<&std::fs::File>) -> Result<u8
     let translator = Translator::new(&language);
     let fonts = theme_fonts(&theme, &language);
     let new_pads = open_task_pads_later(&options.pads, theme.invert_buttons);
+    // the status line's time, short, as the menu's small clock
+    let small_clock = Some(small_clock_format(&config, &translator, theme.clock12h));
+    let battery_percent = config.system.battery_percent;
     let (outcome, _, _) = app::run(Content {
         config,
         theme,
@@ -319,8 +322,8 @@ fn task_screen(options: task::Options, log: Option<&std::fs::File>) -> Result<u8
         play: None,
         translator,
         launched: std::time::Instant::now(),
-        small_clock: None,
-        battery_percent: false,
+        small_clock,
+        battery_percent,
         take_keyboard: true,
         osk: false,
         controls: None,
@@ -791,10 +794,10 @@ fn clock_formats(
     clock12h: bool,
 ) -> ((String, String), Option<String>) {
     let clock = &config.clock;
-    let (time_key, small_key) = if clock12h {
-        ("clock-time-format-12h", "clock-small-format-12h")
+    let time_key = if clock12h {
+        "clock-time-format-12h"
     } else {
-        ("clock-time-format", "clock-small-format")
+        "clock-time-format"
     };
     let big = (
         clock
@@ -806,13 +809,22 @@ fn clock_formats(
             .clone()
             .unwrap_or_else(|| translator.text("clock-date-format")),
     );
-    let small = (!clock.big).then(|| {
-        clock
-            .small_format
-            .clone()
-            .unwrap_or_else(|| translator.text(small_key))
-    });
+    let small = (!clock.big).then(|| small_clock_format(config, translator, clock12h));
     (big, small)
+}
+
+/// The small clock's format (the status line's time).
+fn small_clock_format(config: &Config, translator: &Translator, clock12h: bool) -> String {
+    let key = if clock12h {
+        "clock-small-format-12h"
+    } else {
+        "clock-small-format"
+    };
+    config
+        .clock
+        .small_format
+        .clone()
+        .unwrap_or_else(|| translator.text(key))
 }
 
 /// What the System page offers besides the power options (nothing over
