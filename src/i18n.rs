@@ -173,6 +173,8 @@ mod tests {
                 "audio-loading",
                 "help-audio",
                 "help-quit",
+                "menu-power-options",
+                "power-title",
                 "help-hold-unsaved",
                 "break-title",
                 "break-text",

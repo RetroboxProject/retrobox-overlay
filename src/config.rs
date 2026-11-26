@@ -25,7 +25,7 @@
 //!                         ; touch screens (1 to 2)
 //!
 //! [system]
-//! standby = true          ; offer to sleep (the power button)
+//! standby = true          ; offer to sleep (the power options)
 //! performance = true      ; offer the Nintendo Switch's performance
 //!                         ; profiles there (switchroot's nvpmodel)
 //!

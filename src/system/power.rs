@@ -1,7 +1,8 @@
-//! Sleeping, restarting and turning the computer off, from the System
-//! page (and updating it, see `update`): through systemd (`systemctl`) where it is the init, else
-//! through elogind's `loginctl` (the other inits' logind); with neither,
-//! the page offers nothing. Both let the active local session do it without
+//! Sleeping, restarting and turning the computer off, from the power
+//! options (the overlay's popup, `--power`; updating the system is on the
+//! System page, see `update`): through systemd (`systemctl`) where it is
+//! the init, else through elogind's `loginctl` (the other inits' logind);
+//! with neither, there are no power options. Both let the active local session do it without
 //! a password (polkit's default). EmulationStation, the games and the
 //! session get SIGTERM from the shutdown and quit cleanly (SDL turns it into
 //! a quit).
@@ -10,8 +11,8 @@ use std::path::Path;
 
 use super::{installed, run};
 
-/// What the System page offers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A power option (or the System page's update).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PowerAction {
     Standby,
     Reboot,
@@ -69,24 +70,22 @@ impl Manager {
     }
 }
 
-/// What the power button's page offers: sleep (when `standby`), and
-/// outside games restarting and turning off. Empty when nothing can do it.
-pub fn actions(in_game: bool, standby: bool) -> Vec<PowerAction> {
+/// The power options: sleep (when `standby`), restart and turn off. Empty
+/// when nothing can do them.
+pub fn actions(standby: bool) -> Vec<PowerAction> {
     if Manager::find().is_none() {
-        log::info!("neither systemd nor elogind: no power button");
+        log::info!("neither systemd nor elogind: no power options");
         return Vec::new();
     }
-    offered(in_game, standby)
+    offered(standby)
 }
 
-fn offered(in_game: bool, standby: bool) -> Vec<PowerAction> {
+fn offered(standby: bool) -> Vec<PowerAction> {
     let mut actions = Vec::new();
     if standby {
         actions.push(PowerAction::Standby);
     }
-    if !in_game {
-        actions.extend([PowerAction::Reboot, PowerAction::PowerOff]);
-    }
+    actions.extend([PowerAction::Reboot, PowerAction::PowerOff]);
     actions
 }
 
@@ -108,20 +107,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn games_only_offer_sleep() {
-        assert_eq!(offered(true, true), [PowerAction::Standby]);
-        assert_eq!(offered(true, false), []);
+    fn sleep_only_where_it_works() {
         assert_eq!(
-            offered(false, true),
+            offered(true),
             [
                 PowerAction::Standby,
                 PowerAction::Reboot,
                 PowerAction::PowerOff
             ]
         );
-        assert_eq!(
-            offered(false, false),
-            [PowerAction::Reboot, PowerAction::PowerOff]
-        );
+        assert_eq!(offered(false), [PowerAction::Reboot, PowerAction::PowerOff]);
     }
 }

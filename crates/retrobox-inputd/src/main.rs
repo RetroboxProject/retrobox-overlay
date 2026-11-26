@@ -24,7 +24,8 @@ Opens the overlay (retrobox-overlay) when a controller's Home/Guide button is
 tapped, on Hotkey+A where the hotkey is Select, or on Ctrl+Shift+O or
 Shift+F7, until stopped; started
 again while it runs, it does nothing. Retrobox runs it with EmulationStation.
-SIGUSR1 opens or closes the overlay. While a game runs with a pad profile
+SIGUSR1 opens or closes the overlay; SIGUSR2 shows the power options (sleep,
+restart, turn off: retrobox-overlay --power), or closes them. While a game runs with a pad profile
 (pad_profile in session.json), it maps the game's controllers and the
 keyboards to keys, mouse and commands, as gamepadly did.
 

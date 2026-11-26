@@ -34,7 +34,11 @@
 //! controllers (it grabs them while open, so this process sees nothing). Only
 //! one overlay runs at a time; `retrobox-overlay` started on its own (a
 //! keyboard shortcut of the desktop, a script) asks this process to open or
-//! close it (SIGUSR1). Nothing opens while a game is starting or ending
+//! close it (SIGUSR1); `retrobox-overlay --power` (a power button's binding,
+//! the System page's *Power off…*) asks for the power options (SIGUSR2): the
+//! overlay in a popup of its own (`--show --power`), the menu closed first
+//! if it is open, closed if it is the popup already. Nothing opens while a
+//! game is starting or ending
 //! (`launch.json`, see `retrobox_input::launch`). New controllers and
 //! keyboards are picked up as they appear (inotify on `/dev/input`).
 //!
@@ -354,13 +358,27 @@ struct Input {
     watched: Watched,
 }
 
+/// Where the power options (`retrobox-overlay --power`) are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Power {
+    /// Not shown (the overlay, if open, is the menu or the keyboard).
+    Away,
+    /// The overlay shown is their popup.
+    Shown,
+    /// Asked for while the menu was open: they open once it has closed.
+    Next,
+}
+
 struct State {
     handle: LoopHandle<'static, State>,
     runtime_dir: PathBuf,
     inputs: HashMap<PathBuf, Input>,
     /// The overlay, while it is shown.
     overlay: Option<Child>,
+    /// Where the power options are.
+    power: Power,
     last_trigger: Option<Instant>,
+    last_power: Option<Instant>,
     stop: bool,
     /// Where events are read into.
     events: Vec<evdev::InputEvent>,
@@ -389,6 +407,7 @@ pub fn run(runtime_dir: &Path, parent: Option<i32>) -> Result<()> {
 
     let signals = Signals::new(&[
         Signal::SIGUSR1,
+        Signal::SIGUSR2,
         Signal::SIGTERM,
         Signal::SIGINT,
         Signal::SIGCHLD,
@@ -396,6 +415,7 @@ pub fn run(runtime_dir: &Path, parent: Option<i32>) -> Result<()> {
     handle
         .insert_source(signals, |event, &mut (), state| match event.signal() {
             Signal::SIGUSR1 => state.toggle(None),
+            Signal::SIGUSR2 => state.power(),
             Signal::SIGCHLD => state.reap(),
             _ => state.stop = true,
         })
@@ -441,7 +461,9 @@ pub fn run(runtime_dir: &Path, parent: Option<i32>) -> Result<()> {
         runtime_dir: runtime_dir.to_owned(),
         inputs: HashMap::new(),
         overlay: None,
+        power: Power::Away,
         last_trigger: None,
+        last_power: None,
         stop: false,
         events: Vec::new(),
         mapper: Mapper::default(),
@@ -812,6 +834,39 @@ impl State {
             signal(child, nix::sys::signal::Signal::SIGUSR1);
             return;
         }
+        self.show(from, false);
+    }
+
+    /// The power options (SIGUSR2): shown, or closed if shown already; the
+    /// menu is closed first if it is open.
+    fn power(&mut self) {
+        let now = Instant::now();
+        if self
+            .last_power
+            .is_some_and(|last| now.duration_since(last) < DEBOUNCE)
+        {
+            log::debug!("power options ignored: too close to the last ask");
+            return;
+        }
+        self.last_power = Some(now);
+        self.reap();
+        match &self.overlay {
+            Some(child) if self.power == Power::Shown => {
+                log::info!("closing the power options");
+                signal(child, nix::sys::signal::Signal::SIGUSR1);
+            }
+            Some(child) => {
+                log::info!("closing the overlay for the power options");
+                self.power = Power::Next;
+                signal(child, nix::sys::signal::Signal::SIGUSR1);
+            }
+            None => self.show(None, true),
+        }
+    }
+
+    /// Start the overlay: the menu (or, `power`, the power options), with
+    /// the controllers (the one it was opened from first).
+    fn show(&mut self, from: Option<&Path>, power: bool) {
         if launch::keeps_away() {
             log::info!(
                 "a game is starting or ending, or a frontend (Kodi) is in front: the overlay stays closed"
@@ -837,6 +892,9 @@ impl State {
         );
         let mut command = Command::new(paths::sibling_command("retrobox-overlay"));
         command.arg("--show");
+        if power {
+            command.arg("--power");
+        }
         if from.is_some() {
             // the controller opened it: the game may keep the keyboard
             command.arg("--from-pad");
@@ -851,8 +909,13 @@ impl State {
             .spawn()
         {
             Ok(child) => {
-                log::info!("overlay shown ({})", child.id());
+                log::info!(
+                    "{} shown ({})",
+                    if power { "power options" } else { "overlay" },
+                    child.id()
+                );
                 self.overlay = Some(child);
+                self.power = if power { Power::Shown } else { Power::Away };
             }
             Err(err) => log::error!("cannot show the overlay: {err}"),
         }
@@ -871,11 +934,16 @@ impl State {
             return;
         }
         self.overlay = None;
+        let next = self.power == Power::Next;
+        self.power = Power::Away;
         log::info!("overlay closed");
         for input in self.inputs.values_mut() {
             if let Watched::Pad(hold) = &mut input.watched {
                 hold.resync(&input.device);
             }
+        }
+        if next {
+            self.show(None, true);
         }
     }
 }

@@ -6,7 +6,7 @@
 //! directory, each held with `flock` for the whole life of its process
 //! (released by the kernel even if it crashes) and holding its pid. A second
 //! start sends SIGUSR1 to that pid: the overlay closes, the daemon opens or
-//! closes the overlay.
+//! closes the overlay; SIGUSR2 asks the daemon for the power options.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, Write};
@@ -105,6 +105,14 @@ fn held(runtime_dir: &Path, name: &str) -> Option<File> {
     match Flock::lock(file.try_clone().ok()?, FlockArg::LockSharedNonblock) {
         Ok(_) => None,
         Err(_) => Some(file),
+    }
+}
+
+/// Ask the daemon for the power options (it shows them, closing the
+/// overlay first if it is open; again, it closes them).
+pub fn ask_power(pid: i32) {
+    if let Err(err) = kill(Pid::from_raw(pid), Signal::SIGUSR2) {
+        log::warn!("cannot reach the daemon ({pid}): {err}");
     }
 }
 

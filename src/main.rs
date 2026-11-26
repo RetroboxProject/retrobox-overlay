@@ -11,7 +11,9 @@
 //! EmulationStation) it shows the system's menu: the power button (sleep,
 //! restart, turn off), the brightness and the volume, like the Switch's
 //! quick settings. It neither opens nor stays open while a game is starting
-//! or ending (see `retrobox_input::launch`).
+//! or ending (see `retrobox_input::launch`). `--power` shows the power
+//! options instead (sleep, restart, turn off): a popup in the middle of the
+//! screen, the System page's *Power off…*, or a power button's binding.
 
 mod achievements;
 mod app;
@@ -40,7 +42,7 @@ use std::process::ExitCode;
 use anyhow::{Context as _, Result};
 use nix::sys::signal::{SigSet, Signal};
 
-use crate::app::{Content, Outcome};
+use crate::app::{Content, Outcome, PowerOptions};
 use crate::config::Config;
 use crate::emulator::{EmuAction, Emulator, Request};
 use crate::game_pages::GamePages;
@@ -63,7 +65,7 @@ const NICENESS: i32 = 10;
 const HELP: &str = "\
 retrobox-overlay: Retrobox's in-game menu
 
-Usage: retrobox-overlay [--show [--pad DEVICE]... | --osk | --demo]
+Usage: retrobox-overlay [--show [--pad DEVICE]... | --osk | --demo] [--power]
                         [--version] [--help]
        retrobox-overlay --toast --title TEXT [--text TEXT] [--icon NAME]
                         [--sound select|back|scroll|none] [--seconds N]
@@ -87,6 +89,10 @@ directory) when no daemon runs; started again while open, it closes it.
                  emulator allows it (Retrobox's hotkeys run this); started
                  again while open, it closes
   --from-pad     opened from a controller (see take_keyboard in overlay.ini)
+  --power        the power options (sleep, restart, turn off) instead of
+                 the menu: a popup in the middle of the dimmed screen;
+                 without --show, asks the daemon for it (as a power button's
+                 binding would), or shows it itself when no daemon runs
   --demo         show it even without a running game (to try a theme)
   --toast        a notice at the top of the screen, on the menu's side, for
                  a few seconds (6, or --seconds), over whatever runs and
@@ -166,6 +172,7 @@ fn main() -> ExitCode {
     let demo = args.iter().any(|arg| arg == "--demo");
     let osk = args.iter().any(|arg| arg == "--osk");
     let from_pad = args.iter().any(|arg| arg == "--from-pad");
+    let power = args.iter().any(|arg| arg == "--power");
     let pads: Vec<PathBuf> = args
         .windows(2)
         .filter(|pair| pair[0] == "--pad")
@@ -178,8 +185,13 @@ fn main() -> ExitCode {
         && !args.iter().any(|arg| arg == "--show")
         && let Some(pid) = instance::daemon_pid(&runtime_dir)
     {
-        log::info!("asking the daemon ({pid}) to open or close the overlay");
-        instance::close_running(Some(pid));
+        if power {
+            log::info!("asking the daemon ({pid}) for the power options");
+            instance::ask_power(pid);
+        } else {
+            log::info!("asking the daemon ({pid}) to open or close the overlay");
+            instance::close_running(Some(pid));
+        }
         Ok(())
     } else {
         trace::trace!(
@@ -188,7 +200,19 @@ fn main() -> ExitCode {
             std::process::id(),
             env!("CARGO_PKG_VERSION")
         );
-        let result = run(demo, osk, from_pad, &pads, launched, log.as_ref());
+        let shown = if osk {
+            Shown::Keyboard
+        } else if power {
+            Shown::Power
+        } else {
+            Shown::Menu
+        };
+        let asked = Asked {
+            shown,
+            demo,
+            from_pad,
+        };
+        let result = run(asked, &pads, launched, log.as_ref());
         trace::trace!("exit");
         trace::flush();
         result
@@ -280,6 +304,7 @@ fn task_screen(options: task::Options, log: Option<&std::fs::File>) -> Result<u8
         items: Vec::new(),
         buttons: Vec::new(),
         power: Vec::new(),
+        power_options: PowerOptions::None,
         performance: None,
         clock_formats: (String::new(), String::new()),
         locale: translator.locale(),
@@ -448,6 +473,7 @@ fn show_toast(
         items: Vec::new(),
         buttons: Vec::new(),
         power: Vec::new(),
+        power_options: PowerOptions::None,
         performance: None,
         clock_formats: (String::new(), String::new()),
         locale: translator.locale(),
@@ -484,14 +510,34 @@ fn block_usr1() {
     }
 }
 
-fn run(
+/// What the overlay was started to show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shown {
+    Menu,
+    /// The on-screen keyboard (`--osk`).
+    Keyboard,
+    /// The power options' popup (`--power`).
+    Power,
+}
+
+/// How the overlay was started.
+#[derive(Debug, Clone, Copy)]
+struct Asked {
+    shown: Shown,
+    /// Even without a running game (to try a theme).
     demo: bool,
-    osk: bool,
+    /// Opened from a controller (see `take_keyboard`).
     from_pad: bool,
+}
+
+fn run(
+    asked: Asked,
     extra_pads: &[PathBuf],
     launched: std::time::Instant,
     log: Option<&std::fs::File>,
 ) -> Result<()> {
+    let demo = asked.demo;
+    let (osk, popup) = (asked.shown == Shown::Keyboard, asked.shown == Shown::Power);
     let runtime_dir = paths::runtime_dir();
     let Some(lock) = first_overlay(&runtime_dir, log, demo)? else {
         return Ok(());
@@ -500,54 +546,57 @@ fn run(
     // what takes a program to read is read from now on, while the rest loads
     let (sender, controls) = calloop::channel::channel();
     let screens = system::brightness::Screens::scan();
-    // (the keyboard has no sliders: none of it)
-    if !osk {
+    // (the keyboard and the power options have no sliders: none of it)
+    if !osk && !popup {
         read_controls(&screens, sender.clone());
     }
 
     let session = Session::load(&runtime_dir);
-    if !overlay_allowed(demo, osk, session.as_ref()) {
+    // the power options are there even where a game turns the menu off
+    if !popup && !overlay_allowed(demo, osk, session.as_ref()) {
         return Ok(());
     }
     // the overlay comes up alone: no toast over it, or taking its focus away
     toast::close_shown(&runtime_dir);
 
-    let theme_path = session
-        .as_ref()
-        .and_then(Session::menu_theme_path)
-        .unwrap_or_else(|| runtime_dir.join("es-menu-theme.json"));
-    let theme = MenuTheme::load_or_kept(&theme_path, &paths::kept_menu_theme());
-    let config = Config::load(&paths::config_dirs());
-    let language = i18n::preferred_language(&theme.language);
-    let translator = Translator::new(&language);
+    let (theme, config, language, translator) = look(&runtime_dir, session.as_ref());
 
     let in_game = session.is_some() || demo;
-    let info = game_info(session.as_ref().filter(|_| !osk));
-    let subtitle = subtitle_of(&info);
+    let (info, subtitle) = heading(session.as_ref(), (osk, popup), &translator);
 
-    let (emulator, saves) = emulator_for(session.as_ref(), demo);
+    let (emulator, saves) = emulator_for(session.as_ref().filter(|_| !popup), demo);
     let states = saves
         .clone()
         .map(|saves| StatesMenu::new(saves, &translator));
     let pages = session
         .as_ref()
-        .filter(|_| !osk)
+        .filter(|_| !osk && !popup)
         .map(|session| GamePages::new(session, &info, &translator))
         .unwrap_or_default();
-    let (power, performance) = power_page(&config, in_game, osk, sender);
     let autosave = saves.as_ref().is_some_and(SaveStates::autoload);
-    let (items, buttons) = menus(
+    let Some(Entries {
+        items,
+        buttons,
+        power,
+        power_options,
+        performance,
+    }) = entries(
         &translator,
+        &config,
+        (osk, popup),
         in_game.then_some((&emulator, &pages)),
         autosave,
-        !power.is_empty() || performance.is_some(),
-    );
+        sender,
+    )
+    else {
+        return Ok(());
+    };
 
     let (clock_formats, small_clock) = clock_formats(&config, &translator, theme.clock12h);
     // the keyboard types on the game's window: it must keep the focus
     let (battery_percent, take_keyboard) = (
         config.system.battery_percent,
-        !osk && config.take_keyboard.take(from_pad),
+        !osk && config.take_keyboard.take(asked.from_pad),
     );
 
     let new_pads = open_pads_later(
@@ -568,6 +617,7 @@ fn run(
         items,
         buttons,
         power,
+        power_options,
         performance,
         clock_formats,
         locale: translator.locale(),
@@ -597,15 +647,9 @@ fn run(
     // open from now on: what is left only talks to the emulator.
     block_usr1();
     drop(lock);
-    if let Outcome::Power(action) = outcome {
-        // the last slider change first
-        drop(setters);
-        power::perform(action);
-        return Ok(());
-    }
-    after(outcome, &emulator, saves.as_ref().filter(|_| !demo), demo);
-    // the last slider change is applied before leaving
+    // the last slider change first
     drop(setters);
+    after(outcome, &emulator, saves.as_ref().filter(|_| !demo), demo);
     Ok(())
 }
 
@@ -613,6 +657,8 @@ fn run(
 /// nothing).
 fn after(outcome: Outcome, emulator: &Emulator, saves: Option<&SaveStates>, demo: bool) {
     match outcome {
+        Outcome::Power(action) => power::perform(action),
+        Outcome::PowerOptions => show_power_options(&paths::runtime_dir()),
         Outcome::Quit | Outcome::SaveAndQuit | Outcome::QuitUnsaved if demo => {}
         Outcome::Quit => quit_game(),
         // the automatic state it would load next time is gone
@@ -634,7 +680,7 @@ fn after(outcome: Outcome, emulator: &Emulator, saves: Option<&SaveStates>, demo
         }
         Outcome::Overlay => open_overlay(),
         Outcome::Request(request) => emulator.back_to_game(request),
-        Outcome::Back | Outcome::Task(_) | Outcome::Power(_) => {}
+        Outcome::Back | Outcome::Task(_) => {}
     }
 }
 
@@ -769,20 +815,21 @@ fn clock_formats(
     (big, small)
 }
 
-/// What the System page offers (nothing over the on-screen keyboard): the
-/// power actions, updating the system (outside games, where the machine's
-/// system settings program can), and a Nintendo Switch's performance
-/// profiles (they tell the menu through `sender` when they change).
+/// What the System page offers besides the power options (nothing over
+/// the on-screen keyboard or in the power options' popup): updating the
+/// system (outside games, where the machine's system settings program can),
+/// and a Nintendo Switch's performance profiles (they tell the menu through
+/// `sender` when they change).
 fn power_page(
     config: &Config,
     in_game: bool,
-    osk: bool,
+    none: bool,
     sender: calloop::channel::Sender<system::Msg>,
 ) -> (Vec<power::PowerAction>, Option<Performance>) {
-    if osk {
+    if none {
         return (Vec::new(), None);
     }
-    let mut actions = power::actions(in_game, config.system.standby);
+    let mut actions = Vec::new();
     if !in_game && system::update::available() {
         actions.push(power::PowerAction::Update);
     }
@@ -817,6 +864,115 @@ fn menus(
         ));
     }
     (items, buttons)
+}
+
+/// The theme, the settings, the language and its translations: those of
+/// the running game's EmulationStation, else the last ones kept.
+fn look(runtime_dir: &Path, session: Option<&Session>) -> (MenuTheme, Config, String, Translator) {
+    let theme_path = session
+        .and_then(Session::menu_theme_path)
+        .unwrap_or_else(|| runtime_dir.join("es-menu-theme.json"));
+    let theme = MenuTheme::load_or_kept(&theme_path, &paths::kept_menu_theme());
+    let config = Config::load(&paths::config_dirs());
+    let language = i18n::preferred_language(&theme.language);
+    let translator = Translator::new(&language);
+    (theme, config, language, translator)
+}
+
+/// What the overlay shows besides the sliders (they come as they are
+/// found).
+struct Entries {
+    items: Vec<MenuItem>,
+    buttons: Vec<MenuItem>,
+    /// The System page's own actions (the update).
+    power: Vec<power::PowerAction>,
+    power_options: PowerOptions,
+    performance: Option<Performance>,
+}
+
+/// The entries: the power options in their popup (`shown.1`; none when
+/// nothing can do them), else the menu's (none of the System page over the
+/// on-screen keyboard, `shown.0`), a game's when `game`.
+fn entries(
+    translator: &Translator,
+    config: &Config,
+    shown: (bool, bool),
+    game: Option<(&Emulator, &GamePages)>,
+    autosave: bool,
+    sender: calloop::channel::Sender<system::Msg>,
+) -> Option<Entries> {
+    let (osk, popup) = shown;
+    let options = power::actions(config.system.standby);
+    if popup {
+        return (!options.is_empty()).then(|| Entries {
+            items: power_items(translator, &options),
+            buttons: Vec::new(),
+            power: Vec::new(),
+            power_options: PowerOptions::Popup,
+            performance: None,
+        });
+    }
+    let (power, performance) = power_page(config, game.is_some(), osk, sender);
+    let power_options = if options.is_empty() || osk {
+        PowerOptions::None
+    } else {
+        PowerOptions::Row
+    };
+    let system = power_options != PowerOptions::None || !power.is_empty() || performance.is_some();
+    let (items, buttons) = menus(translator, game, autosave, system);
+    Some(Entries {
+        items,
+        buttons,
+        power,
+        power_options,
+        performance,
+    })
+}
+
+/// The power options' entries.
+fn power_items(translator: &Translator, options: &[power::PowerAction]) -> Vec<MenuItem> {
+    options
+        .iter()
+        .map(|&action| {
+            MenuItem::new(
+                translator.text(action.label_key()),
+                MenuAction::PowerOption(action),
+            )
+        })
+        .collect()
+}
+
+/// The overlay is gone and the power options were asked for (the System
+/// page's *Power off…*): the daemon shows them (`--power`), or, without
+/// one, a new process of this program.
+fn show_power_options(runtime_dir: &Path) {
+    if let Some(pid) = instance::daemon_pid(runtime_dir) {
+        instance::ask_power(pid);
+        return;
+    }
+    let exe = paths::sibling_command("retrobox-overlay");
+    emulator::spawn(&[
+        exe.to_string_lossy().into_owned(),
+        "--show".into(),
+        "--power".into(),
+    ]);
+}
+
+/// The header: the game's name and the line under it, nothing over the
+/// on-screen keyboard (`shown.0`), the power options' title in their popup
+/// (`shown.1`).
+fn heading(
+    session: Option<&Session>,
+    shown: (bool, bool),
+    translator: &Translator,
+) -> (GameInfo, String) {
+    let (osk, popup) = shown;
+    let mut info = game_info(session.filter(|_| !osk && !popup));
+    if popup {
+        info.name = translator.text("power-title");
+    }
+    let subtitle = subtitle_of(&info);
+    (info, subtitle)
 }
 
 /// The line under the game's name: its developer and year.
@@ -898,17 +1054,13 @@ fn menu_items(translator: &Translator, emulator: &Emulator, pages: &GamePages) -
     items
 }
 
-/// The round buttons under a game's entries: continue, a screenshot (when
-/// the emulator takes them), quit (the power button comes last). Where the
-/// game loads the automatic state on start (`autosave`), quitting saves it
-/// first, and Quit held quits without saving.
+/// The round buttons under a game's entries: continue, quit (the System
+/// button comes last). Where the game loads the automatic state on start
+/// (`autosave`), quitting saves it first, and Quit held quits without
+/// saving.
 fn menu_buttons(translator: &Translator, emulator: &Emulator, autosave: bool) -> Vec<MenuItem> {
     let item = |key: &str, action| MenuItem::new(translator.text(key), action);
     let mut buttons = vec![item("menu-continue", MenuAction::Continue)];
-    if emulator.actions().contains(&EmuAction::Screenshot) {
-        let action = EmuAction::Screenshot;
-        buttons.push(item(action.label_key(), MenuAction::Emulator(action)));
-    }
     let autosave = autosave && emulator.has_slots();
     let label = if autosave {
         "menu-save-quit"

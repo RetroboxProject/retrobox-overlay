@@ -1,6 +1,7 @@
-//! The System page: sleep (and, outside games, restart, turn off and update
-//! the system), then, on a Nintendo Switch, its performance profiles, the
-//! one in use ticked. A page of choices of the side menu.
+//! The System page: the power options (a row that opens their popup, see
+//! `--power`), updating the system (outside games), then, on a Nintendo
+//! Switch, its performance profiles, the one in use ticked. A page of
+//! choices of the side menu.
 
 use super::icons::Icon;
 use super::panel::{ListPage, ListRow, RowKind};
@@ -11,20 +12,35 @@ use crate::system::power::PowerAction;
 /// What a row of the page does when chosen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerRow {
+    /// The power options' popup, once the overlay is gone.
+    Options,
     /// Done once the overlay is gone.
     Action(PowerAction),
     /// Change to this performance profile; the page stays.
     Mode(u32),
 }
 
-/// The page, and what each row does (nothing, for a header).
+/// The page, and what each row does (nothing, for a header); `options`:
+/// whether there are power options.
 pub fn page(
     translator: &Translator,
+    options: bool,
     actions: &[PowerAction],
     performance: Option<&Performance>,
 ) -> (ListPage, Vec<Option<PowerRow>>) {
     let mut rows = Vec::new();
     let mut does = Vec::new();
+    if options {
+        rows.push(ListRow {
+            label: translator.text("menu-power-options"),
+            kind: RowKind::Choice {
+                checked: false,
+                enabled: true,
+            },
+            icon: Some(Icon::of_power(PowerAction::PowerOff)),
+        });
+        does.push(Some(PowerRow::Options));
+    }
     for &action in actions {
         rows.push(ListRow {
             label: translator.text(action.label_key()),
@@ -68,19 +84,16 @@ mod tests {
     use crate::system::performance::Mode;
 
     #[test]
-    fn the_actions_without_a_switch() {
+    fn the_options_then_the_actions_without_a_switch() {
         let translator = Translator::new("en");
-        let (page, does) = page(
-            &translator,
-            &[PowerAction::Standby, PowerAction::PowerOff],
-            None,
-        );
+        let (page, does) = page(&translator, true, &[PowerAction::Update], None);
         assert_eq!(page.rows.len(), 2);
+        assert_eq!(page.rows[0].label, "Power off…");
         assert_eq!(
             does,
             [
-                Some(PowerRow::Action(PowerAction::Standby)),
-                Some(PowerRow::Action(PowerAction::PowerOff))
+                Some(PowerRow::Options),
+                Some(PowerRow::Action(PowerAction::Update))
             ]
         );
     }
@@ -93,7 +106,7 @@ mod tests {
             name: name.into(),
         };
         let performance = Performance::of(vec![mode(0, "Console"), mode(2, "OC CPU")], Some(2));
-        let (page, does) = page(&translator, &[PowerAction::Standby], Some(&performance));
+        let (page, does) = page(&translator, true, &[], Some(&performance));
         let kinds: Vec<RowKind> = page.rows.iter().map(|row| row.kind).collect();
         let choice = |checked| RowKind::Choice {
             checked,

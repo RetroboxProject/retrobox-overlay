@@ -160,6 +160,8 @@ pub enum Outcome {
     QuitUnsaved,
     /// Sleep, restart or turn off, once the overlay is gone.
     Power(PowerAction),
+    /// The power options' popup, once the overlay is gone (see `--power`).
+    PowerOptions,
     /// The on-screen keyboard's overlay key: the overlay opens once the
     /// keyboard is gone.
     Overlay,
@@ -175,6 +177,18 @@ impl Outcome {
 }
 
 /// Everything the overlay shows, prepared before it connects to the display.
+/// Where the power options (sleep, restart, turn off) are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerOptions {
+    /// Nowhere (nothing can do them).
+    None,
+    /// The System page's first row opens their popup.
+    Row,
+    /// The overlay is their popup (`--power`): the entries are the options,
+    /// in the middle of the screen.
+    Popup,
+}
+
 pub struct Content {
     pub config: Config,
     pub theme: MenuTheme,
@@ -182,11 +196,12 @@ pub struct Content {
     pub title: String,
     pub subtitle: String,
     pub items: Vec<MenuItem>,
-    /// The round buttons under the entries (continue, screenshot, quit,
-    /// power).
+    /// The round buttons under the entries (continue, quit, System).
     pub buttons: Vec<MenuItem>,
-    /// What the power button's page offers.
+    /// What the System page offers besides the power options (the update).
     pub power: Vec<PowerAction>,
+    /// Where the power options (sleep, restart, turn off) are.
+    pub power_options: PowerOptions,
     /// The Nintendo Switch's performance profiles, on its power page.
     pub performance: Option<Performance>,
     pub clock_formats: (String, String),
@@ -861,6 +876,10 @@ impl State {
         panel.set_buttons(std::mem::take(&mut self.content.buttons));
         panel.set_icons(config.icons);
         panel.set_row_scale(config.row_scale);
+        if self.popup() {
+            self.create_popup(panel);
+            return;
+        }
         panel.set_status_bar(self.status_bar());
         let (edge, other) = match config.side {
             Side::Right => (Anchor::RIGHT, Anchor::LEFT),
@@ -915,6 +934,35 @@ impl State {
         self.draw_menu_help();
         self.schedule_status();
 
+        self.started = Some(Instant::now());
+        self.handle
+            .insert_source(Timer::from_duration(FRAME), |_, &mut (), state| {
+                state.animate()
+            })
+            .ok();
+    }
+
+    /// Whether the overlay is the power options' popup.
+    fn popup(&self) -> bool {
+        self.content.power_options == PowerOptions::Popup
+    }
+
+    /// The power options' popup: the panel, as tall as its entries, in the
+    /// middle of the screen; it fades in (see animate), with the help.
+    fn create_popup(&mut self, mut panel: Panel) {
+        let (width, height) = self.dim.size;
+        panel.set_popup();
+        let piece = self.display.create_piece(Spec {
+            anchor: Anchor::empty(),
+            size: (panel.width, panel.popup_height()),
+            margin: [0; 4],
+            keyboard: self.content.take_keyboard,
+            fade: true,
+        });
+        self.panel = Some((panel, piece));
+        self.help = Some(Help::new(&self.content.theme, (width, height)));
+        self.menu_help = Sub::new(&mut self.display, &self.dim, false, true);
+        self.draw_menu_help();
         self.started = Some(Instant::now());
         self.handle
             .insert_source(Timer::from_duration(FRAME), |_, &mut (), state| {
@@ -1029,9 +1077,13 @@ impl State {
         }
         // a subsurface's state takes effect with its parent's
         self.dim.commit();
+        let popup = self.popup();
         if let Some((panel, piece)) = &mut self.panel {
-            let margin = (-(panel.width as f32) * (1.0 - t)).round() as i32;
-            piece.set_margin(&self.display, edge_margin(self.content.config.side, margin));
+            // the popup only fades in; the side menu slides in too
+            if !popup {
+                let margin = (-(panel.width as f32) * (1.0 - t)).round() as i32;
+                piece.set_margin(&self.display, edge_margin(self.content.config.side, margin));
+            }
             piece.set_opacity(&self.display, t);
             piece.commit();
         }
@@ -1278,7 +1330,7 @@ impl State {
             icon: icon.to_owned(),
             label: texts.text(key),
         };
-        let back = if panel.page_open() {
+        let back = if panel.page_open() || self.content.power_options == PowerOptions::Popup {
             "help-back"
         } else {
             "help-close"
@@ -1572,9 +1624,16 @@ impl State {
         self.show_devices(Some(row));
     }
 
-    /// Show the power button's page: sleep; outside games, restart and turn
-    /// off; on a Nintendo Switch, its performance profiles.
+    /// Show the System page: the power options' row, the update outside
+    /// games, a Nintendo Switch's performance profiles. With nothing but the
+    /// power options, their popup at once.
     fn open_power(&mut self) {
+        if self.content.power.is_empty() && self.content.performance.is_none() {
+            if self.content.power_options == PowerOptions::Row {
+                self.outcome = Some(Outcome::PowerOptions);
+            }
+            return;
+        }
         let Some((panel, _)) = self.panel.as_mut() else {
             return;
         };
@@ -1583,6 +1642,7 @@ impl State {
         }
         let (page, rows) = power::page(
             &self.content.translator,
+            self.content.power_options == PowerOptions::Row,
             &self.content.power,
             self.content.performance.as_ref(),
         );
@@ -1601,6 +1661,7 @@ impl State {
         }
         let (page, rows) = power::page(
             &self.content.translator,
+            self.content.power_options == PowerOptions::Row,
             &self.content.power,
             self.content.performance.as_ref(),
         );
@@ -1619,6 +1680,7 @@ impl State {
     /// profile is changed to.
     fn choose_power(&mut self, row: usize) {
         match self.power_rows.get(row).copied().flatten() {
+            Some(PowerRow::Options) => self.outcome = Some(Outcome::PowerOptions),
             Some(PowerRow::Action(action)) => self.outcome = Some(Outcome::Power(action)),
             Some(PowerRow::Mode(id)) => {
                 let changed = self
@@ -1814,6 +1876,7 @@ impl State {
                 self.open_power();
                 return;
             }
+            Some(MenuAction::PowerOption(action)) => Some(Outcome::Power(action)),
             Some(MenuAction::Info) => {
                 self.open_info();
                 return;

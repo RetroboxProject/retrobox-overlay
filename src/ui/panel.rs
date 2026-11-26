@@ -11,7 +11,7 @@
 //! Above the header, a status line like the Switch's: the time (when the
 //! clock is the small one), the network and the battery. At the bottom,
 //! pinned (they do not scroll, and hide while a save state page is open):
-//! round buttons (continue, screenshot, quit, power), each telling what it
+//! round buttons (continue, quit, system), each telling what it
 //! does when highlighted for a while, and the sliders (the brightness, the
 //! volume), as tall as the buttons' row: their icon, the slider and its
 //! value. The entries between the
@@ -40,6 +40,7 @@ use super::text::{FontRef, Fonts, TextBox};
 use crate::emulator::EmuAction;
 use crate::savestates::{SLOTS, StateMode};
 use crate::system::SliderKind;
+use crate::system::power::PowerAction;
 use crate::system::status::Status;
 use crate::theme::{FontSpec, MenuTheme, Rgba, TextStyle};
 
@@ -83,8 +84,11 @@ pub enum MenuAction {
     Quit {
         autosave: bool,
     },
-    /// The power options' page (sleep; outside games, restart and turn off).
+    /// The System page (the power options' popup, the update, the
+    /// performance profiles).
     Power,
+    /// A power option (in their popup: sleep, restart, turn off).
+    PowerOption(PowerAction),
     /// A slider: Left/Right (or the mouse) change it.
     Slider(SliderKind),
 }
@@ -353,6 +357,9 @@ pub struct Panel {
     row_scale: f32,
     /// Whether the main entries show their icons.
     icons: bool,
+    /// A popup in the middle of the screen (the power options): only the
+    /// header and the entries, as tall as they are.
+    popup: bool,
     /// A line about the game's state under the header (the disc in the
     /// drive), on the main page.
     status: Option<String>,
@@ -407,6 +414,7 @@ impl Panel {
             status_bar: StatusBar::default(),
             row_scale: 1.0,
             icons: true,
+            popup: false,
             status: None,
             background: theme.background.center_color,
             title_element,
@@ -850,6 +858,19 @@ impl Panel {
         self.page.as_ref().map_or(self.items.len(), Page::len)
     }
 
+    /// Make it a popup (see `popup`): set before showing it.
+    pub fn set_popup(&mut self) {
+        self.popup = true;
+        self.scroll_to_selection();
+    }
+
+    /// A popup's height: its header and all its entries (no more than the
+    /// screen's).
+    pub fn popup_height(&self) -> u32 {
+        let height = self.header_height() + self.count() as f32 * self.pitch();
+        height.min(self.screen_height).ceil() as u32
+    }
+
     /// Taller rows, for fingers: 1 is ES's.
     pub fn set_row_scale(&mut self, scale: f32) {
         self.row_scale = scale.max(1.0);
@@ -910,7 +931,12 @@ impl Panel {
     /// footer.
     fn list_area(&self) -> (f32, f32) {
         let top = self.header_height() + self.keyboard_band() + self.summary_band();
-        let bottom = (self.screen_height - self.footer_height()).max(top + 1.0);
+        let end = if self.popup {
+            self.popup_height() as f32
+        } else {
+            self.screen_height
+        };
+        let bottom = (end - self.footer_height()).max(top + 1.0);
         (top, bottom)
     }
 

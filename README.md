@@ -9,8 +9,7 @@ Tap the controller's **Home/Guide** button (**Hotkey+A** where the hotkey is Sel
 **Ctrl+Shift+O** while
 playing: a side menu slides in over the dimmed game, drawn in the menu style of the active
 EmulationStation theme, with a clock on the other side. From there you load and save states,
-read the game's manual, reset, take a screenshot, change the volume or the brightness, or
-leave the game.
+read the game's manual, reset, change the volume or the brightness, or leave the game.
 
 It is a small Rust program (a few MB, about 35 ms from the button to the menu on screen). The
 only thing that stays resident is a daemon that reads the controllers and keyboards; the menu
@@ -39,10 +38,10 @@ runs only while it is shown.
 * **What the emulator can do,** each with its icon: load and save state, reset, the emulator's
   own menu, the disc tray and next/previous disc. The launcher tells the overlay what the
   running emulator supports; anything it cannot do is not shown.
-* **Round buttons** pinned at the bottom, where the menu opens: *continue*, *screenshot*, *quit*
-  (*save and quit* where the game's auto save/load is on: held, its ring fills and, once full,
-  it quits without saving) and *system* (sleep mode, and the other system options). A button highlighted for a second explains
-  itself in a small bubble.
+* **Round buttons** pinned at the bottom, where the menu opens: *continue*, *quit* (*save and
+  quit* where the game's auto save/load is on: held, its ring fills and, once full, it quits
+  without saving) and *system* (*Power off…*, which opens the power options, and the other
+  system options). A button highlighted for a second explains itself in a small bubble.
 * **Sliders** for the volume and, on a built-in screen, the brightness, as tall as the
   buttons' row.
 * **Sounds** for moving, choosing and going back, like EmulationStation's, when its
@@ -120,9 +119,22 @@ changes the volume as above, without a toast.
 ### Outside games
 
 In EmulationStation the same button opens the system's menu, like the Switch's quick settings:
-the *System* button (*sleep mode*, *restart*, *turn off*, *update system*) and the volume and
-brightness sliders. The power options go through systemd (`systemctl`) or, with another init,
-elogind (`loginctl`).
+the *System* button (*Power off…*, *update system*) and the volume and brightness sliders.
+
+### Power options
+
+*Power off…* closes the menu and opens the power options: *sleep mode*, *restart* and
+*turn off*, in a popup in the middle of the dimmed screen, in the menu's style (the System
+button opens them at once when the System page would have nothing else). Back (the east
+button, Esc), a click or a tap outside, or the right button close it. They are also there
+on their own, for a power button: `retrobox-overlay --power` asks the input daemon for them
+(SIGUSR2), which closes the menu first if it is open, or closes them if they are the ones
+shown; without the daemon, the command shows them itself. Bind it to the power key (labwc's
+`rc.xml`: `<keybind key="XF86PowerOff"><action name="Execute" command="retrobox-overlay
+--power"/></keybind>`, with `HandlePowerKey=ignore` in logind's configuration so that it does
+not turn the machine off first). Toasts give way to them as to the menu, and the volume keys
+keep working. They go through systemd (`systemctl`) or, with another init, elogind
+(`loginctl`); with neither, there are no power options.
 
 *Update system* is there when the machine has Retrobox's system settings program
 (retrobox-system-settings: `[core] system_settings` of `retrobox.ini`, else
@@ -401,7 +413,7 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
 | `[overlay]` | side of the menu, dim, animation length, `take_keyboard`, icons |
 | `[clock]` | on/off, big or small, position, colour, `strftime` formats |
 | `[status]` | the battery's percentage |
-| `[system]` | whether *Sleep mode* and, on a Nintendo Switch, the performance profiles are offered (the System page) |
+| `[system]` | whether *Sleep mode* (the power options) and, on a Nintendo Switch, the performance profiles (the System page) are offered |
 | `[sounds]` | the volume of the menu's sounds (0: none) |
 | `[volume]` | `toast`: show the volume when the volume keys change it (off) |
 | `[break]` | when a break is suggested: `after_min` of play (120; 0: never), then `every_min` (30; 0: once) |

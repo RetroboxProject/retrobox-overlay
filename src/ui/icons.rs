@@ -195,6 +195,7 @@ impl Icon {
             MenuAction::Achievements => Self::Trophy,
             MenuAction::Quit { .. } => Self::LogOut,
             MenuAction::Power => Self::System,
+            MenuAction::PowerOption(action) => Self::of_power(action),
             MenuAction::Slider(SliderKind::Brightness) => Self::Sun,
             MenuAction::Slider(SliderKind::Volume) => Self::Volume2,
             MenuAction::Slot(..) | MenuAction::Choice(_) => return None,
