@@ -1,9 +1,10 @@
 name: build
 
 # Builds and tests retrobox-overlay (.deb and .rpm, amd64 and arm64).
-# Releases are manual: run this workflow with a version (see
-# release-dispatch) to publish the packages plus SHA256SUMS as a GitHub
-# Release. Pushes to main and pull requests only build and test.
+# A push to main publishes the rolling "continuous" pre-release, versioned
+# X.Y.Z.<UTC timestamp> (above the last release, below the next one), so it
+# installs over the previous build. Real releases are manual: run this
+# workflow with a tag (e.g. v0.2.2). Pull requests only build and test.
 
 on:
   push:
@@ -29,6 +30,30 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Choose the version
+        id: version
+        env:
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          if [[ -n "${REQUESTED}" ]]; then
+            [[ "${REQUESTED}" =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] \
+              || { echo "bad version: ${REQUESTED}" >&2; exit 1; }
+            version="${REQUESTED}"
+          elif [[ "${GITHUB_EVENT_NAME}" == push ]]; then
+            version="$(bash .github/scripts/continuous-version.sh .)"
+          else
+            version=""
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "Version: ${version:-<Cargo.toml>}"
+
   check:
     runs-on: ubuntu-24.04
     steps:
@@ -44,6 +69,7 @@ jobs:
       - run: cargo test --locked
 
   package:
+    needs: version
     # Built in Debian 12 so the binary needs no newer glibc than Debian 12 /
     # Ubuntu 24.04 / current Fedora have; the .rpm packs the same binary.
     strategy:
@@ -63,10 +89,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with: { tool: "cargo-deb,cargo-generate-rpm" }
       # The packaging lives in scripts/package.sh, so it can be run by hand too.
-      # An empty version (push, pull request) keeps the version of Cargo.toml.
+      # An empty version (pull request) keeps the version of Cargo.toml.
       - name: Build the .deb and the .rpm
         env:
-          VERSION_INPUT: ${{ inputs.version }}
+          VERSION_INPUT: ${{ needs.version.outputs.version }}
         run: bash scripts/package.sh --version "${VERSION_INPUT}" --outdir dist
       - uses: actions/upload-artifact@v4
         with: { name: "packages-${{ matrix.arch }}", path: dist/* }
@@ -107,28 +133,35 @@ jobs:
           retrobox-overlay --version
           retrobox-overlay --help >/dev/null
 
-  release:
-    if: github.event_name == 'workflow_dispatch' && inputs.version != ''
-    needs: [check, package, smoke-deb, smoke-rpm]
+  publish:
+    if: github.event_name == 'push' || inputs.version != ''
+    needs: [version, check, package, smoke-deb, smoke-rpm]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    concurrency:
+      group: publish-${{ github.repository }}
+      cancel-in-progress: false
     steps:
-      - uses: actions/download-artifact@v4
-        with: { path: artifacts, merge-multiple: true }
-      # The installer at https://retroboxproject.github.io verifies downloads
-      # against this file (bare file names, one line per asset).
-      - name: Generate SHA256SUMS
-        working-directory: artifacts
-        run: |
-          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\n' | sort \
-            | xargs -d '\n' sha256sum > SHA256SUMS
-          cat SHA256SUMS
-      # Creates the tag on the built commit when the release is published.
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/checkout@v4
         with:
-          tag_name: ${{ inputs.version }}
-          target_commitish: ${{ github.sha }}
-          prerelease: ${{ inputs.prerelease }}
-          generate_release_notes: true
-          files: artifacts/*
+          sparse-checkout: .github/scripts
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      # Both modes regenerate SHA256SUMS (bare names), which the installer and
+      # retrobox-update verify.
+      - name: Publish the continuous pre-release
+        if: inputs.version == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: .github/scripts/publish-release.sh continuous dist "${VERSION}"
+      - name: Publish the release
+        if: inputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.prerelease && '--prerelease' || '' }}
+        # PRERELEASE is intentionally unquoted: empty means no argument.
+        # shellcheck disable=SC2086
+        run: .github/scripts/publish-release.sh tag "${TAG}" dist ${PRERELEASE}

@@ -8,8 +8,12 @@
 # The package metadata (dependencies, assets) lives in Cargo.toml.
 #
 # --version  vMAJOR.MINOR[.PATCH] or MAJOR.MINOR[.PATCH]; a missing patch is 0.
-#            It is written into Cargo.toml and Cargo.lock for the build and
-#            restored afterwards. Empty or absent: keep the Cargo.toml version.
+#            A fourth numeric component (MAJOR.MINOR.PATCH.STAMP, used by the
+#            continuous builds) goes only into the package version: the .deb
+#            version is the whole string and the .rpm release is 1.STAMP.
+#            MAJOR.MINOR.PATCH is written into Cargo.toml and Cargo.lock for
+#            the build and restored afterwards. Empty or absent: keep the
+#            Cargo.toml version.
 # --outdir   Where the packages go (default: dist/ in the repository).
 # deb|rpm|all  Which packages to build (default: all).
 set -euo pipefail
@@ -21,6 +25,7 @@ VERSION=""
 OUTDIR="${SRC}/dist"
 FORMAT="all"
 BACKUP_DIR=""
+STAMP=""
 
 die() {
   echo "package.sh: $*" >&2
@@ -28,10 +33,10 @@ die() {
 }
 
 usage() {
-  sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
-# Print the version as MAJOR.MINOR.PATCH[-pre][+build], or die.
+# Print the version as MAJOR.MINOR.PATCH[-pre][+build] or MAJOR.MINOR.PATCH.STAMP, or die.
 normalize_version() {
   local version="${1#v}"
   case "${version}" in
@@ -39,7 +44,7 @@ normalize_version() {
     *.*) version="${version}.0" ;;
     *) version="${version}.0.0" ;;
   esac
-  [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] \
+  [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+|[-+][0-9A-Za-z.-]+)?$ ]] \
     || die "'${1}' is not a version (vMAJOR.MINOR[.PATCH])"
   printf '%s\n' "${version}"
 }
@@ -103,16 +108,25 @@ cd "${SRC}"
 if [[ -n "${VERSION}" ]]; then
   # (a separate assignment, so that a version that does not validate stops the script)
   VERSION="$(normalize_version "${VERSION}")"
-  apply_version "${VERSION}"
+  CARGO_VERSION="${VERSION}"
+  if [[ "${VERSION}" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+)$ ]]; then
+    CARGO_VERSION="${BASH_REMATCH[1]}"
+    STAMP="${BASH_REMATCH[2]}"
+  fi
+  apply_version "${CARGO_VERSION}"
 fi
 
 cargo build --release --locked
 
 if [[ "${FORMAT}" != rpm ]]; then
-  cargo deb --no-build --output "${OUTDIR}/"
+  deb_args=()
+  [[ -n "${STAMP}" ]] && deb_args+=(--deb-version "${VERSION}")
+  cargo deb --no-build "${deb_args[@]}" --output "${OUTDIR}/"
 fi
 if [[ "${FORMAT}" != deb ]]; then
-  cargo generate-rpm --output "${OUTDIR}/"
+  rpm_args=()
+  [[ -n "${STAMP}" ]] && rpm_args+=(--set-metadata "release = \"1.${STAMP}\"")
+  cargo generate-rpm "${rpm_args[@]}" --output "${OUTDIR}/"
 fi
 
 echo "package.sh: packages in ${OUTDIR}:"
