@@ -30,6 +30,7 @@ mod system;
 mod task;
 mod theme;
 mod toast;
+mod trace;
 mod ui;
 mod volume;
 
@@ -181,7 +182,16 @@ fn main() -> ExitCode {
         instance::close_running(Some(pid));
         Ok(())
     } else {
-        run(demo, osk, from_pad, &pads, launched, log.as_ref())
+        trace::trace!(
+            "start",
+            "pid={} version={}",
+            std::process::id(),
+            env!("CARGO_PKG_VERSION")
+        );
+        let result = run(demo, osk, from_pad, &pads, launched, log.as_ref());
+        trace::trace!("exit");
+        trace::flush();
+        result
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
