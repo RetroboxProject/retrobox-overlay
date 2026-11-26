@@ -1,10 +1,14 @@
-//! Updating the system, from the System page: offered when the machine's
-//! system settings program (retrobox-system-settings) says it can
-//! (`<program> update available`), and done in the task screen, which shows
-//! what `<program> update run` prints (it runs the system's updater as root:
-//! retrobox-update, or the machine's own, such as nx-debian's nxd-update). A
-//! machine without that program is an ordinary computer, updated its own way:
-//! nothing is offered.
+//! Updating the system, from the System page, done in the task screen, which
+//! shows what the updater prints as it goes.
+//!
+//! On a Nintendo Switch with nx-debian's `nxd-update`, that is the updater
+//! (Debian, L4T and the Switch's own packages, and Retrobox's through
+//! retrobox-update on its Retrobox image), run as root with `pkexec`
+//! (nx-debian's polkit action for it). Elsewhere it is offered when the
+//! machine's system settings program (retrobox-system-settings) says it can
+//! (`<program> update available`), and `<program> update run` does it
+//! (retrobox-update as root). A machine with neither is an ordinary
+//! computer, updated its own way: nothing is offered.
 //!
 //! The program is the one EmulationStation's console mode uses: `[core]
 //! system_settings` of retrobox.ini (`/etc/retrobox` and
@@ -19,6 +23,41 @@ use retrobox_input::paths;
 
 /// The task screen's log of the last update.
 const LOG: &str = "update.log";
+
+/// nx-debian's updater, where its polkit action expects it.
+const NXD_UPDATE: &str = "/usr/bin/nxd-update";
+
+/// What runs the update: the updater's command line.
+fn updater() -> Option<Vec<String>> {
+    if super::performance::on_switch() && Path::new(NXD_UPDATE).is_file() {
+        if !super::installed("pkexec") {
+            log::info!("a Nintendo Switch without pkexec: no system update");
+            return None;
+        }
+        return Some(
+            ["pkexec", "--disable-internal-agent", NXD_UPDATE]
+                .map(String::from)
+                .to_vec(),
+        );
+    }
+    let program = program()?;
+    let can = Command::new(&program)
+        .args(["update", "available"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if !can {
+        log::info!("{}: no system update here", program.display());
+        return None;
+    }
+    Some(vec![
+        program.to_string_lossy().into_owned(),
+        "update".into(),
+        "run".into(),
+    ])
+}
 
 /// The system settings program, if there is one.
 fn program() -> Option<PathBuf> {
@@ -67,46 +106,32 @@ fn in_path(name: &str) -> Option<PathBuf> {
 
 /// Whether the system can be updated from here.
 pub fn available() -> bool {
-    let Some(program) = program() else {
-        return false;
-    };
-    let can = Command::new(&program)
-        .args(["update", "available"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    if !can {
-        log::info!("{}: no system update here", program.display());
-    }
-    can
+    updater().is_some()
 }
 
-/// The task screen's command line for the update with `program`.
-fn task_command(overlay: &Path, program: &Path, log: &Path) -> Command {
+/// The task screen's command line for the update with `updater`.
+fn task_command(overlay: &Path, updater: &[String], log: &Path) -> Command {
     let mut command = Command::new(overlay);
     command
         .args(["--task", "--update", "--label", "Retrobox", "--log"])
         .arg(log)
         .arg("--")
-        .arg(program)
-        .args(["update", "run"]);
+        .args(updater);
     command
 }
 
 /// Open the task screen with the update (once the menu is gone): a process
 /// of its own, which outlives this one.
 pub fn start() {
-    let Some(program) = program() else {
-        log::warn!("no system settings program: nothing to update with");
+    let Some(updater) = updater() else {
+        log::warn!("no system updater here: nothing to update with");
         return;
     };
     let log = paths::log_file(LOG);
     if let Some(dir) = log.parent() {
         std::fs::create_dir_all(dir).ok();
     }
-    let mut command = task_command(&paths::sibling_command("retrobox-overlay"), &program, &log);
+    let mut command = task_command(&paths::sibling_command("retrobox-overlay"), &updater, &log);
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     match command
         .stdin(Stdio::null())
@@ -125,9 +150,15 @@ mod tests {
 
     #[test]
     fn the_task_screen_runs_the_program_update() {
+        let updater = [
+            "/opt/retrobox/bin/retrobox-system-settings",
+            "update",
+            "run",
+        ]
+        .map(String::from);
         let command = task_command(
             Path::new("/usr/bin/retrobox-overlay"),
-            Path::new("/opt/retrobox/bin/retrobox-system-settings"),
+            &updater,
             Path::new("/tmp/update.log"),
         );
         let args: Vec<_> = command

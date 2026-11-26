@@ -142,8 +142,9 @@ keep working. They go through systemd (`systemctl`) or, with another init, elogi
 (retrobox-system-settings: `[core] system_settings` of `retrobox.ini`, else
 `retrobox-system-settings` in the `PATH`) and it says it can (`update available`): a
 console. It opens the task screen, which asks first, then shows what the update prints as it
-goes (`<program> update run`: `retrobox-update` as root, or the machine's own updater, such as
-nx-debian's `nxd-update`), and says when it is done or why it failed. An ordinary computer,
+goes (`<program> update run`: `retrobox-update` as root), and says when it is done or why it
+failed. On a Nintendo Switch with nx-debian's `/usr/bin/nxd-update` the update is that one,
+run with `pkexec`, whatever the system settings program says. An ordinary computer,
 without that program, is updated its own way, and the option is not there.
 
 On a Nintendo Switch running switchroot's Linux, the System page also has the

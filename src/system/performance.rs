@@ -193,6 +193,14 @@ fn apply(worker: &(Mutex<Work>, Condvar), conf: &Path, sender: &calloop::channel
     done.notify_all();
 }
 
+/// Whether this machine is a Nintendo Switch (by its device tree).
+pub fn on_switch() -> bool {
+    DEVICE_TREES
+        .iter()
+        .find_map(|tree| std::fs::read(Path::new(tree).join("compatible")).ok())
+        .is_some_and(|compatible| is_switch(&compatible))
+}
+
 /// Whether a device tree's compatible list (NUL-separated) is a Switch's.
 fn is_switch(compatible: &[u8]) -> bool {
     compatible
