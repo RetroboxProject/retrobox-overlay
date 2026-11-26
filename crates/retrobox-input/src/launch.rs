@@ -13,12 +13,6 @@
 //! game starts or ends: it does not open then, and it closes when either
 //! begins. `pid` and `start_time` (from `/proc/<pid>/stat`) tell a file left
 //! by a launcher that died: it counts as no launch at all.
-//!
-//! A frontend that is not a game (Kodi) says so in `frontend.json`, same
-//! layout without the phase, for as long as it runs: with no game session
-//! (`session.json`) above it, the overlay has nothing to show over it (it
-//! has its own menus). What the frontend starts through `retrobox-launch`
-//! publishes a session, and the overlay works there as in any game.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -54,9 +48,6 @@ impl Phase {
     }
 }
 
-/// The frontend's file (Kodi), in the runtime directory.
-pub const FRONTEND_FILE: &str = "frontend.json";
-
 /// The launch file in the runtime directory.
 pub fn path() -> PathBuf {
     paths::runtime_dir().join(LAUNCH_FILE)
@@ -70,49 +61,6 @@ pub fn phase() -> Option<Phase> {
 /// Whether a game is starting or ending (the overlay stays away).
 pub fn busy() -> bool {
     phase().is_some_and(Phase::keeps_overlay_away)
-}
-
-/// Whether the overlay must not open: a game is starting or ending, or a
-/// frontend that is not a game is in front with no game session over it.
-pub fn keeps_away() -> bool {
-    busy() || frontend_alone_in(&paths::runtime_dir())
-}
-
-/// Whether `dir` has a frontend that runs and no game session over it.
-pub fn frontend_alone_in(dir: &Path) -> bool {
-    process_alive(&dir.join(FRONTEND_FILE)) && !session_runs(&dir.join("session.json"))
-}
-
-/// Whether the process a file names (`pid`, and `start_time` when it has one) runs.
-fn process_alive(path: &Path) -> bool {
-    let Ok(text) = fs::read_to_string(path) else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_str::<Value>(&text) else {
-        return false;
-    };
-    let Some(pid) = value
-        .get("pid")
-        .and_then(Value::as_u64)
-        .and_then(|pid| u32::try_from(pid).ok())
-    else {
-        return false;
-    };
-    alive(
-        pid,
-        value.get("start_time").and_then(Value::as_u64).unwrap_or(0),
-    )
-}
-
-/// Whether the game `session.json` names still runs.
-fn session_runs(path: &Path) -> bool {
-    let Ok(text) = fs::read_to_string(path) else {
-        return false;
-    };
-    serde_json::from_str::<Value>(&text)
-        .ok()
-        .and_then(|value| value.get("pid").and_then(Value::as_u64))
-        .is_some_and(|pid| Path::new(&format!("/proc/{pid}")).exists())
 }
 
 /// The phase `path` tells, if its launcher still runs.
@@ -194,38 +142,5 @@ mod tests {
         fs::remove_file(&file).unwrap();
         assert_eq!(phase_in(&file), None);
         fs::remove_dir(&dir).ok();
-    }
-
-    #[test]
-    fn a_frontend_keeps_the_overlay_away_until_a_game_runs_over_it() {
-        let dir = std::env::temp_dir().join(format!("frontend-test-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let me = std::process::id();
-        let born =
-            stat_start_time(&fs::read_to_string(format!("/proc/{me}/stat")).unwrap()).unwrap();
-        let frontend = dir.join(FRONTEND_FILE);
-        let session = dir.join("session.json");
-
-        assert!(!frontend_alone_in(&dir), "no frontend");
-        fs::write(
-            &frontend,
-            format!(r#"{{"pid": {me}, "start_time": {born}}}"#),
-        )
-        .unwrap();
-        assert!(frontend_alone_in(&dir), "Kodi in front, no game");
-        // an app started from it with retrobox-launch: the overlay works
-        fs::write(&session, format!(r#"{{"pid": {me}}}"#)).unwrap();
-        assert!(!frontend_alone_in(&dir), "a game over the frontend");
-        // the game is gone (a dead pid): back to the frontend alone
-        fs::write(&session, r#"{"pid": 4294967}"#).unwrap();
-        assert!(frontend_alone_in(&dir), "the game's session is stale");
-        // a frontend that died: nothing keeps the overlay away
-        fs::write(
-            &frontend,
-            format!(r#"{{"pid": {me}, "start_time": {}}}"#, born + 1),
-        )
-        .unwrap();
-        assert!(!frontend_alone_in(&dir), "a stale frontend file");
-        fs::remove_dir_all(&dir).ok();
     }
 }

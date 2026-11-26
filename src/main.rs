@@ -699,8 +699,8 @@ fn first_overlay(
             return Ok(None);
         }
     };
-    if !demo && launch::keeps_away() {
-        log::info!("a game is starting or ending, or a frontend is in front: not now");
+    if !demo && launch::busy() {
+        log::info!("a game is starting or ending: not now");
         return Ok(None);
     }
     // the log is this run's from here: a second start (which only closes

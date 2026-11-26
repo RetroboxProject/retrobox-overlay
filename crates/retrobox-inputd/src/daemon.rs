@@ -867,10 +867,8 @@ impl State {
     /// Start the overlay: the menu (or, `power`, the power options), with
     /// the controllers (the one it was opened from first).
     fn show(&mut self, from: Option<&Path>, power: bool) {
-        if launch::keeps_away() {
-            log::info!(
-                "a game is starting or ending, or a frontend (Kodi) is in front: the overlay stays closed"
-            );
+        if launch::busy() {
+            log::info!("a game is starting or ending: the overlay stays closed");
             return;
         }
         self.breaks.hide_toast();
