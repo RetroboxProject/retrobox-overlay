@@ -364,9 +364,10 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
   tools it reads the system with), run at a lower CPU priority (nice 10): opening does a lot at
   once, which on a small machine (a Nintendo Switch) would otherwise take the cores from the
   game for a moment and make its audio stutter. A silent toast starts no sound player at all.
-* **No more frames than the screen shows.** The menu and the keyboard draw a new frame only once
-  the compositor has shown the last one (its frame callback): a finger dragging the list moves
-  more often than the screen refreshes, and every frame costs the game an upload. X11 tells
+* **No more frames than the screen shows.** The menu, the keyboard and the task screen (its
+  output scrolled or selected) draw a new frame only once the compositor has shown the last one
+  (its frame callback): a finger dragging the list moves more often than the screen refreshes,
+  and every frame costs the game an upload. X11 tells
   nothing of the kind: there a window gets at most one frame per 60 Hz refresh, and only the rows
   that changed are sent to the server. Sliding in draws nothing again (the compositor configures
   the surfaces at every step, with the same size), and the text's shaping and the icons'
@@ -376,7 +377,9 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
   tiny-skia's general pipeline, several times slower; save state previews are scaled once, when
   the page opens; the menu draws over its last frame instead of a new one; and the frame goes
   to the compositor as it is drawn (`ABGR8888`) when it reads that format, with no per-pixel
-  conversion.
+  conversion. The task screen draws its window and output box (rounded rectangles over most of
+  the screen) once per layout, and finds the cell under the pointer by arithmetic: its font is
+  fixed-width.
 * **The game keeps the focus.** Opened from a controller, the overlay does not take the
   keyboard (`take_keyboard = auto`): many games slow down when they lose the focus. Opened
   from the keyboard it takes it, and closes when another window gets it (Alt+Tab).

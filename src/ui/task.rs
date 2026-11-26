@@ -92,7 +92,7 @@ pub struct Frame<'a> {
 }
 
 /// Where the parts of a window go.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct Layout {
     window: Rect,
     message: Rect,
@@ -168,6 +168,20 @@ pub struct TaskUi {
     text: crate::theme::TextStyle,
     /// The buttons as last drawn.
     buttons: Vec<Rect>,
+    /// What does not change from one frame to the next (the background,
+    /// the window, its question, the output box), drawn for this layout:
+    /// its rounded rectangles cover most of the screen, and filling them
+    /// costs more than all the rest of a frame.
+    chrome: Option<(Chrome, Pixmap)>,
+}
+
+/// What the unchanging part of a frame is drawn for.
+#[derive(Debug, Clone, PartialEq)]
+struct Chrome {
+    layout: Layout,
+    terminal: Rect,
+    message: Vec<String>,
+    output: bool,
 }
 
 fn font(path: &Path, size: f32) -> FontRef {
@@ -334,6 +348,7 @@ impl TaskUi {
             window_color: theme.background.center_color.with_alpha(WINDOW_OPACITY),
             text: theme.text.clone(),
             buttons: Vec::new(),
+            chrome: None,
         })
     }
 
@@ -454,10 +469,10 @@ impl TaskUi {
     }
 
     /// The place in the text under a point of the output box (the nearest
-    /// one when it is past the ends of its row).
+    /// one when it is past the ends of its row): the font is fixed-width, so
+    /// it is the nearest edge between two cells, with nothing to measure.
     pub fn position_at(
         &self,
-        fonts: &mut Fonts,
         terminal: &Terminal,
         scroll: usize,
         (x, y): (f32, f32),
@@ -467,19 +482,8 @@ impl TaskUi {
             .floor()
             .max(0.0) as usize;
         let row = rows.get(index.min(rows.len().saturating_sub(1)))?;
-        let text = &terminal.line(row.line)[row.start..row.end];
         let offset = x - self.terminal.x - self.inset();
-        let mut column = 0;
-        let mut previous = 0.0;
-        for end in 1..=text.len() {
-            let prefix: String = text[..end].iter().collect();
-            let reach = fonts.measure(&self.terminal_font, &prefix);
-            if offset < f32::midpoint(previous, reach) {
-                break;
-            }
-            previous = reach;
-            column = end;
-        }
+        let column = ((offset / self.cell.0).round().max(0.0) as usize).min(row.end - row.start);
         Some(Position {
             line: row.line,
             column: row.start + column,
@@ -488,6 +492,31 @@ impl TaskUi {
 
     /// Draw a frame (after `arrange`).
     pub fn render(&mut self, fonts: &mut Fonts, frame: &Frame) -> Pixmap {
+        let key = Chrome {
+            layout: self.layout,
+            terminal: self.terminal,
+            message: self.message_lines.clone(),
+            output: frame.terminal.is_some(),
+        };
+        let mut pixmap = match &self.chrome {
+            Some((drawn, pixmap)) if *drawn == key => pixmap.clone(),
+            _ => {
+                let pixmap = self.draw_chrome(fonts, key.output);
+                self.chrome = Some((key, pixmap.clone()));
+                pixmap
+            }
+        };
+        self.draw_buttons(&mut pixmap, fonts, frame, self.layout.buttons_row);
+        if let Some((terminal, scroll)) = frame.terminal {
+            self.draw_terminal(&mut pixmap, fonts, terminal, scroll, frame.cursor);
+        }
+        self.draw_help(&mut pixmap, fonts, frame.prompts);
+        pixmap
+    }
+
+    /// The part of a frame that stays: the background, the window, its
+    /// question and separator, and the output box (when it shows).
+    fn draw_chrome(&self, fonts: &mut Fonts, output: bool) -> Pixmap {
         let mut pixmap = self.base.clone();
         let layout = self.layout;
         fill_rounded(&mut pixmap, layout.window, self.radius, self.window_color);
@@ -517,11 +546,14 @@ impl TaskUi {
             },
             self.text.separator_color,
         );
-        self.draw_buttons(&mut pixmap, fonts, frame, layout.buttons_row);
-        if let Some((terminal, scroll)) = frame.terminal {
-            self.draw_terminal(&mut pixmap, fonts, terminal, scroll, frame.cursor);
+        if output {
+            fill_rounded(
+                &mut pixmap,
+                self.terminal,
+                self.radius * 0.6,
+                TERMINAL_BACKGROUND,
+            );
         }
-        self.draw_help(&mut pixmap, fonts, frame.prompts);
         pixmap
     }
 
@@ -599,8 +631,8 @@ impl TaskUi {
         scroll: usize,
         cursor: bool,
     ) {
+        // its box is in the chrome
         let area = self.terminal;
-        fill_rounded(pixmap, area, self.radius * 0.6, TERMINAL_BACKGROUND);
         let (rows, _) = self.rows(terminal, scroll);
         let selection = terminal.selection();
         for (index, row) in rows.iter().enumerate() {
@@ -609,13 +641,8 @@ impl TaskUi {
             if let Some((start, end)) = selection
                 && let Some((from, to)) = selected_span(row, start, end)
             {
-                let chars = |count: usize| -> String {
-                    terminal.line(row.line)[row.start..row.start + count]
-                        .iter()
-                        .collect()
-                };
-                let left = fonts.measure(&self.terminal_font, &chars(from));
-                let right = fonts.measure(&self.terminal_font, &chars(to));
+                // fixed-width cells: no measuring
+                let (left, right) = (from as f32 * self.cell.0, to as f32 * self.cell.0);
                 fill(
                     pixmap,
                     Rect {

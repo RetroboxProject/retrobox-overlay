@@ -377,8 +377,15 @@ impl State {
         prompts
     }
 
-    /// Draw the screen.
+    /// Draw the screen, or once the compositor has shown the last frame (see
+    /// `Late`): the pointer selecting the output moves more often than that.
     pub(super) fn draw_task(&mut self) {
+        if self.dim.waits_for_frame() {
+            self.late.task = true;
+            self.draw_late();
+            return;
+        }
+        self.late.task = false;
         let prompts = self.task_prompts();
         let Some(task) = self.task.as_mut() else {
             return;
@@ -614,8 +621,7 @@ impl State {
             PointerKind::Enter | PointerKind::Motion => {
                 if task.selecting {
                     let scroll = task.scroll;
-                    let end =
-                        ui.position_at(&mut self.content.fonts, &task.terminal, scroll, point);
+                    let end = ui.position_at(&task.terminal, scroll, point);
                     if end.is_some() {
                         task.terminal.selection_end = end;
                         self.draw_task();
@@ -635,7 +641,7 @@ impl State {
                     task.pressed = button;
                 } else if ui.in_terminal(point) {
                     let scroll = task.scroll;
-                    let at = ui.position_at(&mut self.content.fonts, &task.terminal, scroll, point);
+                    let at = ui.position_at(&task.terminal, scroll, point);
                     task.terminal.anchor = at;
                     task.terminal.selection_end = at;
                     task.selecting = at.is_some();

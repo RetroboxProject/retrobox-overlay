@@ -250,17 +250,19 @@ pub struct Content {
     pub screens: Screens,
 }
 
-/// Redraws of the panel and the keyboard put off while the compositor has
-/// not shown their last frame yet: a finger dragging the list moves more
-/// often than the screen refreshes, and every buffer drawn costs the game
-/// under the overlay an upload; the next frame callback draws what changed
-/// meanwhile, once (a timer, when none comes).
+/// Redraws of the panel, the keyboard and the task screen put off while
+/// the compositor has not shown their last frame yet: a finger dragging
+/// the list (or selecting the output) moves more often than the screen
+/// refreshes, and every buffer drawn costs the game under the overlay an
+/// upload; the next frame callback draws what changed meanwhile, once (a
+/// timer, when none comes).
 #[derive(Debug, Default)]
 struct Late {
     panel: bool,
     osk: bool,
-    /// Whether the timer that draws them anyway is set.
-    timer: bool,
+    task: bool,
+    /// The timer that draws them anyway, while it is set.
+    timer: Option<RegistrationToken>,
 }
 
 /// The panel's frames.
@@ -1205,7 +1207,7 @@ impl State {
     /// Draw the panel and the keyboard if they were put off, once the
     /// compositor has had the time to show their last frame (see [`Late`]).
     fn draw_late(&mut self) {
-        if self.late.timer {
+        if self.late.timer.is_some() {
             return;
         }
         let token = self.handle.insert_source(
@@ -1222,15 +1224,19 @@ impl State {
                     trace!("timeout", "piece=osk");
                     state.draw_osk();
                 }
-                if state.late.panel || state.late.osk {
+                if state.late.task {
+                    trace!("timeout", "piece=task");
+                    state.draw_task();
+                }
+                if state.late.panel || state.late.osk || state.late.task {
                     TimeoutAction::ToDuration(state.late_wait())
                 } else {
-                    state.late.timer = false;
+                    state.late.timer = None;
                     TimeoutAction::Drop
                 }
             },
         );
-        self.late.timer = token.is_ok();
+        self.late.timer = token.ok();
     }
 
     /// How long until a piece put off may be drawn (the soonest, none being
@@ -1242,6 +1248,7 @@ impl State {
         [
             wait(self.late.panel, self.panel.as_ref().map(|(_, piece)| piece)),
             wait(self.late.osk, self.osk.as_ref().map(|(_, piece)| piece)),
+            wait(self.late.task, Some(&self.dim)),
         ]
         .into_iter()
         .flatten()
@@ -3301,7 +3308,10 @@ impl CompositorHandler for State {
         {
             done("clock", piece.frame_done(), false);
         } else if self.dim.is(&surface) {
-            done("dim", self.dim.frame_done(), false);
+            done("dim", self.dim.frame_done(), self.late.task);
+            if self.late.task {
+                self.draw_task();
+            }
         }
     }
     fn surface_enter(
