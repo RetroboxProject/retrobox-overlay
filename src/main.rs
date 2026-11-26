@@ -30,7 +30,6 @@ mod system;
 mod task;
 mod theme;
 mod toast;
-mod trace;
 mod ui;
 mod volume;
 
@@ -182,16 +181,7 @@ fn main() -> ExitCode {
         instance::close_running(Some(pid));
         Ok(())
     } else {
-        trace::trace!(
-            "start",
-            "pid={} version={}",
-            std::process::id(),
-            env!("CARGO_PKG_VERSION")
-        );
-        let result = run(demo, osk, from_pad, &pads, launched, log.as_ref());
-        trace::trace!("exit");
-        trace::flush();
-        result
+        run(demo, osk, from_pad, &pads, launched, log.as_ref())
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -653,8 +643,8 @@ fn first_overlay(
             return Ok(None);
         }
     };
-    if !demo && launch::busy() {
-        log::info!("a game is starting or ending: not now");
+    if !demo && launch::keeps_away() {
+        log::info!("a game is starting or ending, or a frontend is in front: not now");
         return Ok(None);
     }
     // the log is this run's from here: a second start (which only closes

@@ -235,7 +235,6 @@ with gamepadly's additions, read exactly as gamepadly read them: this replaces g
 | Move | D-pad, left stick | Arrows | Hover, wheel, drag |
 | Choose | South button | Enter | Click, tap |
 | Quit without saving (auto save/load on) | South button held on *save and quit* | Enter held | Held click |
-| Quit at once (as a tap on quit) | X on any round button (Home then X) | | |
 | Back, close | East button, Home | Esc | Right click, click outside |
 | Entries ↔ buttons | R1 / L1 | Page Down / Page Up | |
 | Sliders | Left / Right (held repeats) | Left / Right | Tap or drag the track |
@@ -296,6 +295,10 @@ What they read:
 * **`launch.json`** (runtime directory): whether a game is starting, running or ending,
   written by the launcher for as long as it runs. The menu does not open, and closes, while a
   game starts or ends.
+* **`frontend.json`** (runtime directory): `{"pid", "start_time"}`, written by
+  `retrobox-kodi-launch` for as long as Kodi runs. Kodi is a frontend with menus of its own, not
+  a game: while it is in front, with no game session over it, the menu does not open. What Kodi
+  starts with `retrobox-launch` publishes a session, and the menu works there.
 
 <details>
 <summary>How Retrobox runs the daemon</summary>
@@ -351,17 +354,9 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
   game for a moment and make its audio stutter. A silent toast starts no sound player at all.
 * **No more frames than the screen shows.** The menu and the keyboard draw a new frame only once
   the compositor has shown the last one (its frame callback): a finger dragging the list moves
-  more often than the screen refreshes, and every frame costs the game an upload. X11 tells
-  nothing of the kind: there a window gets at most one frame per 60 Hz refresh, and only the rows
-  that changed are sent to the server. Sliding in draws nothing again (the compositor configures
-  the surfaces at every step, with the same size), and the text's shaping and the icons'
-  rendering are kept from one frame to the next.
-* **Cheap frames.** Images drawn at their size (icons, badges, the controls' keyboard, the
-  game's page, which scrolls as one picture) are copied in a plain loop rather than through
-  tiny-skia's general pipeline, several times slower; save state previews are scaled once, when
-  the page opens; the menu draws over its last frame instead of a new one; and the frame goes
-  to the compositor as it is drawn (`ABGR8888`) when it reads that format, with no per-pixel
-  conversion.
+  more often than the screen refreshes, and every frame costs the game an upload. Sliding in
+  draws nothing again (the compositor configures the surfaces at every step, with the same
+  size), and the text's shaping and the icons' rendering are kept from one frame to the next.
 * **The game keeps the focus.** Opened from a controller, the overlay does not take the
   keyboard (`take_keyboard = auto`): many games slow down when they lose the focus. Opened
   from the keyboard it takes it, and closes when another window gets it (Alt+Tab).
@@ -403,7 +398,7 @@ Ctrl and Shift: how the launcher is asked to offer an emulator's installation ag
 
 | Section | What |
 |---|---|
-| `[overlay]` | side of the menu, dim (0 to 1: opaque black), animation length, `take_keyboard`, icons |
+| `[overlay]` | side of the menu, dim, animation length, `take_keyboard`, icons |
 | `[clock]` | on/off, big or small, position, colour, `strftime` formats |
 | `[status]` | the battery's percentage |
 | `[system]` | whether *Sleep mode* and, on a Nintendo Switch, the performance profiles are offered (the System page) |
@@ -438,31 +433,6 @@ To try it by hand: `RUST_LOG=debug retrobox-overlay --demo` shows the menu witho
 a Wayland or X11 session; `RUST_LOG=debug retrobox-inputd` runs the daemon. When not run from a
 terminal they log to `~/.local/state/retrobox/logs/` (`overlay.log`, `inputd.log`), or to the
 journal under systemd.
-
-### Diagnosing performance
-
-With `RETROBOX_OVERLAY_TRACE=<file>`, the overlay appends a timeline of what it does to that file:
-every touch and pointer event (with how late it was handled), scroll step, frame drawn or put
-off (what drawing it, filling the buffer, hashing its rows and committing or, on X11, sending
-it took), configure and frame callback (how long the compositor took to show the frame, and its
-own frame times), and on X11 whether a compositing manager runs and each time the overlay raised
-itself over another window. `scripts/probe.py` samples the system meanwhile: each thread of every
-process that used the CPU, and always of the game, the display server, the window manager or
-compositor and the overlay (CPU use, time spent waiting for a core, preemptions), each core's
-use and frequency and, where the kernel tells them (Tegra's L4T among others), the GPU's load and
-frequency, the memory controller's frequency and the temperatures. `scripts/trace_report.py`
-puts both together, while dragging, while open and not dragging, and before the overlay opened
-(the game alone):
-
-```sh
-systemctl --user set-environment RETROBOX_OVERLAY_TRACE=/tmp/overlay-trace.log
-systemctl --user restart retrobox-inputd   # the overlay it starts inherits it
-sudo scripts/probe.py --out /tmp/probe.log # Ctrl+C when done (root: the GPU's clocks)
-scripts/trace_report.py /tmp/overlay-trace.log --probe /tmp/probe.log
-systemctl --user unset-environment RETROBOX_OVERLAY_TRACE
-```
-
-Both files use `CLOCK_MONOTONIC` in milliseconds, the clock of the compositor's own event times.
 
 The screenshots use game pictures from the
 [libretro thumbnails](https://github.com/libretro-thumbnails/libretro-thumbnails) and the colours

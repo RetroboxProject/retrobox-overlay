@@ -812,8 +812,10 @@ impl State {
             signal(child, nix::sys::signal::Signal::SIGUSR1);
             return;
         }
-        if launch::busy() {
-            log::info!("a game is starting or ending: the overlay stays closed");
+        if launch::keeps_away() {
+            log::info!(
+                "a game is starting or ending, or a frontend (Kodi) is in front: the overlay stays closed"
+            );
             return;
         }
         self.breaks.hide_toast();
