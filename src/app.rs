@@ -88,6 +88,7 @@ use crate::trace::{self, trace};
 use crate::ui::audio::AudioMenu;
 use crate::ui::clock::Clock;
 use crate::ui::help::{Help, Prompt};
+use crate::ui::icons::Icon;
 use crate::ui::layout::Layout;
 use crate::ui::osk::{Action as OskAction, Direction, Labels, Osk};
 use crate::ui::panel::{
@@ -195,6 +196,8 @@ pub struct Content {
     pub fonts: Fonts,
     pub title: String,
     pub subtitle: String,
+    /// What the header shows when there is no title (the system's menu).
+    pub emblem: Option<Icon>,
     pub items: Vec<MenuItem>,
     /// The round buttons under the entries (continue, quit, System).
     pub buttons: Vec<MenuItem>,
@@ -877,6 +880,7 @@ impl State {
         );
         panel.set_buttons(std::mem::take(&mut self.content.buttons));
         panel.set_icons(config.icons);
+        panel.set_emblem(self.content.emblem);
         panel.set_row_scale(config.row_scale);
         if self.popup() {
             self.create_popup(panel);

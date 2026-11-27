@@ -51,6 +51,10 @@ pub const MIN_SCROLL: f32 = 0.5;
 const TITLE_VERT_PADDING: f32 = 0.0637;
 const TITLE_WITHSUB_VERT_PADDING: f32 = 0.05;
 const SUBTITLE_VERT_PADDING: f32 = 0.019;
+/// The system menu's emblem (see `Panel::emblem`): how much of the title's
+/// box it fills, and of the panel's width at most.
+const EMBLEM_HEIGHT: f32 = 0.8;
+const EMBLEM_WIDTH: f32 = 0.3;
 pub(super) const FONT_SIZE_SMALL: f32 = 0.035;
 pub(super) const FONT_SIZE_MEDIUM: f32 = 0.045;
 const FONT_SIZE_LARGE: f32 = 0.085;
@@ -484,6 +488,9 @@ pub struct Panel {
     row_scale: f32,
     /// Whether the main entries show their icons.
     icons: bool,
+    /// What the header shows on the main page when there is no title (the
+    /// system's menu): a controller, the Switch, or nothing.
+    emblem: Option<Icon>,
     /// A popup in the middle of the screen (the power options): only the
     /// header and the entries, as tall as they are.
     popup: bool,
@@ -541,6 +548,7 @@ impl Panel {
             status_bar: StatusBar::default(),
             row_scale: 1.0,
             icons: true,
+            emblem: None,
             popup: false,
             status: None,
             background: theme.background.center_color,
@@ -887,6 +895,11 @@ impl Panel {
     /// Show or hide the icons of the main entries.
     pub fn set_icons(&mut self, icons: bool) {
         self.icons = icons;
+    }
+
+    /// What the header shows instead of a title (see `emblem`).
+    pub fn set_emblem(&mut self, emblem: Option<Icon>) {
+        self.emblem = emblem;
     }
 
     /// Show a save state page instead of the main entries.
@@ -1439,20 +1452,26 @@ impl Panel {
         } else {
             header - small_height * lines as f32 - self.screen_height * SUBTITLE_VERT_PADDING
         };
-        let (title_font, title) = fonts.fit(&self.title_element.font, title, inner, 0.6);
-        fonts.draw(
-            pixmap,
-            &title_font,
-            &title,
-            TextBox {
-                x: padding,
-                y: top,
-                width: inner,
-                height: title_box_height,
-                align: Align::Center,
-            },
-            self.title_element.style.color,
-        );
+        if title.is_empty() {
+            if let Some(emblem) = self.emblem {
+                self.draw_emblem(pixmap, emblem, (top, title_box_height));
+            }
+        } else {
+            let (title_font, title) = fonts.fit(&self.title_element.font, title, inner, 0.6);
+            fonts.draw(
+                pixmap,
+                &title_font,
+                &title,
+                TextBox {
+                    x: padding,
+                    y: top,
+                    width: inner,
+                    height: title_box_height,
+                    align: Align::Center,
+                },
+                self.title_element.style.color,
+            );
+        }
         let mut y = top + title_box_height;
         if !subtitle.is_empty() {
             let (font, subtitle) = fonts.fit(&self.small.font, subtitle, inner, 0.8);
@@ -1473,6 +1492,21 @@ impl Panel {
         }
         if let Some(status) = self.status_line() {
             self.draw_status(pixmap, fonts, status, (padding, y, inner));
+        }
+    }
+
+    /// The emblem in the title's place and colour, centred in the box
+    /// (`at`: its top and height), no wider than `EMBLEM_WIDTH` of the panel.
+    fn draw_emblem(&self, pixmap: &mut Pixmap, emblem: Icon, at: (f32, f32)) {
+        let (top, height) = at;
+        let size = (height * EMBLEM_HEIGHT)
+            .min(self.width as f32 * EMBLEM_WIDTH / emblem.aspect())
+            .round()
+            .max(1.0);
+        if let Some(image) = emblem.render(size as u32, self.title_element.style.color) {
+            let x = (self.width as i32 - image.width() as i32) / 2;
+            let y = (top + (height - size) / 2.0).round() as i32;
+            crate::ui::blit(pixmap, &image, (x, y));
         }
     }
 

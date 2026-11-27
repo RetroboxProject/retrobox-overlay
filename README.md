@@ -119,15 +119,17 @@ changes the volume as above, without a toast.
 ### Outside games
 
 In EmulationStation, Kodi or anything else that is not a game, the same button opens the
-system's menu, like the Switch's quick settings: the *System* button (*Power off…*, *update
-system*) and the volume and brightness sliders. In what Kodi starts with `retrobox-launch` (it
+system's menu, like the Switch's quick settings: a single *System* entry (*Power off…*,
+*update system*), no round buttons, and the volume and brightness sliders. Instead of a title
+it shows an emblem in the title's colour: a controller when one is connected (the Switch
+itself on a Nintendo Switch), nothing when none is. In what Kodi starts with `retrobox-launch` (it
 publishes a game session), the menu is a game's, as anywhere else.
 
 ### Power options
 
 *Power off…* closes the menu and opens the power options: *sleep mode*, *restart* and
 *turn off*, in a popup in the middle of the dimmed screen, in the menu's style (the System
-button opens them at once when the System page would have nothing else). Back (the east
+entry opens them at once when the System page would have nothing else). Back (the east
 button, Esc), a click or a tap outside, or the right button close it. They are also there
 on their own, for a power button: `retrobox-overlay --power` asks the input daemon for them
 (SIGUSR2), which closes the menu first if it is open, or closes them if they are the ones

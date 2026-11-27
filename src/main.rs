@@ -53,11 +53,12 @@ use crate::session::{GameInfo, Session};
 use crate::system::performance::Performance;
 use crate::system::power;
 use crate::theme::MenuTheme;
+use crate::ui::icons::Icon;
 use crate::ui::panel::{MenuAction, MenuItem};
 use crate::ui::states::StatesMenu;
 use crate::ui::text::Fonts;
 use retrobox_input::instance::{self, Instance};
-use retrobox_input::{held, launch, logging, paths};
+use retrobox_input::{held, launch, logging, paths, probe};
 
 /// How much lower the overlay's CPU priority is than the game's.
 const NICENESS: i32 = 10;
@@ -304,6 +305,7 @@ fn task_screen(options: task::Options, log: Option<&std::fs::File>) -> Result<u8
         fonts,
         title: String::new(),
         subtitle: String::new(),
+        emblem: None,
         items: Vec::new(),
         buttons: Vec::new(),
         power: Vec::new(),
@@ -473,6 +475,7 @@ fn show_toast(
         fonts,
         title: String::new(),
         subtitle: String::new(),
+        emblem: None,
         items: Vec::new(),
         buttons: Vec::new(),
         power: Vec::new(),
@@ -617,6 +620,7 @@ fn run(
         fonts,
         title: info.name,
         subtitle,
+        emblem: emblem(!in_game && !osk && !popup),
         items,
         buttons,
         power,
@@ -734,15 +738,29 @@ fn overlay_allowed(demo: bool, osk: bool, session: Option<&Session>) -> bool {
     osk_allowed(osk, demo, session)
 }
 
-/// What the game's info file says, else just "Retrobox".
+/// What the game's info file says, else nothing (the system's menu shows
+/// its emblem instead: see `emblem`).
 fn game_info(session: Option<&Session>) -> GameInfo {
-    session.map_or_else(
-        || GameInfo {
-            name: "Retrobox".into(),
-            ..GameInfo::default()
-        },
-        |session| GameInfo::load(Path::new(&session.game_info), &session.rom),
-    )
+    session.map_or_else(GameInfo::default, |session| {
+        GameInfo::load(Path::new(&session.game_info), &session.rom)
+    })
+}
+
+/// What the system's menu shows instead of a title: none without a
+/// controller connected, else the Switch on one, else a controller.
+fn emblem(system_menu: bool) -> Option<Icon> {
+    if !system_menu
+        || !probe::scan()
+            .iter()
+            .any(|found| found.kind == probe::Kind::Pad && found.physical)
+    {
+        return None;
+    }
+    Some(if system::performance::on_switch() {
+        Icon::Switch
+    } else {
+        Icon::Controller
+    })
 }
 
 /// Find and grab the controllers (and the keyboards, for the on-screen
@@ -852,8 +870,8 @@ fn power_page(
 }
 
 /// The menu's entries and round buttons: a game's (with its emulator and
-/// whether it has a manual), or the system's (only the System button; the
-/// sliders come as they are found). `autosave`: whether quitting saves
+/// whether it has a manual), or the system's (only the System entry, no
+/// buttons; the sliders come as they are found). `autosave`: whether quitting saves
 /// the automatic state; `power`: whether the System page offers anything.
 fn menus(
     translator: &Translator,
@@ -861,21 +879,15 @@ fn menus(
     autosave: bool,
     power: bool,
 ) -> (Vec<MenuItem>, Vec<MenuItem>) {
-    let mut buttons = Vec::new();
-    let items = if let Some((emulator, pages)) = game {
-        buttons = menu_buttons(translator, emulator, autosave);
-        menu_items(translator, emulator, pages)
+    let system = power.then(|| MenuItem::new(translator.text("menu-system"), MenuAction::Power));
+    if let Some((emulator, pages)) = game {
+        let mut buttons = menu_buttons(translator, emulator, autosave);
+        buttons.extend(system);
+        (menu_items(translator, emulator, pages), buttons)
     } else {
         log::info!("no game running: the system's menu");
-        Vec::new()
-    };
-    if power {
-        buttons.push(MenuItem::new(
-            translator.text("menu-system"),
-            MenuAction::Power,
-        ));
+        (system.into_iter().collect(), Vec::new())
     }
-    (items, buttons)
 }
 
 /// The theme, the settings, the language and its translations: those of

@@ -19,7 +19,7 @@ use crate::system::power::PowerAction;
 use crate::system::status::{Battery, Network};
 use crate::theme::Rgba;
 
-/// Both sets draw on a 24×24 grid.
+/// Both sets draw on a grid 24 high (24×24 but for the Switch's emblem).
 const GRID: f32 = 24.0;
 
 /// How many rendered icons are kept (all of them are forgotten past that).
@@ -93,11 +93,15 @@ pub enum Icon {
     ArrowRight,
     ArrowRightToLine,
     Gamepad,
+    /// The system menu's emblem when controllers are connected.
+    Controller,
+    /// The emblem on a Nintendo Switch: wider than the others (57×24).
+    Switch,
 }
 
 impl Icon {
     /// Every icon (for `named`).
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 50] = [
         Self::Play,
         Self::Save,
         Self::History,
@@ -146,6 +150,8 @@ impl Icon {
         Self::ArrowRight,
         Self::ArrowRightToLine,
         Self::Gamepad,
+        Self::Controller,
+        Self::Switch,
     ];
 
     /// The icon of `name`, its file's (`trophy`, `history-line`,
@@ -289,6 +295,8 @@ impl Icon {
             Self::ArrowRight => icon!("arrow-right-line"),
             Self::ArrowRightToLine => icon!("skip-right-line"),
             Self::Gamepad => icon!("gamepad-2"),
+            Self::Controller => icon!("gamepad-line"),
+            Self::Switch => icon!("switch"),
         }
     }
 
@@ -296,7 +304,16 @@ impl Icon {
         self.file().1
     }
 
-    /// The icon as a `size`×`size` image in `color`.
+    /// How much wider than high the icon is (1 but for the Switch's emblem).
+    pub const fn aspect(self) -> f32 {
+        match self {
+            Self::Switch => 57.0 / GRID,
+            _ => 1.0,
+        }
+    }
+
+    /// The icon as an image `size` high (and as wide, but for the wider
+    /// ones: see `aspect`) in `color`.
     pub fn render(self, size: u32, color: Rgba) -> Option<Pixmap> {
         let key = (self, size, color.0);
         if let Some(rendered) = RENDERS.with_borrow(|renders| renders.get(&key).cloned()) {
@@ -322,7 +339,8 @@ impl Icon {
         let tree = usvg::Tree::from_str(&svg, &usvg::Options::default())
             .inspect_err(|err| log::warn!("icon {self:?}: {err}"))
             .ok()?;
-        let mut pixmap = Pixmap::new(size, size)?;
+        let width = (size as f32 * self.aspect()).round() as u32;
+        let mut pixmap = Pixmap::new(width.max(1), size)?;
         let scale = size as f32 / GRID;
         resvg::render(
             &tree,
@@ -362,5 +380,13 @@ mod tests {
                 "{icon:?} is not red"
             );
         }
+    }
+
+    #[test]
+    fn wide_icons_render_as_wide() {
+        let pixmap = Icon::Switch.render(48, Rgba(0xff00_00ff)).unwrap();
+        assert_eq!((pixmap.width(), pixmap.height()), (114, 48));
+        let edge = |x| (0..48).any(|y| pixmap.pixel(x, y).is_some_and(|p| p.alpha() > 200));
+        assert!(edge(1) && edge(112), "the Switch is not drawn edge to edge");
     }
 }
